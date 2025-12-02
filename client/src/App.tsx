@@ -4,15 +4,24 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
+import { Layout } from "@/components/layout/Layout";
+import Dashboard from "@/pages/dashboard";
+import Storage from "@/pages/storage";
+import Wallet from "@/pages/wallet";
+import NodeStatus from "@/pages/node";
+import generatedImage from '@assets/generated_images/a_dark,_futuristic_abstract_mesh_background_with_red_accents..png';
 
 function Router() {
   return (
-    <Switch>
-      {/* Add pages below */}
-      {/* <Route path="/" component={Home}/> */}
-      {/* Fallback to 404 */}
-      <Route component={NotFound} />
-    </Switch>
+    <Layout>
+      <Switch>
+        <Route path="/" component={Dashboard} />
+        <Route path="/storage" component={Storage} />
+        <Route path="/wallet" component={Wallet} />
+        <Route path="/node" component={NodeStatus} />
+        <Route component={NotFound} />
+      </Switch>
+    </Layout>
   );
 }
 
@@ -20,6 +29,12 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
+        {/* Background Image Layer */}
+        <div className="fixed inset-0 z-[-1] opacity-20 pointer-events-none">
+           <img src={generatedImage} alt="" className="w-full h-full object-cover" />
+           <div className="absolute inset-0 bg-background/90 mix-blend-multiply" />
+        </div>
+        
         <Toaster />
         <Router />
       </TooltipProvider>
