@@ -10,6 +10,7 @@ export function Sidebar() {
     { href: "/storage", label: "Storage", icon: HardDrive },
     { href: "/wallet", label: "Wallet", icon: Wallet },
     { href: "/node", label: "Node Status", icon: Server },
+    { href: "/governance", label: "Governance", icon: Activity },
     { href: "/settings", label: "Settings", icon: Settings },
   ];
 
