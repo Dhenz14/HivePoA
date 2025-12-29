@@ -1,7 +1,11 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, timestamp, boolean, real } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, timestamp, boolean, real, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+
+// ============================================================
+// PHASE 0: Core Tables (Existing)
+// ============================================================
 
 // Storage Nodes - Users running IPFS nodes and earning HBD
 export const storageNodes = pgTable("storage_nodes", {
@@ -23,10 +27,20 @@ export const files = pgTable("files", {
   name: text("name").notNull(),
   size: text("size").notNull(),
   uploaderUsername: text("uploader_username").notNull(),
-  status: text("status").notNull().default("syncing"), // syncing, pinned, warning
+  status: text("status").notNull().default("syncing"), // syncing, pinned, warning, uploading
   replicationCount: integer("replication_count").notNull().default(0),
   confidence: integer("confidence").notNull().default(0), // 0-100
   poaEnabled: boolean("poa_enabled").notNull().default(true),
+  // Phase 1: Upload tracking
+  totalChunks: integer("total_chunks"),
+  uploadedChunks: integer("uploaded_chunks").default(0),
+  uploadSessionId: text("upload_session_id"),
+  uploadExpiresAt: timestamp("upload_expires_at"),
+  // Phase 3: Fingerprinting
+  ssdeepHash: text("ssdeep_hash"),
+  // Phase 4: Encryption
+  encrypted: boolean("encrypted").notNull().default(false),
+  encryptionNonce: text("encryption_nonce"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -89,7 +103,239 @@ export const validatorBlacklists = pgTable("validator_blacklists", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
-// Insert schemas
+// ============================================================
+// PHASE 1: CDN & Storage System
+// ============================================================
+
+// CDN Nodes - Nodes providing content delivery with health metrics
+export const cdnNodes = pgTable("cdn_nodes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  peerId: text("peer_id").notNull().unique(),
+  hiveUsername: text("hive_username").notNull(),
+  endpoint: text("endpoint").notNull(), // Public HTTPS endpoint
+  geoRegion: text("geo_region").notNull().default("unknown"), // us-east, eu-west, asia-pacific, etc.
+  geoCountry: text("geo_country"),
+  geoContinent: text("geo_continent"),
+  capacity: text("capacity").notNull().default("0"), // Storage capacity in bytes
+  throughputMin: integer("throughput_min").default(0), // Minimum throughput in Mbps
+  throughputMax: integer("throughput_max").default(0), // Maximum throughput in Mbps
+  healthScore: text("health_score").notNull().default("WW"), // 2-char base64 encoded z-scores (raw + geo-corrected)
+  rawZScore: real("raw_z_score").default(0), // Decoded raw z-score
+  geoZScore: real("geo_z_score").default(0), // Decoded geo-corrected z-score
+  status: text("status").notNull().default("active"), // active, degraded, offline
+  lastHeartbeat: timestamp("last_heartbeat").notNull().defaultNow(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// CDN Metrics - Historical latency/performance data per CDN node
+export const cdnMetrics = pgTable("cdn_metrics", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  nodeId: varchar("node_id").notNull().references(() => cdnNodes.id),
+  latencyMs: integer("latency_ms").notNull(),
+  successRate: real("success_rate").notNull().default(1.0), // 0.0-1.0
+  requestCount: integer("request_count").notNull().default(1),
+  sourceRegion: text("source_region"), // Region of the requester
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// File Chunks - Track chunked uploads for resumable transfers
+export const fileChunks = pgTable("file_chunks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  fileId: varchar("file_id").notNull().references(() => files.id),
+  chunkIndex: integer("chunk_index").notNull(),
+  chunkSize: integer("chunk_size").notNull(),
+  checksum: text("checksum"), // SHA256 of chunk
+  status: text("status").notNull().default("pending"), // pending, uploaded, verified
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Storage Contracts - Blockchain-verified storage agreements
+export const storageContracts = pgTable("storage_contracts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  fileId: varchar("file_id").references(() => files.id),
+  fileCid: text("file_cid").notNull(),
+  uploaderUsername: text("uploader_username").notNull(),
+  requestedReplication: integer("requested_replication").notNull().default(3),
+  actualReplication: integer("actual_replication").notNull().default(0),
+  status: text("status").notNull().default("pending"), // pending, active, completed, expired, cancelled
+  hbdBudget: text("hbd_budget").notNull().default("0"), // HBD allocated for storage
+  hbdSpent: text("hbd_spent").notNull().default("0"), // HBD paid out so far
+  validatorApprovalAt: timestamp("validator_approval_at"),
+  startsAt: timestamp("starts_at").notNull().defaultNow(),
+  expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Contract Events - Track lifecycle changes for contracts
+export const contractEvents = pgTable("contract_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  contractId: varchar("contract_id").notNull().references(() => storageContracts.id),
+  eventType: text("event_type").notNull(), // created, activated, renewed, expired, cancelled, payout
+  payload: text("payload"), // JSON with event details
+  triggeredBy: text("triggered_by"), // Username or "system"
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ============================================================
+// PHASE 2: Video Transcoding & Encoder Marketplace
+// ============================================================
+
+// Transcode Jobs - Track video encoding tasks
+export const transcodeJobs = pgTable("transcode_jobs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  fileId: varchar("file_id").notNull().references(() => files.id),
+  inputCid: text("input_cid").notNull(),
+  outputCid: text("output_cid"),
+  preset: text("preset").notNull(), // hls, mp4-720p, mp4-1080p, webm-720p, webm-1080p
+  status: text("status").notNull().default("queued"), // queued, assigned, processing, completed, failed
+  progress: integer("progress").notNull().default(0), // 0-100
+  encoderNodeId: varchar("encoder_node_id").references(() => encoderNodes.id),
+  hbdCost: text("hbd_cost").default("0"), // Cost of encoding
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at"),
+  completedAt: timestamp("completed_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Encoder Nodes - Nodes providing video transcoding services
+export const encoderNodes = pgTable("encoder_nodes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  peerId: text("peer_id").notNull().unique(),
+  hiveUsername: text("hive_username").notNull(),
+  endpoint: text("endpoint"), // Optional public endpoint
+  presetsSupported: text("presets_supported").notNull().default("hls,mp4-720p"), // Comma-separated
+  basePriceHbd: text("base_price_hbd").notNull().default("0.01"), // Base price per minute of video
+  availability: text("availability").notNull().default("available"), // available, busy, offline
+  jobsCompleted: integer("jobs_completed").notNull().default(0),
+  avgProcessingTime: integer("avg_processing_time").default(0), // Seconds per minute of video
+  rating: real("rating").default(5.0), // 0-5 star rating
+  status: text("status").notNull().default("active"), // active, suspended
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ============================================================
+// PHASE 3: Multi-Tier Blocklist System
+// ============================================================
+
+// Blocklist Entries - Unified blocklist with scope levels
+export const blocklistEntries = pgTable("blocklist_entries", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  scope: text("scope").notNull(), // local, validator, platform
+  scopeOwnerId: text("scope_owner_id"), // validator ID, platform ID, or username for local
+  targetType: text("target_type").notNull(), // account, cid, ipfs_hash, ssdeep_hash, tag
+  targetValue: text("target_value").notNull(), // The blocked value
+  reason: text("reason"),
+  severity: text("severity").notNull().default("moderate"), // low, moderate, severe, critical
+  active: boolean("active").notNull().default(true),
+  expiresAt: timestamp("expires_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Platform Blocklists - Platform-level content policies
+export const platformBlocklists = pgTable("platform_blocklists", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  platformId: text("platform_id").notNull(), // e.g., "3speak", "peakd"
+  platformName: text("platform_name").notNull(),
+  policyUrl: text("policy_url"),
+  enforceLevel: text("enforce_level").notNull().default("warn"), // warn, block, hide
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Tags - Content tags for categorization
+export const tags = pgTable("tags", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  label: text("label").notNull().unique(), // nsfw, violence, spam, etc.
+  category: text("category").notNull().default("content"), // content, moderation, system
+  description: text("description"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// File Tags - Community-voted tags on files
+export const fileTags = pgTable("file_tags", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  fileId: varchar("file_id").notNull().references(() => files.id),
+  tagId: varchar("tag_id").notNull().references(() => tags.id),
+  votesUp: integer("votes_up").notNull().default(0),
+  votesDown: integer("votes_down").notNull().default(0),
+  confidence: real("confidence").notNull().default(0), // Weighted score
+  addedBy: text("added_by").notNull(), // Username who first added
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Tag Votes - Individual votes on file tags
+export const tagVotes = pgTable("tag_votes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  fileTagId: varchar("file_tag_id").notNull().references(() => fileTags.id),
+  voterUsername: text("voter_username").notNull(),
+  voteType: text("vote_type").notNull(), // up, down
+  voterReputation: integer("voter_reputation").default(50), // Snapshot of voter rep
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ============================================================
+// PHASE 4: Desktop Parity Features
+// ============================================================
+
+// User Keys - Encryption key vault for E2E encryption
+export const userKeys = pgTable("user_keys", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  username: text("username").notNull(),
+  keyType: text("key_type").notNull(), // public, encrypted_private
+  keyValue: text("key_value").notNull(), // Base64 encoded key
+  algorithm: text("algorithm").notNull().default("AES-GCM"), // Encryption algorithm
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// User Node Settings - Per-user preferences for auto-pinning etc.
+export const userNodeSettings = pgTable("user_node_settings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  username: text("username").notNull().unique(),
+  autoPinEnabled: boolean("auto_pin_enabled").notNull().default(false),
+  autoPinThreshold: integer("auto_pin_threshold").default(60), // Only pin files with confidence > threshold
+  maxAutoPinSize: text("max_auto_pin_size").default("104857600"), // 100MB default
+  encryptByDefault: boolean("encrypt_by_default").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// View Events - Track when users view content (for auto-pinning)
+export const viewEvents = pgTable("view_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  fileId: varchar("file_id").notNull().references(() => files.id),
+  viewerUsername: text("viewer_username").notNull(),
+  viewDurationMs: integer("view_duration_ms"),
+  completed: boolean("completed").notNull().default(false), // Did they watch/view fully
+  autoPinTriggered: boolean("auto_pin_triggered").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Beneficiary Allocations - Split HBD payouts to node operators
+export const beneficiaryAllocations = pgTable("beneficiary_allocations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  fromUsername: text("from_username").notNull(),
+  toNodeId: varchar("to_node_id").notNull().references(() => storageNodes.id),
+  percentage: real("percentage").notNull(), // 0-100
+  hbdAllocated: text("hbd_allocated").notNull().default("0"),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Payout History - Track all HBD payouts including splits
+export const payoutHistory = pgTable("payout_history", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  contractId: varchar("contract_id").references(() => storageContracts.id),
+  recipientUsername: text("recipient_username").notNull(),
+  recipientNodeId: varchar("recipient_node_id").references(() => storageNodes.id),
+  hbdAmount: text("hbd_amount").notNull(),
+  payoutType: text("payout_type").notNull(), // storage, encoding, beneficiary, validation
+  txHash: text("tx_hash"), // Hive transaction hash
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ============================================================
+// Insert Schemas
+// ============================================================
+
 export const insertStorageNodeSchema = createInsertSchema(storageNodes).omit({
   id: true,
   createdAt: true,
@@ -121,7 +367,98 @@ export const insertValidatorBlacklistSchema = createInsertSchema(validatorBlackl
   createdAt: true,
 });
 
+export const insertCdnNodeSchema = createInsertSchema(cdnNodes).omit({
+  id: true,
+  createdAt: true,
+  lastHeartbeat: true,
+});
+
+export const insertCdnMetricSchema = createInsertSchema(cdnMetrics).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertFileChunkSchema = createInsertSchema(fileChunks).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertStorageContractSchema = createInsertSchema(storageContracts).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertContractEventSchema = createInsertSchema(contractEvents).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertTranscodeJobSchema = createInsertSchema(transcodeJobs).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertEncoderNodeSchema = createInsertSchema(encoderNodes).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertBlocklistEntrySchema = createInsertSchema(blocklistEntries).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertPlatformBlocklistSchema = createInsertSchema(platformBlocklists).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertTagSchema = createInsertSchema(tags).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertFileTagSchema = createInsertSchema(fileTags).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertTagVoteSchema = createInsertSchema(tagVotes).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertUserKeySchema = createInsertSchema(userKeys).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertUserNodeSettingsSchema = createInsertSchema(userNodeSettings).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertViewEventSchema = createInsertSchema(viewEvents).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertBeneficiaryAllocationSchema = createInsertSchema(beneficiaryAllocations).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertPayoutHistorySchema = createInsertSchema(payoutHistory).omit({
+  id: true,
+  createdAt: true,
+});
+
+// ============================================================
 // Types
+// ============================================================
+
+// Phase 0: Core Types
 export type StorageNode = typeof storageNodes.$inferSelect;
 export type InsertStorageNode = z.infer<typeof insertStorageNodeSchema>;
 
@@ -141,3 +478,58 @@ export type StorageAssignment = typeof storageAssignments.$inferSelect;
 
 export type ValidatorBlacklist = typeof validatorBlacklists.$inferSelect;
 export type InsertValidatorBlacklist = z.infer<typeof insertValidatorBlacklistSchema>;
+
+// Phase 1: CDN & Storage Types
+export type CdnNode = typeof cdnNodes.$inferSelect;
+export type InsertCdnNode = z.infer<typeof insertCdnNodeSchema>;
+
+export type CdnMetric = typeof cdnMetrics.$inferSelect;
+export type InsertCdnMetric = z.infer<typeof insertCdnMetricSchema>;
+
+export type FileChunk = typeof fileChunks.$inferSelect;
+export type InsertFileChunk = z.infer<typeof insertFileChunkSchema>;
+
+export type StorageContract = typeof storageContracts.$inferSelect;
+export type InsertStorageContract = z.infer<typeof insertStorageContractSchema>;
+
+export type ContractEvent = typeof contractEvents.$inferSelect;
+export type InsertContractEvent = z.infer<typeof insertContractEventSchema>;
+
+// Phase 2: Transcoding Types
+export type TranscodeJob = typeof transcodeJobs.$inferSelect;
+export type InsertTranscodeJob = z.infer<typeof insertTranscodeJobSchema>;
+
+export type EncoderNode = typeof encoderNodes.$inferSelect;
+export type InsertEncoderNode = z.infer<typeof insertEncoderNodeSchema>;
+
+// Phase 3: Blocklist Types
+export type BlocklistEntry = typeof blocklistEntries.$inferSelect;
+export type InsertBlocklistEntry = z.infer<typeof insertBlocklistEntrySchema>;
+
+export type PlatformBlocklist = typeof platformBlocklists.$inferSelect;
+export type InsertPlatformBlocklist = z.infer<typeof insertPlatformBlocklistSchema>;
+
+export type Tag = typeof tags.$inferSelect;
+export type InsertTag = z.infer<typeof insertTagSchema>;
+
+export type FileTag = typeof fileTags.$inferSelect;
+export type InsertFileTag = z.infer<typeof insertFileTagSchema>;
+
+export type TagVote = typeof tagVotes.$inferSelect;
+export type InsertTagVote = z.infer<typeof insertTagVoteSchema>;
+
+// Phase 4: Desktop Parity Types
+export type UserKey = typeof userKeys.$inferSelect;
+export type InsertUserKey = z.infer<typeof insertUserKeySchema>;
+
+export type UserNodeSettings = typeof userNodeSettings.$inferSelect;
+export type InsertUserNodeSettings = z.infer<typeof insertUserNodeSettingsSchema>;
+
+export type ViewEvent = typeof viewEvents.$inferSelect;
+export type InsertViewEvent = z.infer<typeof insertViewEventSchema>;
+
+export type BeneficiaryAllocation = typeof beneficiaryAllocations.$inferSelect;
+export type InsertBeneficiaryAllocation = z.infer<typeof insertBeneficiaryAllocationSchema>;
+
+export type PayoutHistory = typeof payoutHistory.$inferSelect;
+export type InsertPayoutHistory = z.infer<typeof insertPayoutHistorySchema>;
