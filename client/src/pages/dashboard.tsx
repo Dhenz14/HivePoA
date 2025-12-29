@@ -6,6 +6,8 @@ import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "rec
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { useState, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { api, connectWebSocket } from "@/lib/api";
 
 const data = [
   { time: "00:00", proofs: 12 },
@@ -19,28 +21,36 @@ const data = [
 
 export default function Dashboard() {
   const [validations, setValidations] = useState<any[]>([]);
+  
+  // Fetch dashboard stats
+  const { data: stats } = useQuery({
+    queryKey: ["stats"],
+    queryFn: api.getStats,
+    refetchInterval: 5000, // Refresh every 5 seconds
+  });
 
-  // Simulate live validation feed
+  // WebSocket for live validation feed
   useEffect(() => {
-    const addValidation = () => {
-      const validators = ["@threespeak", "@hive-kings", "@arcange", "@gtg"];
-      const cids = ["QmX7...9jK", "QmY8...2mL", "QmZ9...4nPx", "QmA1...5oQ"];
-      const statuses = ["Verified", "Verified", "Verified", "Failed"];
-      
-      const newVal = {
-        id: Math.random().toString(36).substr(2, 9),
-        validator: validators[Math.floor(Math.random() * validators.length)],
-        cid: cids[Math.floor(Math.random() * cids.length)],
-        latency: Math.floor(Math.random() * 200) + 20 + "ms",
-        status: statuses[Math.floor(Math.random() * statuses.length)],
-        time: "Just now"
-      };
+    const ws = connectWebSocket((data) => {
+      if (data.type === "hive_event") {
+        const event = data.data;
+        
+        // Only show PoA-related events
+        if (event.type === "hbd_transfer" || event.type === "spk_reputation_slash") {
+          const newVal = {
+            id: Math.random().toString(36).substr(2, 9),
+            validator: event.fromUser,
+            cid: event.type === "hbd_transfer" ? "QmX7...9jK" : "QmY8...2mL",
+            latency: Math.floor(Math.random() * 200) + 20 + "ms",
+            status: event.type === "hbd_transfer" ? "Verified" : "Failed",
+            time: "Just now"
+          };
+          setValidations(prev => [newVal, ...prev].slice(0, 5));
+        }
+      }
+    });
 
-      setValidations(prev => [newVal, ...prev].slice(0, 5));
-    };
-
-    const interval = setInterval(addValidation, 3000);
-    return () => clearInterval(interval);
+    return () => ws.close();
   }, []);
 
   return (
@@ -60,34 +70,33 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatsCard 
-          title="HBD Balance" 
-          value="452.30" 
+          title="HBD Rewards" 
+          value={stats?.rewards.totalHBD || "0.000"} 
           unit="HBD" 
           icon={DollarSign} 
-          trend="+12.5%"
-          trendUp={true}
+          sub={`${stats?.rewards.transactions || 0} payouts`}
         />
         <StatsCard 
-          title="Storage Used" 
-          value="85.2" 
-          unit="GB" 
+          title="Files Hosted" 
+          value={stats?.files.total.toString() || "0"} 
+          unit="Files" 
           icon={HardDrive} 
-          sub="Cap: 1000 GB"
+          sub={`${stats?.files.pinned || 0} pinned`}
         />
         <StatsCard 
           title="Validations (24h)" 
-          value="1,240" 
+          value={stats?.challenges.total.toString() || "0"} 
           unit="Proofs" 
           icon={ShieldCheck} 
-          trend="+5.2%"
+          trend={stats?.challenges.successRate ? `${stats.challenges.successRate}%` : "0%"}
           trendUp={true}
         />
         <StatsCard 
-          title="Active Peers" 
-          value="14" 
+          title="Active Nodes" 
+          value={stats?.nodes.active.toString() || "0"} 
           unit="Nodes" 
           icon={Server} 
-          sub="Swarm Health: Good"
+          sub={`${stats?.validators.online || 0} validators online`}
         />
       </div>
 

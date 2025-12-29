@@ -9,6 +9,8 @@ import { cn } from "@/lib/utils";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { useQuery } from "@tanstack/react-query";
+import { api, connectWebSocket } from "@/lib/api";
 
 export default function NodeStatus() {
   const [isRunning, setIsRunning] = useState(true);
@@ -21,18 +23,26 @@ export default function NodeStatus() {
   ]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Mock Data for Validator Console
-  const bannedNodes = [
-    { id: "12D3...9kL", reason: "Sybil Attack Detected", time: "2h ago", ip: "192.168.1.45" },
-    { id: "QmY7...2mP", reason: "Repeated Timeouts (>500ms)", time: "5h ago", ip: "10.0.0.12" },
-    { id: "8f2a...1qR", reason: "Invalid Hash Response", time: "1d ago", ip: "172.16.0.8" },
-  ];
+  // Fetch storage nodes (active peers)
+  const { data: nodes = [] } = useQuery({
+    queryKey: ["nodes"],
+    queryFn: api.getNodes,
+    refetchInterval: 10000,
+  });
 
-  const activePeers = [
-    { id: "QmZ9...4nPx", reputation: 98, status: "Healthy", lastCheck: "3s ago" },
-    { id: "QmA1...5oQ", reputation: 92, status: "Healthy", lastCheck: "12s ago" },
-    { id: "QmB2...6pR", reputation: 45, status: "Probation", lastCheck: "45s ago" },
-  ];
+  const activePeers = nodes.filter(n => n.status === "active").map(n => ({
+    id: n.peerId,
+    reputation: n.reputation,
+    status: n.reputation > 60 ? "Healthy" : "Probation",
+    lastCheck: new Date(n.lastSeen).toLocaleTimeString(),
+  }));
+
+  const bannedNodes = nodes.filter(n => n.status === "banned").map(n => ({
+    id: n.peerId,
+    reason: "Failed PoA challenges",
+    time: new Date(n.lastSeen).toLocaleTimeString(),
+    ip: "N/A",
+  }));
 
   useEffect(() => {
     // Initial Witness Check Simulation
@@ -44,15 +54,37 @@ export default function NodeStatus() {
     }, 2000);
   }, []);
 
+  // WebSocket for live event logs
   useEffect(() => {
     if (!isRunning) return;
-    
-    const interval = setInterval(() => {
-      const newLog = generateMockLog();
-      setLogs(prev => [...prev.slice(-50), newLog]);
-    }, 3000);
 
-    return () => clearInterval(interval);
+    const ws = connectWebSocket((data) => {
+      if (data.type === "hive_event") {
+        const event = data.data;
+        let logMessage = "";
+
+        switch (event.type) {
+          case "hbd_transfer":
+            logMessage = `[SUCCESS] HBD Payment: ${JSON.parse(event.payload).amount} to @${event.toUser}`;
+            break;
+          case "spk_reputation_slash":
+            logMessage = `[WARN] Reputation Slash: @${event.toUser} (${JSON.parse(event.payload).reason})`;
+            break;
+          case "spk_video_upload":
+            logMessage = `[INFO] New Upload: ${JSON.parse(event.payload).name}`;
+            break;
+          case "hivepoa_announce":
+            logMessage = `[INFO] Node Announce: ${JSON.parse(event.payload).peerId}`;
+            break;
+        }
+
+        if (logMessage) {
+          setLogs(prev => [...prev.slice(-50), logMessage]);
+        }
+      }
+    });
+
+    return () => ws.close();
   }, [isRunning]);
 
   // Auto-scroll

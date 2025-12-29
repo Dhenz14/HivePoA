@@ -7,19 +7,18 @@ import { Search, Globe, Shield, Activity, Signal, BarChart3 } from "lucide-react
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { useQuery } from "@tanstack/react-query";
+import { api } from "@/lib/api";
 
 export default function Validators() {
   const { toast } = useToast();
 
-  // "Job Allocation" represents the % of network storage jobs this validator is handling
-  // This is directly correlated to their Rank/Performance.
-  const validators = [
-    { rank: 1, name: "threespeak", hiveRank: 5, status: "Online", peers: 124, payout: "1.00 HBD", version: "v0.1.0", performance: 98, trusted: true, jobAllocation: 95 },
-    { rank: 2, name: "arcange", hiveRank: 45, status: "Online", peers: 256, payout: "1.00 HBD", version: "v0.1.0", performance: 96, trusted: true, jobAllocation: 88 },
-    { rank: 3, name: "hive-kings", hiveRank: 12, status: "Online", peers: 89, payout: "0.95 HBD", version: "v0.1.0", performance: 92, trusted: true, jobAllocation: 75 },
-    { rank: 4, name: "pizza-witness", hiveRank: 88, status: "Syncing", peers: 12, payout: "0.90 HBD", version: "v0.0.9", performance: 78, trusted: false, jobAllocation: 25 },
-    { rank: 5, name: "smaller-guy", hiveRank: 142, status: "Offline", peers: 0, payout: "1.00 HBD", version: "v0.1.0", performance: 45, trusted: false, jobAllocation: 0 },
-  ];
+  // Fetch validators from API
+  const { data: validators = [] } = useQuery({
+    queryKey: ["validators"],
+    queryFn: api.getValidators,
+    refetchInterval: 10000, // Refresh every 10 seconds
+  });
 
   const handleConnect = (name: string) => {
     toast({
@@ -66,37 +65,37 @@ export default function Validators() {
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {validators.map((val) => (
-                  <div key={val.rank} className={cn(
+                {validators.map((val, index) => (
+                  <div key={val.id} className={cn(
                       "flex items-center justify-between p-4 rounded-lg bg-card border border-border/50 transition-all group",
-                      val.trusted ? "hover:border-primary/30" : "opacity-80 grayscale-[0.5] hover:grayscale-0 hover:opacity-100"
+                      val.hiveRank <= 50 ? "hover:border-primary/30" : "opacity-80 grayscale-[0.5] hover:grayscale-0 hover:opacity-100"
                     )}>
                     <div className="flex items-center gap-4">
                       <div className="flex flex-col items-center gap-1 w-12">
                          <div className={cn(
                             "font-mono text-xs text-muted-foreground rounded py-1 px-2",
-                            val.rank <= 3 ? "bg-yellow-500/10 text-yellow-500 font-bold border border-yellow-500/20" : "bg-muted/50"
+                            index + 1 <= 3 ? "bg-yellow-500/10 text-yellow-500 font-bold border border-yellow-500/20" : "bg-muted/50"
                            )}>
-                           #{val.rank}
+                           #{index + 1}
                          </div>
                       </div>
                       
                       <Avatar>
-                        <AvatarImage src={`https://images.hive.blog/u/${val.name}/avatar`} />
-                        <AvatarFallback>{val.name.substring(0, 2).toUpperCase()}</AvatarFallback>
+                        <AvatarImage src={`https://images.hive.blog/u/${val.hiveUsername}/avatar`} />
+                        <AvatarFallback>{val.hiveUsername.substring(0, 2).toUpperCase()}</AvatarFallback>
                       </Avatar>
                       <div>
                         <h4 className="font-bold flex items-center gap-2">
-                          @{val.name}
-                          {val.trusted && (
+                          @{val.hiveUsername}
+                          {val.hiveRank <= 50 && (
                             <Badge variant="secondary" className="h-5 text-[10px] px-1 bg-blue-500/10 text-blue-500 border-blue-500/20">
                              Trusted
                             </Badge>
                           )}
                         </h4>
                         <div className="flex gap-4 text-xs text-muted-foreground mt-1 font-mono">
-                          <span className="flex items-center gap-1">v{val.version}</span>
-                          <span className="flex items-center gap-1">• {val.peers} Peers</span>
+                          <span className="flex items-center gap-1">{val.version}</span>
+                          <span className="flex items-center gap-1">• {val.peerCount} Peers</span>
                         </div>
                       </div>
                     </div>
@@ -115,7 +114,7 @@ export default function Validators() {
 
                       <div className="text-right hidden sm:block w-20">
                          <div className="text-xs text-muted-foreground mb-1">Payout</div>
-                         <div className="font-mono font-medium">{val.payout}</div>
+                         <div className="font-mono font-medium">{val.payoutRate.toFixed(2)} HBD</div>
                       </div>
                     </div>
                   </div>

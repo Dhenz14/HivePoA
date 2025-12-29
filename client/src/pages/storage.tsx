@@ -11,24 +11,49 @@ import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { api } from "@/lib/api";
 
 export default function Storage() {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   
   // New State for "Oratr" simulation (Transcoding -> Hashing -> Seeding)
   const [uploadStatus, setUploadStatus] = useState<'idle' | 'transcoding' | 'hashing' | 'broadcasting' | 'seeding' | 'complete'>('idle');
   const [taskProgress, setTaskProgress] = useState(0);
   const [seedPeers, setSeedPeers] = useState(0);
 
-  const reputation = 82;
+  // Fetch files from API
+  const { data: files = [] } = useQuery({
+    queryKey: ["files"],
+    queryFn: api.getFiles,
+    refetchInterval: 10000,
+  });
 
-  const [files, setFiles] = useState([
-    { id: 1, name: "project_specs_v2.pdf", cid: "QmX7...9jK", size: "2.4 MB", status: "Pinned", date: "2025-05-20", proofs: 142, fails: 0, lastProof: "2m ago", replication: 12, confidence: 98, poaEnabled: true },
-    { id: 2, name: "assets_bundle.zip", cid: "QmY8...2mL", size: "156 MB", status: "Pinned", date: "2025-05-19", proofs: 89, fails: 1, lastProof: "15m ago", replication: 8, confidence: 92, poaEnabled: true },
-    { id: 3, name: "intro_video.mp4", cid: "QmZ9...4nPx", size: "45 MB", status: "Syncing", date: "2025-05-19", proofs: 0, fails: 0, lastProof: "N/A", replication: 1, confidence: 0, poaEnabled: false },
-    { id: 4, name: "dataset_01.json", cid: "QmA1...5oQ", size: "12 KB", status: "Pinned", date: "2025-05-18", proofs: 450, fails: 0, lastProof: "5m ago", replication: 45, confidence: 99, poaEnabled: true },
-    { id: 5, name: "backup_log.txt", cid: "QmB2...6pR", size: "1.1 MB", status: "Warning", date: "2025-05-18", proofs: 12, fails: 5, lastProof: "1h ago", replication: 4, confidence: 45, poaEnabled: true },
-  ]);
+  // Fetch nodes to get our own reputation
+  const { data: nodes = [] } = useQuery({
+    queryKey: ["nodes"],
+    queryFn: api.getNodes,
+    refetchInterval: 10000,
+  });
+
+  // Get first node's reputation (simulate "your" node)
+  const reputation = nodes[0]?.reputation || 50;
+
+  // Stats calculation
+  const totalProofs = nodes.reduce((sum, n) => sum + n.totalProofs, 0);
+  const totalFails = nodes.reduce((sum, n) => sum + n.failedProofs, 0);
+  const successRate = totalProofs + totalFails > 0 
+    ? ((totalProofs / (totalProofs + totalFails)) * 100).toFixed(1)
+    : "0.0";
+
+  // Create file mutation
+  const createFileMutation = useMutation({
+    mutationFn: api.createFile,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["files"] });
+    },
+  });
 
   const handleUpload = () => {
     // Phase 1: Transcoding (Client Side)
@@ -83,41 +108,31 @@ export default function Storage() {
           title: "Swarm Replication Active",
           description: "3 Storage Nodes are now hosting your content.",
         });
-        // Add new file to list
-        setFiles(prev => [{
-            id: Date.now(), 
-            name: "my_vlog_final.mp4", 
-            cid: "QmNew...Upl", 
-            size: "450 MB", 
-            status: "Pinned", 
-            date: "Just now", 
-            proofs: 0, fails: 0, 
-            lastProof: "Pending", 
-            replication: 3, 
-            confidence: 100, 
-            poaEnabled: true 
-        }, ...prev]);
+        // Add new file via API
+        createFileMutation.mutate({
+          name: "my_vlog_final.mp4",
+          cid: `QmNew${Date.now()}`,
+          size: "450 MB",
+          uploaderUsername: "user",
+          status: "syncing",
+          replicationCount: 3,
+          confidence: 0,
+          poaEnabled: true,
+        });
         setTimeout(() => setUploadStatus('idle'), 3000);
       }
     }, 1500);
   };
 
-  const togglePoa = (id: number) => {
-    setFiles(files.map(f => {
-      if (f.id === id) {
-        const newState = !f.poaEnabled;
-        toast({
-          title: newState ? "Rewards Enabled" : "Rewards Disabled",
-          description: `PoA challenges ${newState ? "enabled" : "disabled"} for ${f.name}`,
-        });
-        return { ...f, poaEnabled: newState };
-      }
-      return f;
-    }));
+  const togglePoa = (name: string) => {
+    // In a real implementation, this would call an API to update the file
+    toast({
+      title: "Feature Not Implemented",
+      description: `PoA toggle for ${name} (API endpoint needed)`,
+    });
   };
 
   const toggleAll = (enabled: boolean) => {
-    setFiles(files.map(f => ({ ...f, poaEnabled: enabled })));
     toast({
       title: enabled ? "All Rewards Enabled" : "All Rewards Paused",
       description: `PoA challenges ${enabled ? "enabled" : "paused"} for all files.`,
@@ -253,15 +268,15 @@ export default function Storage() {
               </div>
               <div className="grid grid-cols-3 gap-4 pt-4 border-t border-border/50">
                  <div className="text-center">
-                    <div className="text-2xl font-bold font-display">1,240</div>
+                    <div className="text-2xl font-bold font-display">{totalProofs}</div>
                     <div className="text-xs text-muted-foreground uppercase tracking-wider mt-1">Total Proofs</div>
                  </div>
                  <div className="text-center">
-                    <div className="text-2xl font-bold font-display text-red-500">6</div>
+                    <div className="text-2xl font-bold font-display text-red-500">{totalFails}</div>
                     <div className="text-xs text-muted-foreground uppercase tracking-wider mt-1">Failed Challenges</div>
                  </div>
                  <div className="text-center">
-                    <div className="text-2xl font-bold font-display text-green-500">99.5%</div>
+                    <div className="text-2xl font-bold font-display text-green-500">{successRate}%</div>
                     <div className="text-xs text-muted-foreground uppercase tracking-wider mt-1">Success Rate</div>
                  </div>
               </div>
@@ -312,7 +327,7 @@ export default function Storage() {
                     <div className="flex items-center gap-2">
                       <Switch 
                         checked={file.poaEnabled} 
-                        onCheckedChange={() => togglePoa(file.id)}
+                        onCheckedChange={() => togglePoa(file.name)}
                         className="scale-75 data-[state=checked]:bg-green-500"
                       />
                       <span className={cn(
@@ -327,12 +342,12 @@ export default function Storage() {
                   {/* Performance / Health Column */}
                   <TableCell>
                     <div className="flex items-center gap-3">
-                       {file.status === "Warning" ? (
+                       {file.status === "warning" ? (
                          <Tooltip>
                            <TooltipTrigger>
                               <div className="flex items-center gap-1 text-xs text-red-500 bg-red-500/10 px-2 py-1 rounded font-medium">
                                 <XCircle className="w-3 h-3" />
-                                {file.fails} Fails
+                                Fails
                               </div>
                            </TooltipTrigger>
                            <TooltipContent>High failure rate detected. Rewards paused.</TooltipContent>
@@ -340,7 +355,7 @@ export default function Storage() {
                        ) : (
                          <div className="flex items-center gap-1 text-xs text-green-500 bg-green-500/10 px-2 py-1 rounded font-medium opacity-80">
                             <CheckCircle2 className="w-3 h-3" />
-                            {file.proofs} OK
+                            {file.replicationCount} Peers
                          </div>
                        )}
 
@@ -354,7 +369,9 @@ export default function Storage() {
                     </div>
                   </TableCell>
 
-                  <TableCell className="text-right text-muted-foreground font-mono text-xs">{file.lastProof}</TableCell>
+                  <TableCell className="text-right text-muted-foreground font-mono text-xs">
+                    {new Date(file.createdAt).toLocaleTimeString()}
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
