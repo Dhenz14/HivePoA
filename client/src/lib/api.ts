@@ -119,6 +119,17 @@ export const api = {
     return res.json();
   },
 
+  async deleteFile(id: string): Promise<{ success: boolean; message: string }> {
+    const res = await fetch(`${API_BASE}/files/${id}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) {
+      const error = await res.json();
+      throw new Error(error.error || "Failed to delete file");
+    }
+    return res.json();
+  },
+
   // Storage Nodes
   async getNodes(): Promise<StorageNode[]> {
     const res = await fetch(`${API_BASE}/nodes`);

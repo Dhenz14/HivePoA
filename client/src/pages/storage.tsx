@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Upload, File, Search, Copy, CheckCircle2, Clock, ShieldCheck, AlertCircle, Users, Coins, AlertTriangle, XCircle, Ban, Wifi, Network, Film, Cpu, Hash, Globe } from "lucide-react";
+import { Upload, File, Search, Copy, CheckCircle2, Clock, ShieldCheck, AlertCircle, Users, Coins, AlertTriangle, XCircle, Ban, Wifi, Network, Film, Cpu, Hash, Globe, X, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -54,6 +54,31 @@ export default function Storage() {
       queryClient.invalidateQueries({ queryKey: ["files"] });
     },
   });
+
+  // Delete file mutation
+  const deleteFileMutation = useMutation({
+    mutationFn: (id: string) => api.deleteFile(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["files"] });
+      toast({
+        title: "File Unpinned",
+        description: "The file has been removed from your IPFS node.",
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to delete file",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleDelete = (file: { id: string; name: string }) => {
+    if (confirm(`Are you sure you want to unpin "${file.name}"? This will remove it from your IPFS node.`)) {
+      deleteFileMutation.mutate(file.id);
+    }
+  };
 
   const handleUpload = () => {
     // Phase 1: Transcoding (Client Side)
@@ -303,6 +328,7 @@ export default function Storage() {
                 <TableHead>PoA Status</TableHead>
                 <TableHead>Performance</TableHead>
                 <TableHead className="text-right">Last Verified</TableHead>
+                <TableHead className="w-10"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -371,6 +397,21 @@ export default function Storage() {
 
                   <TableCell className="text-right text-muted-foreground font-mono text-xs">
                     {new Date(file.createdAt).toLocaleTimeString()}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          data-testid={`button-delete-${file.id}`}
+                          onClick={() => handleDelete(file)}
+                          disabled={deleteFileMutation.isPending}
+                          className="p-1.5 rounded hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>Unpin from IPFS</TooltipContent>
+                    </Tooltip>
                   </TableCell>
                 </TableRow>
               ))}
