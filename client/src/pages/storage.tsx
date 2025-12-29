@@ -4,20 +4,21 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Upload, File, Search, Copy, CheckCircle2, Clock, ShieldCheck, AlertCircle, Users, Coins, AlertTriangle, XCircle, Ban, Wifi, Network } from "lucide-react";
+import { Upload, File, Search, Copy, CheckCircle2, Clock, ShieldCheck, AlertCircle, Users, Coins, AlertTriangle, XCircle, Ban, Wifi, Network, Film, Cpu, Hash, Globe } from "lucide-react";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Progress } from "@/components/ui/progress";
+import { Badge } from "@/components/ui/badge";
 
 export default function Storage() {
   const { toast } = useToast();
   
-  // New State for "Seeding" simulation
-  const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'seeding' | 'complete'>('idle');
+  // New State for "Oratr" simulation (Transcoding -> Hashing -> Seeding)
+  const [uploadStatus, setUploadStatus] = useState<'idle' | 'transcoding' | 'hashing' | 'broadcasting' | 'seeding' | 'complete'>('idle');
+  const [taskProgress, setTaskProgress] = useState(0);
   const [seedPeers, setSeedPeers] = useState(0);
-  const [uploadProgress, setUploadProgress] = useState(0);
 
   const reputation = 82;
 
@@ -30,29 +31,44 @@ export default function Storage() {
   ]);
 
   const handleUpload = () => {
-    // Phase 1: Local IPFS Add
-    setUploadStatus('uploading');
-    setUploadProgress(0);
+    // Phase 1: Transcoding (Client Side)
+    setUploadStatus('transcoding');
+    setTaskProgress(0);
     
-    // Simulate progress
+    let p = 0;
     const interval = setInterval(() => {
-      setUploadProgress(p => {
-        if (p >= 100) {
-          clearInterval(interval);
-          startSeeding();
-          return 100;
-        }
-        return p + 10;
-      });
-    }, 200);
+      p += 5;
+      setTaskProgress(p);
+      if (p >= 100) {
+        clearInterval(interval);
+        
+        // Phase 2: Hashing (IPFS)
+        setUploadStatus('hashing');
+        setTaskProgress(0);
+        let h = 0;
+        const hashInterval = setInterval(() => {
+           h += 10;
+           setTaskProgress(h);
+           if (h >= 100) {
+             clearInterval(hashInterval);
+             
+             // Phase 3: Hive Broadcast
+             setUploadStatus('broadcasting');
+             setTimeout(() => {
+                startSeeding();
+             }, 1500);
+           }
+        }, 150);
+      }
+    }, 100);
   };
 
   const startSeeding = () => {
-    // Phase 2: Swarm Discovery
+    // Phase 4: Swarm Discovery
     setUploadStatus('seeding');
     toast({
-      title: "File Added to Local Node",
-      description: "Broadcasting availability to the swarm. Please keep this tab open.",
+      title: "Hive Transaction Broadcasted",
+      description: "custom_json: [\"spk_video_upload\", { ... }]",
     });
 
     // Simulate peers connecting
@@ -64,15 +80,15 @@ export default function Storage() {
         clearInterval(seedInterval);
         setUploadStatus('complete');
         toast({
-          title: "Replication Complete",
-          description: "3 Storage Nodes have picked up your content. It is now persistent.",
+          title: "Swarm Replication Active",
+          description: "3 Storage Nodes are now hosting your content.",
         });
         // Add new file to list
         setFiles(prev => [{
             id: Date.now(), 
-            name: "new_upload.mp4", 
+            name: "my_vlog_final.mp4", 
             cid: "QmNew...Upl", 
-            size: "15 MB", 
+            size: "450 MB", 
             status: "Pinned", 
             date: "Just now", 
             proofs: 0, fails: 0, 
@@ -124,32 +140,49 @@ export default function Storage() {
             onClick={handleUpload} 
             disabled={uploadStatus !== 'idle'} 
             className={cn(
-              "transition-all duration-500",
-              uploadStatus === 'seeding' ? "bg-green-500 hover:bg-green-600 w-48" : "bg-primary hover:bg-primary/90"
+              "transition-all duration-500 min-w-[200px]",
+              uploadStatus === 'seeding' ? "bg-green-500 hover:bg-green-600" : "bg-primary hover:bg-primary/90"
             )}
           >
             {uploadStatus === 'idle' && (
               <>
                 <Upload className="w-4 h-4 mr-2" />
-                Upload Content
+                Upload New Content
               </>
             )}
-            {uploadStatus === 'uploading' && (
+            
+            {uploadStatus === 'transcoding' && (
               <>
-                 <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin mr-2"/>
-                 Hashing... {uploadProgress}%
+                 <Film className="w-4 h-4 mr-2 animate-pulse" />
+                 Transcoding... {taskProgress}%
               </>
             )}
+
+            {uploadStatus === 'hashing' && (
+              <>
+                 <Cpu className="w-4 h-4 mr-2 animate-pulse" />
+                 IPFS Hashing... {taskProgress}%
+              </>
+            )}
+
+            {uploadStatus === 'broadcasting' && (
+              <>
+                 <Globe className="w-4 h-4 mr-2 animate-pulse" />
+                 Hive Broadcast...
+              </>
+            )}
+
             {uploadStatus === 'seeding' && (
               <>
                  <Wifi className="w-4 h-4 mr-2 animate-pulse" />
                  Seeding... ({seedPeers} Peers)
               </>
             )}
+            
             {uploadStatus === 'complete' && (
               <>
                  <CheckCircle2 className="w-4 h-4 mr-2" />
-                 Complete
+                 Upload Complete
               </>
             )}
           </Button>
