@@ -6,6 +6,7 @@ import {
   storageAssignments,
   poaChallenges,
   hiveTransactions,
+  validatorBlacklists,
   type StorageNode,
   type InsertStorageNode,
   type File,
@@ -17,9 +18,11 @@ import {
   type HiveTransaction,
   type InsertHiveTransaction,
   type StorageAssignment,
+  type ValidatorBlacklist,
+  type InsertValidatorBlacklist,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, and, sql } from "drizzle-orm";
+import { eq, desc, and, sql, ilike, or, notInArray } from "drizzle-orm";
 
 export interface IStorage {
   // Storage Nodes
@@ -56,6 +59,14 @@ export interface IStorage {
   assignFileToNode(fileId: string, nodeId: string): Promise<void>;
   getFileAssignments(fileId: string): Promise<StorageAssignment[]>;
   updateAssignmentProof(fileId: string, nodeId: string, success: boolean): Promise<void>;
+  
+  // Validator Blacklist
+  searchStorageNodes(query: string): Promise<StorageNode[]>;
+  getValidatorBlacklist(validatorId: string): Promise<ValidatorBlacklist[]>;
+  addToBlacklist(entry: InsertValidatorBlacklist): Promise<ValidatorBlacklist>;
+  removeFromBlacklist(validatorId: string, nodeId: string): Promise<void>;
+  isNodeBlacklisted(validatorId: string, nodeId: string): Promise<boolean>;
+  getEligibleNodesForValidator(validatorId: string): Promise<StorageNode[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -188,6 +199,90 @@ export class DatabaseStorage implements IStorage {
         })
         .where(eq(storageAssignments.id, assignment.id));
     }
+  }
+
+  // Validator Blacklist
+  async searchStorageNodes(query: string): Promise<StorageNode[]> {
+    if (!query.trim()) {
+      return await db.select().from(storageNodes).orderBy(desc(storageNodes.reputation)).limit(50);
+    }
+    return await db.select().from(storageNodes)
+      .where(or(
+        ilike(storageNodes.hiveUsername, `%${query}%`),
+        ilike(storageNodes.peerId, `%${query}%`)
+      ))
+      .orderBy(desc(storageNodes.reputation))
+      .limit(50);
+  }
+
+  async getValidatorBlacklist(validatorId: string): Promise<ValidatorBlacklist[]> {
+    return await db.select().from(validatorBlacklists)
+      .where(and(
+        eq(validatorBlacklists.validatorId, validatorId),
+        eq(validatorBlacklists.active, true)
+      ))
+      .orderBy(desc(validatorBlacklists.createdAt));
+  }
+
+  async addToBlacklist(entry: InsertValidatorBlacklist): Promise<ValidatorBlacklist> {
+    const existing = await db.select().from(validatorBlacklists)
+      .where(and(
+        eq(validatorBlacklists.validatorId, entry.validatorId),
+        eq(validatorBlacklists.nodeId, entry.nodeId)
+      ));
+    
+    if (existing.length > 0) {
+      await db.update(validatorBlacklists)
+        .set({ active: true, reason: entry.reason })
+        .where(eq(validatorBlacklists.id, existing[0].id));
+      return { ...existing[0], active: true, reason: entry.reason };
+    }
+    
+    const [created] = await db.insert(validatorBlacklists).values(entry).returning();
+    return created;
+  }
+
+  async removeFromBlacklist(validatorId: string, nodeId: string): Promise<void> {
+    await db.update(validatorBlacklists)
+      .set({ active: false })
+      .where(and(
+        eq(validatorBlacklists.validatorId, validatorId),
+        eq(validatorBlacklists.nodeId, nodeId)
+      ));
+  }
+
+  async isNodeBlacklisted(validatorId: string, nodeId: string): Promise<boolean> {
+    const [entry] = await db.select().from(validatorBlacklists)
+      .where(and(
+        eq(validatorBlacklists.validatorId, validatorId),
+        eq(validatorBlacklists.nodeId, nodeId),
+        eq(validatorBlacklists.active, true)
+      ));
+    return !!entry;
+  }
+
+  async getEligibleNodesForValidator(validatorId: string): Promise<StorageNode[]> {
+    const blacklistedNodeIds = await db.select({ nodeId: validatorBlacklists.nodeId })
+      .from(validatorBlacklists)
+      .where(and(
+        eq(validatorBlacklists.validatorId, validatorId),
+        eq(validatorBlacklists.active, true)
+      ));
+    
+    const blacklistedIds = blacklistedNodeIds.map(b => b.nodeId);
+    
+    if (blacklistedIds.length === 0) {
+      return await db.select().from(storageNodes)
+        .where(eq(storageNodes.status, "active"))
+        .orderBy(desc(storageNodes.reputation));
+    }
+    
+    return await db.select().from(storageNodes)
+      .where(and(
+        eq(storageNodes.status, "active"),
+        notInArray(storageNodes.id, blacklistedIds)
+      ))
+      .orderBy(desc(storageNodes.reputation));
   }
 }
 
