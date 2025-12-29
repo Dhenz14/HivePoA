@@ -89,6 +89,15 @@ export interface DashboardStats {
   };
 }
 
+export interface ValidatorBlacklist {
+  id: string;
+  validatorId: string;
+  nodeId: string;
+  reason: string;
+  active: boolean;
+  createdAt: string;
+}
+
 export const api = {
   // Files
   async getFiles(): Promise<File[]> {
@@ -116,6 +125,11 @@ export const api = {
     return res.json();
   },
 
+  async searchNodes(query: string): Promise<StorageNode[]> {
+    const res = await fetch(`${API_BASE}/nodes?search=${encodeURIComponent(query)}`);
+    return res.json();
+  },
+
   async getNode(peerId: string): Promise<StorageNode> {
     const res = await fetch(`${API_BASE}/nodes/${peerId}`);
     return res.json();
@@ -130,6 +144,31 @@ export const api = {
   async getValidator(username: string): Promise<Validator> {
     const res = await fetch(`${API_BASE}/validators/${username}`);
     return res.json();
+  },
+
+  // Validator Blacklist
+  async getBlacklist(validatorUsername: string): Promise<ValidatorBlacklist[]> {
+    const res = await fetch(`${API_BASE}/validators/${validatorUsername}/blacklist`);
+    return res.json();
+  },
+
+  async addToBlacklist(validatorUsername: string, nodeId: string, reason: string): Promise<ValidatorBlacklist> {
+    const res = await fetch(`${API_BASE}/validators/${validatorUsername}/blacklist`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nodeId, reason }),
+    });
+    if (!res.ok) {
+      const error = await res.json();
+      throw new Error(error.error || "Failed to blacklist node");
+    }
+    return res.json();
+  },
+
+  async removeFromBlacklist(validatorUsername: string, nodeId: string): Promise<void> {
+    await fetch(`${API_BASE}/validators/${validatorUsername}/blacklist/${nodeId}`, {
+      method: "DELETE",
+    });
   },
 
   // PoA Challenges

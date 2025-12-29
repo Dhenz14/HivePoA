@@ -140,6 +140,12 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Storage node not found" });
       }
       
+      // Check if already actively blacklisted
+      const isBlacklisted = await storage.isNodeBlacklisted(validator.id, nodeId);
+      if (isBlacklisted) {
+        return res.status(409).json({ error: "Node is already blacklisted" });
+      }
+      
       const entry = await storage.addToBlacklist({
         validatorId: validator.id,
         nodeId,

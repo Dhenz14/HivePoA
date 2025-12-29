@@ -225,17 +225,21 @@ export class DatabaseStorage implements IStorage {
   }
 
   async addToBlacklist(entry: InsertValidatorBlacklist): Promise<ValidatorBlacklist> {
-    const existing = await db.select().from(validatorBlacklists)
+    // Check for any existing entry (active or not)
+    const [existing] = await db.select().from(validatorBlacklists)
       .where(and(
         eq(validatorBlacklists.validatorId, entry.validatorId),
         eq(validatorBlacklists.nodeId, entry.nodeId)
-      ));
+      ))
+      .limit(1);
     
-    if (existing.length > 0) {
-      await db.update(validatorBlacklists)
+    if (existing) {
+      // Upsert: reactivate and update reason
+      const [updated] = await db.update(validatorBlacklists)
         .set({ active: true, reason: entry.reason })
-        .where(eq(validatorBlacklists.id, existing[0].id));
-      return { ...existing[0], active: true, reason: entry.reason };
+        .where(eq(validatorBlacklists.id, existing.id))
+        .returning();
+      return updated;
     }
     
     const [created] = await db.insert(validatorBlacklists).values(entry).returning();
@@ -243,11 +247,13 @@ export class DatabaseStorage implements IStorage {
   }
 
   async removeFromBlacklist(validatorId: string, nodeId: string): Promise<void> {
+    // Deactivate ALL entries for this validator/node pair
     await db.update(validatorBlacklists)
       .set({ active: false })
       .where(and(
         eq(validatorBlacklists.validatorId, validatorId),
-        eq(validatorBlacklists.nodeId, nodeId)
+        eq(validatorBlacklists.nodeId, nodeId),
+        eq(validatorBlacklists.active, true)
       ));
   }
 
