@@ -2,15 +2,19 @@
 
 ## Overview
 
-SPK Network 2.0 (HivePoA) is a streamlined decentralized storage validation protocol that integrates with the Hive blockchain for HBD (Hive Backed Dollar) payments. This is an evolution of the original SPK Network, removing unnecessary complexity (Honeycomb, multiple tokens) while preserving the core innovation: **Proof of Access (PoA)**.
+SPK Network 2.0 (HivePoA) is a comprehensive decentralized storage validation protocol that integrates with the Hive blockchain for HBD (Hive Backed Dollar) payments. This is a complete reimplementation of the original SPK Network, repurposing code from trole, oratr, and proofofaccess repositories while removing unnecessary complexity.
 
-The system implements a PoA mechanism where Hive Witnesses act as validators ("Police") who audit Storage Nodes to verify they are physically storing the files they claim to hold. Storage providers earn HBD rewards for successfully passing cryptographic challenges.
+**Core Innovation**: Proof of Access (PoA) - Cryptographic validation that storage nodes physically hold the files they claim to store.
 
-The application is a full-stack web application with a React frontend and Express backend, using PostgreSQL for data persistence.
+## Recent Changes (December 2025)
+
+### Phase 1-4 Complete Implementation
+- **Phase 1**: CDN with geo-routing, chunked uploads, storage contracts
+- **Phase 2**: Video transcoding with encoder marketplace
+- **Phase 3**: Multi-tier blocklists, community tagging, content fingerprinting
+- **Phase 4**: E2E encryption, auto-pinning, beneficiary rewards
 
 ## Documentation
-
-Comprehensive documentation is available in the `docs/` directory:
 
 | Document | Description |
 |----------|-------------|
@@ -18,21 +22,6 @@ Comprehensive documentation is available in the `docs/` directory:
 | [Architecture](docs/ARCHITECTURE.md) | System architecture, components, and data flow |
 | [Validator Guide](docs/VALIDATOR_GUIDE.md) | How to run a PoA validator node |
 | [Storage Node Guide](docs/STORAGE_NODE_GUIDE.md) | How to provide storage and earn HBD |
-
-## What Changed from SPK Network 1.0
-
-| Removed | Reason |
-|---------|--------|
-| Honeycomb | Unnecessary middleware layer |
-| LARYNX/BROCA/SPK tokens | Simplified to HBD only |
-| Complex tokenomics | Reduced speculation, increased utility |
-| libp2p PubSub | Replaced with WebSocket/REST |
-
-| Kept | Why |
-|------|-----|
-| PoA Algorithm | Core innovation - FNV-1a + SHA256 |
-| IPFS Integration | Standard for decentralized storage |
-| Hive Blockchain | Proven, fast, free transactions |
 
 ## User Preferences
 
@@ -43,104 +32,124 @@ Preferred communication style: Simple, everyday language.
 ### Frontend Architecture
 - **Framework**: React 18 with TypeScript
 - **Routing**: Wouter (lightweight router)
-- **State Management**: TanStack React Query for server state caching and synchronization
-- **Styling**: Tailwind CSS v4 with shadcn/ui component library (New York style)
-- **UI Components**: Radix UI primitives for accessible, composable components
-- **Animations**: Framer Motion for transitions and animations
-- **Charts**: Recharts for data visualization
-- **Build Tool**: Vite
-
-The frontend follows a page-based architecture with shared layout components. Key pages include Dashboard, Storage, Wallet, Node Status, Validators, and Settings.
+- **State Management**: TanStack React Query
+- **Styling**: Tailwind CSS v4 with shadcn/ui
+- **UI Components**: Radix UI primitives
+- **Animations**: Framer Motion
+- **Charts**: Recharts
 
 ### Backend Architecture
 - **Framework**: Express.js with TypeScript
 - **Database**: PostgreSQL with Drizzle ORM
-- **Real-time**: WebSocket server (ws library) for live updates
+- **Real-time**: WebSocket server (ws library)
 - **API Pattern**: RESTful endpoints under `/api/*`
 
-The backend includes these services:
-1. **Hive Simulator**: Emits fake blockchain events (uploads, transfers, slashes) every 3 seconds
-2. **PoA Engine**: Runs validation challenges against storage nodes every 5 seconds (supports both simulation and real SPK Network integration)
+### Backend Services
 
-### SPK Network PoA Integration
+| Service | File | Description |
+|---------|------|-------------|
+| Hive Simulator | `hive-simulator.ts` | Emits blockchain events every 3s |
+| PoA Engine | `poa-engine.ts` | Runs validation challenges every 5s |
+| CDN Manager | `cdn-manager.ts` | Health monitoring and geo-routing |
+| Upload Manager | `upload-manager.ts` | Chunked uploads with CID verification |
+| Transcoding Service | `transcoding-service.ts` | Video encoding with job queue |
+| Blocklist Service | `blocklist-service.ts` | Multi-tier content moderation |
+| Encryption Service | `encryption-service.ts` | AES-GCM E2E encryption |
+| Auto-Pin Service | `auto-pin-service.ts` | Auto-pin viewed content |
+| Beneficiary Service | `beneficiary-service.ts` | HBD reward splitting |
+| IPFS Gateway | `ipfs-gateway.ts` | CDN-routed IPFS proxy |
 
-The PoA Engine can operate in two modes:
+### Data Models (shared/schema.ts)
 
-**Simulation Mode** (default):
-- Uses mock IPFS client with in-memory storage
-- Simulates challenge success/failure based on node reputation
-- Logs transactions to local database
+**Core Tables**:
+- `storage_nodes`: IPFS nodes earning HBD with reputation (0-100)
+- `files`: Content stored with CIDs, encryption, and fingerprinting
+- `validators`: Hive Witnesses running PoA software
+- `poa_challenges`: Challenge-response records
+- `hive_transactions`: Blockchain transaction log
+- `storage_assignments`: Node-to-file mapping
 
-**Live SPK Integration** (when configured):
-- Connects to real SPK PoA nodes via WebSocket (`/validate` endpoint)
-- Implements SPK's cryptographic PoA algorithm:
-  - Hash-based block selection using FNV-1a
-  - Byte-level proof concatenation matching Go implementation
-  - SHA256 proof hash verification
-- Integrates with real IPFS nodes for byte-range fetching
-- Broadcasts results to Hive blockchain via `@hiveio/dhive`
+**Phase 1 Tables**:
+- `cdn_nodes`: CDN endpoints with health scores and geo data
+- `cdn_metrics`: Latency/performance history
+- `file_chunks`: Chunked upload tracking
+- `storage_contracts`: Blockchain-verified storage agreements
+- `contract_events`: Contract lifecycle events
 
-**Environment Variables for Live Mode:**
-- `SPK_POA_URL`: URL of SPK PoA node (e.g., `http://localhost:3000`)
-- `IPFS_API_URL`: IPFS HTTP API URL (e.g., `http://127.0.0.1:5001`)
-- `HIVE_USERNAME`: Hive account username for broadcasts
-- `HIVE_POSTING_KEY`: Hive posting key for custom_json operations
-- `HIVE_ACTIVE_KEY`: Hive active key for HBD transfers (optional)
+**Phase 2 Tables**:
+- `transcode_jobs`: Video encoding tasks
+- `encoder_nodes`: Encoder marketplace
 
-**Key Files:**
-- `server/services/poa-engine.ts`: Main PoA orchestration
-- `server/services/poa-crypto.ts`: Cryptographic proof generation (matches SPK's validation.go)
-- `server/services/ipfs-client.ts`: IPFS HTTP client for byte-range access
-- `server/services/spk-poa-client.ts`: WebSocket client for SPK PoA nodes
-- `server/services/hive-client.ts`: Hive blockchain integration via @hiveio/dhive
+**Phase 3 Tables**:
+- `blocklist_entries`: Unified multi-tier blocklist
+- `platform_blocklists`: Per-platform policies
+- `tags`: Content categorization
+- `file_tags`: Community-voted tags
+- `tag_votes`: Individual votes
 
-### Data Models
-The schema (`shared/schema.ts`) defines:
-- **Storage Nodes**: IPFS nodes earning HBD with reputation scores (0-100)
-- **Files**: Content stored on the network with CIDs and replication status
-- **Validators**: Hive Witnesses running PoA software with performance metrics
-- **PoA Challenges**: Challenge-response records between validators and nodes
-- **Hive Transactions**: Simulated blockchain transaction log
-- **Storage Assignments**: Many-to-many relationship tracking which nodes store which files
+**Phase 4 Tables**:
+- `user_keys`: Encryption key vault
+- `user_node_settings`: Auto-pin preferences
+- `view_events`: View tracking for auto-pin
+- `beneficiary_allocations`: HBD reward splits
+- `payout_history`: All payouts logged
+
+### API Routes
+
+**Gateway**: `/ipfs/:cid` - CDN-routed IPFS proxy
+**CDN**: `/api/cdn/*` - Node management and recommendations
+**Uploads**: `/api/upload/*` - Chunked file uploads
+**Contracts**: `/api/contracts/*` - Storage contract management
+**Transcoding**: `/api/transcode/*` - Video encoding
+**Moderation**: `/api/blocklist/*`, `/api/tags` - Content moderation
+**Encryption**: `/api/encryption/*` - Key management
+**Auto-Pin**: `/api/settings/*`, `/api/view` - User settings
+**Beneficiaries**: `/api/beneficiaries/*`, `/api/payouts/*` - Reward splitting
 
 ### Key Design Decisions
 
-**Federated Trust Model**: Rather than building custom consensus, the system piggybacks on Hive's existing DPoS by using Top 150 Hive Witnesses as trusted validators. This eliminates the need for a separate governance layer.
+**Health Score Encoding** (from SPK's trole/healthScore.js):
+- Base64 characters represent z-scores (standard deviations)
+- 2-character format: raw latency + geo-corrected
+- `W` = 0 standard deviations (normal)
+- Enables compact storage and network transmission
 
-**HBD as Payment Rail**: Uses Hive Backed Dollars for all payments instead of custom tokens, simplifying the economic model and leveraging existing Hive infrastructure.
+**Geographic Correction** (from SPK's trole/geoCorrection.js):
+- Adjusts latency expectations based on distance
+- Categories: same (5ms), local (20ms), continental (50ms), intercontinental (150ms)
+- Prevents penalizing distant but healthy nodes
 
-**Reputation-Based Filtering**: Validators can set policies to only audit nodes meeting certain reputation thresholds, creating natural quality tiers in the network.
+**Federated Trust Model**: Uses Hive's DPoS - Top 150 Witnesses as validators
+**HBD as Payment Rail**: No custom tokens, just Hive Backed Dollars
+**Reputation-Based Filtering**: Quality tiers via reputation thresholds
 
-**Client-Side First Architecture**: Designed to eventually support browser-based IPFS operations where users act as initial seeders, with the web UI wrappable into Electron/Tauri for desktop functionality.
+## Environment Variables
+
+**Required for Live Mode**:
+- `SPK_POA_URL`: SPK PoA node URL
+- `IPFS_API_URL`: IPFS HTTP API URL
+- `HIVE_USERNAME`: Hive account username
+- `HIVE_POSTING_KEY`: Hive posting key
+- `HIVE_ACTIVE_KEY`: Hive active key (optional, for HBD transfers)
 
 ## External Dependencies
 
 ### Database
-- **PostgreSQL**: Primary data store, configured via `DATABASE_URL` environment variable
-- **Drizzle ORM**: Type-safe database queries with schema defined in `shared/schema.ts`
-- **Drizzle Kit**: Migration tooling (`db:push` command)
+- PostgreSQL with Drizzle ORM
+- `npm run db:push` to sync schema
 
-### Hive Blockchain Integration
-- **@hiveio/dhive**: Hive blockchain JavaScript library (referenced in docs, used for signing transactions and reading chain state)
-- **Hive Keychain**: Browser extension integration for wallet operations (UI references)
+### Blockchain
+- `@hiveio/dhive`: Hive blockchain integration
 
-### Frontend Libraries
-- **@tanstack/react-query**: Data fetching and caching
-- **Radix UI**: Full suite of accessible primitives (dialog, dropdown, tabs, toast, etc.)
-- **Framer Motion**: Animation library
-- **Recharts**: Charting library
-- **Lucide React**: Icon library
+### Frontend
+- React, TanStack Query, Radix UI, Framer Motion, Recharts, Lucide
 
-### Build & Development
-- **Vite**: Frontend build tool with HMR
-- **esbuild**: Server bundling for production
-- **tsx**: TypeScript execution for development
+### Build
+- Vite, esbuild, tsx
 
-### Replit-Specific
-- **@replit/vite-plugin-runtime-error-modal**: Error overlay in development
-- **@replit/vite-plugin-cartographer**: Development tooling
-- **@replit/vite-plugin-dev-banner**: Development banner
+## Code Provenance
 
-### Session Management
-- **connect-pg-simple**: PostgreSQL session store (available but may not be actively used)
-- **express-session**: Session middleware
+This implementation repurposes code patterns from:
+- **trole**: CDN health scoring, geo-correction, upload queue
+- **oratr**: Transcoding job management
+- **proofofaccess**: PoA cryptographic algorithm (FNV-1a + SHA256)

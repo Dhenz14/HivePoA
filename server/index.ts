@@ -21,6 +21,7 @@ app.use(
 );
 
 app.use(express.urlencoded({ extended: false }));
+app.use('/api/upload', express.raw({ limit: '50mb', type: 'application/octet-stream' }));
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
