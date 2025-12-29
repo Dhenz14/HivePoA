@@ -2,10 +2,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Upload, File, Search, Copy, CheckCircle2, Clock, ShieldCheck, AlertCircle } from "lucide-react";
+import { Upload, File, Search, Copy, CheckCircle2, Clock, ShieldCheck, AlertCircle, Users } from "lucide-react";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 export default function Storage() {
   const { toast } = useToast();
@@ -23,11 +24,11 @@ export default function Storage() {
   };
 
   const files = [
-    { name: "project_specs_v2.pdf", cid: "QmX7...9jK", size: "2.4 MB", status: "Pinned", date: "2025-05-20", proofs: 142, lastProof: "2m ago" },
-    { name: "assets_bundle.zip", cid: "QmY8...2mL", size: "156 MB", status: "Pinned", date: "2025-05-19", proofs: 89, lastProof: "15m ago" },
-    { name: "intro_video.mp4", cid: "QmZ9...4nPx", size: "45 MB", status: "Syncing", date: "2025-05-19", proofs: 0, lastProof: "N/A" },
-    { name: "dataset_01.json", cid: "QmA1...5oQ", size: "12 KB", status: "Pinned", date: "2025-05-18", proofs: 450, lastProof: "5m ago" },
-    { name: "backup_log.txt", cid: "QmB2...6pR", size: "1.1 MB", status: "Pinned", date: "2025-05-18", proofs: 12, lastProof: "1h ago" },
+    { name: "project_specs_v2.pdf", cid: "QmX7...9jK", size: "2.4 MB", status: "Pinned", date: "2025-05-20", proofs: 142, lastProof: "2m ago", replication: 12, confidence: 98 },
+    { name: "assets_bundle.zip", cid: "QmY8...2mL", size: "156 MB", status: "Pinned", date: "2025-05-19", proofs: 89, lastProof: "15m ago", replication: 8, confidence: 92 },
+    { name: "intro_video.mp4", cid: "QmZ9...4nPx", size: "45 MB", status: "Syncing", date: "2025-05-19", proofs: 0, lastProof: "N/A", replication: 1, confidence: 0 },
+    { name: "dataset_01.json", cid: "QmA1...5oQ", size: "12 KB", status: "Pinned", date: "2025-05-18", proofs: 450, lastProof: "5m ago", replication: 45, confidence: 99 },
+    { name: "backup_log.txt", cid: "QmB2...6pR", size: "1.1 MB", status: "Pinned", date: "2025-05-18", proofs: 12, lastProof: "1h ago", replication: 4, confidence: 75 },
   ];
 
   return (
@@ -67,8 +68,8 @@ export default function Storage() {
                 <TableHead>Name</TableHead>
                 <TableHead>CID</TableHead>
                 <TableHead>Size</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Proof Health</TableHead>
+                <TableHead>Network Health</TableHead>
+                <TableHead>Proof Stats</TableHead>
                 <TableHead className="text-right">Last Verified</TableHead>
               </TableRow>
             </TableHeader>
@@ -89,20 +90,31 @@ export default function Storage() {
                   </TableCell>
                   <TableCell>{file.size}</TableCell>
                   <TableCell>
-                    <span className={cn(
-                      "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border",
-                      file.status === "Pinned" 
-                        ? "bg-green-500/10 text-green-500 border-green-500/20" 
-                        : "bg-yellow-500/10 text-yellow-500 border-yellow-500/20"
-                    )}>
-                      {file.status === "Pinned" ? <CheckCircle2 className="w-3 h-3 mr-1"/> : <Clock className="w-3 h-3 mr-1"/>}
-                      {file.status}
-                    </span>
+                    <div className="flex items-center gap-4">
+                      <Tooltip>
+                        <TooltipTrigger>
+                          <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-secondary/50 px-2 py-1 rounded">
+                             <Users className="w-3 h-3" />
+                             {file.replication} Nodes
+                          </div>
+                        </TooltipTrigger>
+                        <TooltipContent>Replication Count</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger>
+                           <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-secondary/50 px-2 py-1 rounded">
+                             <ShieldCheck className="w-3 h-3" />
+                             {file.confidence}% Trust
+                          </div>
+                        </TooltipTrigger>
+                        <TooltipContent>Validator Confidence Score</TooltipContent>
+                      </Tooltip>
+                    </div>
                   </TableCell>
                   <TableCell>
                     {file.status === "Pinned" ? (
                       <div className="flex items-center gap-2 text-xs">
-                        <ShieldCheck className="w-4 h-4 text-green-500" />
+                        <CheckCircle2 className="w-4 h-4 text-green-500" />
                         <span className="font-mono text-green-500">{file.proofs} Proofs</span>
                       </div>
                     ) : (

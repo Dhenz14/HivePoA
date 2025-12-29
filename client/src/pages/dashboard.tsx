@@ -1,9 +1,11 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Activity, HardDrive, Server, DollarSign, ArrowUpRight, ShieldCheck, Box } from "lucide-react";
-import { motion } from "framer-motion";
+import { Activity, HardDrive, Server, DollarSign, ArrowUpRight, ShieldCheck, Box, Search, PlayCircle } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
+import { useState, useEffect } from "react";
 
 const data = [
   { time: "00:00", proofs: 12 },
@@ -16,6 +18,31 @@ const data = [
 ];
 
 export default function Dashboard() {
+  const [validations, setValidations] = useState<any[]>([]);
+
+  // Simulate live validation feed
+  useEffect(() => {
+    const addValidation = () => {
+      const validators = ["@threespeak", "@hive-kings", "@arcange", "@gtg"];
+      const cids = ["QmX7...9jK", "QmY8...2mL", "QmZ9...4nPx", "QmA1...5oQ"];
+      const statuses = ["Verified", "Verified", "Verified", "Failed"];
+      
+      const newVal = {
+        id: Math.random().toString(36).substr(2, 9),
+        validator: validators[Math.floor(Math.random() * validators.length)],
+        cid: cids[Math.floor(Math.random() * cids.length)],
+        latency: Math.floor(Math.random() * 200) + 20 + "ms",
+        status: statuses[Math.floor(Math.random() * statuses.length)],
+        time: "Just now"
+      };
+
+      setValidations(prev => [newVal, ...prev].slice(0, 5));
+    };
+
+    const interval = setInterval(addValidation, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
   return (
     <div className="p-8 space-y-8 max-w-7xl mx-auto">
       <div className="flex justify-between items-end">
@@ -90,31 +117,50 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
+        {/* Live Validation Feed */}
         <Card className="border-border/50 bg-card/50 backdrop-blur-sm flex flex-col">
-          <CardHeader>
-            <CardTitle className="font-display">Recent Logs</CardTitle>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="font-display flex items-center gap-2">
+              <PlayCircle className="w-4 h-4 text-green-500 animate-pulse" />
+              Live Validation Feed
+            </CardTitle>
           </CardHeader>
           <CardContent className="flex-1 overflow-hidden">
-            <div className="space-y-4 font-mono text-xs">
-              {[
-                { time: "10:42:05", type: "INFO", msg: "Received challenge for CID: QmX7...9jK" },
-                { time: "10:42:02", type: "SUCCESS", msg: "Proof submitted. Hash: 0x8f...2a" },
-                { time: "10:41:45", type: "INFO", msg: "Syncing Trole gateway..." },
-                { time: "10:41:12", type: "INFO", msg: "Peer connected: 12D3...8kL" },
-                { time: "10:40:55", type: "WARN", msg: "High latency on peer 12D3...8kL" },
-                { time: "10:40:01", type: "SUCCESS", msg: "HBD Reward received: 0.050 HBD" },
-              ].map((log, i) => (
-                <div key={i} className="flex gap-2 items-start opacity-80 hover:opacity-100 transition-opacity">
-                  <span className="text-muted-foreground">{log.time}</span>
-                  <span className={cn(
-                    "font-bold",
-                    log.type === "INFO" && "text-blue-400",
-                    log.type === "SUCCESS" && "text-green-400",
-                    log.type === "WARN" && "text-yellow-400",
-                  )}>{log.type}</span>
-                  <span className="text-foreground/80 truncate">{log.msg}</span>
-                </div>
-              ))}
+            <div className="space-y-3">
+              <AnimatePresence>
+                {validations.map((val) => (
+                  <motion.div 
+                    key={val.id}
+                    initial={{ opacity: 0, height: 0, y: -20 }}
+                    animate={{ opacity: 1, height: 'auto', y: 0 }}
+                    exit={{ opacity: 0 }}
+                    className="flex items-center justify-between p-3 rounded-lg bg-background/50 border border-border/30 text-xs"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={cn(
+                        "w-2 h-2 rounded-full",
+                        val.status === "Verified" ? "bg-green-500 shadow-[0_0_8px_#22c55e]" : "bg-red-500"
+                      )} />
+                      <div>
+                        <div className="font-bold flex items-center gap-2">
+                           {val.validator}
+                           <span className="text-[10px] text-muted-foreground font-normal">checked</span>
+                           <span className="font-mono text-primary/80">{val.cid}</span>
+                        </div>
+                        <div className="text-[10px] text-muted-foreground mt-0.5">
+                           Latency: {val.latency}
+                        </div>
+                      </div>
+                    </div>
+                    <Badge variant="outline" className={cn(
+                      "text-[10px] px-1.5 py-0 h-5",
+                      val.status === "Verified" ? "border-green-500/30 text-green-500" : "border-red-500/30 text-red-500"
+                    )}>
+                      {val.status}
+                    </Badge>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
             </div>
           </CardContent>
         </Card>
