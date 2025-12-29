@@ -30,9 +30,41 @@ The frontend follows a page-based architecture with shared layout components. Ke
 - **Real-time**: WebSocket server (ws library) for live updates
 - **API Pattern**: RESTful endpoints under `/api/*`
 
-The backend includes two simulated services:
+The backend includes these services:
 1. **Hive Simulator**: Emits fake blockchain events (uploads, transfers, slashes) every 3 seconds
-2. **PoA Engine**: Runs validation challenges against storage nodes every 5 seconds
+2. **PoA Engine**: Runs validation challenges against storage nodes every 5 seconds (supports both simulation and real SPK Network integration)
+
+### SPK Network PoA Integration
+
+The PoA Engine can operate in two modes:
+
+**Simulation Mode** (default):
+- Uses mock IPFS client with in-memory storage
+- Simulates challenge success/failure based on node reputation
+- Logs transactions to local database
+
+**Live SPK Integration** (when configured):
+- Connects to real SPK PoA nodes via WebSocket (`/validate` endpoint)
+- Implements SPK's cryptographic PoA algorithm:
+  - Hash-based block selection using FNV-1a
+  - Byte-level proof concatenation matching Go implementation
+  - SHA256 proof hash verification
+- Integrates with real IPFS nodes for byte-range fetching
+- Broadcasts results to Hive blockchain via `@hiveio/dhive`
+
+**Environment Variables for Live Mode:**
+- `SPK_POA_URL`: URL of SPK PoA node (e.g., `http://localhost:3000`)
+- `IPFS_API_URL`: IPFS HTTP API URL (e.g., `http://127.0.0.1:5001`)
+- `HIVE_USERNAME`: Hive account username for broadcasts
+- `HIVE_POSTING_KEY`: Hive posting key for custom_json operations
+- `HIVE_ACTIVE_KEY`: Hive active key for HBD transfers (optional)
+
+**Key Files:**
+- `server/services/poa-engine.ts`: Main PoA orchestration
+- `server/services/poa-crypto.ts`: Cryptographic proof generation (matches SPK's validation.go)
+- `server/services/ipfs-client.ts`: IPFS HTTP client for byte-range access
+- `server/services/spk-poa-client.ts`: WebSocket client for SPK PoA nodes
+- `server/services/hive-client.ts`: Hive blockchain integration via @hiveio/dhive
 
 ### Data Models
 The schema (`shared/schema.ts`) defines:
