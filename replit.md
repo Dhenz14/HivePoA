@@ -10,7 +10,9 @@ SPK Network 2.0 (HivePoA) is a comprehensive decentralized storage validation pr
 
 ### 3Speak Integration
 - **Browse Network**: Users can discover trending/new videos from 3Speak
-- **IPFS Pinning**: Pin videos to local IPFS node with one click
+- **IPFS Pinning**: Pin videos to local IPFS node with progress tracking
+- **Progress Tracking**: Real-time progress bar with bytes downloaded and estimated time remaining
+- **Storage Integration**: Pinned videos automatically appear in Storage page under "Pinned Content"
 - **CID Extraction**: Automatically extracts IPFS CIDs from playUrl
 
 ### Phase 1-4 Complete Implementation
