@@ -1,14 +1,92 @@
 {
-  "name": "spk-desktop",
-  "version": "0.1.0",
-  "description": "SPK Network Desktop Agent - 24/7 IPFS node for earning HBD rewards",
+  "name": "spk-desktop-agent",
+  "version": "1.0.0",
+  "description": "SPK Network Desktop Agent - Earn HBD by providing IPFS storage",
+  "main": "./dist/main/index.js",
   "scripts": {
-    "tauri": "tauri",
-    "dev": "tauri dev",
-    "build": "tauri build",
-    "download-kubo": "node scripts/download-kubo.js"
+    "dev": "cross-env NODE_ENV=development electron .",
+    "build": "npm run build:main && npm run build:renderer",
+    "build:main": "webpack --config webpack/main.config.js",
+    "build:renderer": "webpack --config webpack/renderer.config.js --mode production",
+    "package": "npm run build && electron-builder",
+    "package:win": "npm run build && electron-builder --win",
+    "package:mac": "npm run build && electron-builder --mac",
+    "package:linux": "npm run build && electron-builder --linux",
+    "postinstall": "electron-builder install-app-deps"
   },
+  "author": "SPK Network",
+  "license": "GPL-3.0",
   "devDependencies": {
-    "@tauri-apps/cli": "^1.5.0"
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.10.0",
+    "copy-webpack-plugin": "^11.0.0",
+    "cross-env": "^7.0.3",
+    "css-loader": "^6.8.1",
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
+    "html-webpack-plugin": "^5.5.4",
+    "style-loader": "^3.3.3",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.3.2",
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.4"
+  },
+  "dependencies": {
+    "axios": "^1.6.2",
+    "electron-store": "^8.1.0",
+    "express": "^4.18.2",
+    "go-ipfs": "^0.18.1"
+  },
+  "build": {
+    "productName": "SPK Desktop Agent",
+    "appId": "network.spk.desktop-agent",
+    "asar": true,
+    "directories": {
+      "output": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "node_modules/go-ipfs/go-ipfs/ipfs${ext}",
+        "to": "ipfs${ext}"
+      }
+    ],
+    "mac": {
+      "icon": "assets/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "category": "public.app-category.utilities"
+    },
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "linux": {
+      "icon": "assets/icon.png",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        }
+      ],
+      "category": "Utility"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

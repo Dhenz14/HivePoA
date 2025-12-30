@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SPK Desktop Agent</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      color: #eee;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+    }
+    header {
+      text-align: center;
+      padding: 20px 0;
+      border-bottom: 1px solid #333;
+      margin-bottom: 20px;
+    }
+    header h1 {
+      font-size: 24px;
+      color: #00d4aa;
+    }
+    header p {
+      color: #888;
+      margin-top: 5px;
+    }
+    .status-card {
+      background: rgba(255,255,255,0.05);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 15px;
+    }
+    .status-card h2 {
+      font-size: 14px;
+      color: #888;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+    .status-indicator {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .status-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #ff4444;
+    }
+    .status-dot.running {
+      background: #00d4aa;
+      box-shadow: 0 0 10px #00d4aa;
+    }
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 15px;
+    }
+    .stat-item {
+      background: rgba(255,255,255,0.03);
+      padding: 15px;
+      border-radius: 8px;
+    }
+    .stat-item .label {
+      font-size: 12px;
+      color: #888;
+    }
+    .stat-item .value {
+      font-size: 20px;
+      font-weight: bold;
+      color: #00d4aa;
+      margin-top: 5px;
+    }
+    .config-section {
+      margin-top: 20px;
+    }
+    .config-section label {
+      display: block;
+      font-size: 14px;
+      margin-bottom: 5px;
+      color: #888;
+    }
+    .config-section input {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #333;
+      border-radius: 6px;
+      background: rgba(255,255,255,0.05);
+      color: #eee;
+      font-size: 14px;
+    }
+    .config-section input:focus {
+      outline: none;
+      border-color: #00d4aa;
+    }
+    button {
+      background: #00d4aa;
+      color: #1a1a2e;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 6px;
+      font-weight: bold;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+    button:hover {
+      background: #00b894;
+    }
+    .peer-id {
+      font-family: monospace;
+      font-size: 12px;
+      word-break: break-all;
+      background: rgba(0,0,0,0.3);
+      padding: 10px;
+      border-radius: 6px;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>SPK Desktop Agent</h1>
+      <p>Decentralized Storage Node</p>
+    </header>
+
+    <div class="status-card">
+      <h2>IPFS Status</h2>
+      <div class="status-indicator">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">Checking...</span>
+      </div>
+      <div class="peer-id" id="peerId">Loading...</div>
+    </div>
+
+    <div class="stat-grid">
+      <div class="stat-item">
+        <div class="label">Total HBD Earned</div>
+        <div class="value" id="totalHbd">0.000</div>
+      </div>
+      <div class="stat-item">
+        <div class="label">Challenges Passed</div>
+        <div class="value" id="challengesPassed">0</div>
+      </div>
+      <div class="stat-item">
+        <div class="label">Current Streak</div>
+        <div class="value" id="streak">0</div>
+      </div>
+      <div class="stat-item">
+        <div class="label">Pinned Files</div>
+        <div class="value" id="pinnedFiles">0</div>
+      </div>
+    </div>
+
+    <div class="status-card config-section">
+      <h2>Hive Account</h2>
+      <label for="hiveUsername">Link your Hive account to receive HBD rewards</label>
+      <input type="text" id="hiveUsername" placeholder="Enter your Hive username">
+      <button id="saveConfig">Save Configuration</button>
+    </div>
+  </div>
+
+  <script src="index.js"></script>
+</body>
+</html>
