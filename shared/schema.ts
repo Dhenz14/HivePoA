@@ -41,6 +41,8 @@ export const files = pgTable("files", {
   // Phase 4: Encryption
   encrypted: boolean("encrypted").notNull().default(false),
   encryptionNonce: text("encryption_nonce"),
+  // Earnings tracking
+  earnedHbd: real("earned_hbd").notNull().default(0),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

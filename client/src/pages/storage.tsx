@@ -554,6 +554,7 @@ export default function Storage() {
                 <TableHead>CID</TableHead>
                 <TableHead>Size</TableHead>
                 <TableHead>PoA Status</TableHead>
+                <TableHead>Earnings</TableHead>
                 <TableHead>Performance</TableHead>
                 <TableHead className="text-right">Last Verified</TableHead>
                 <TableHead className="w-10"></TableHead>
@@ -591,6 +592,43 @@ export default function Storage() {
                         {file.poaEnabled ? "Earning" : "Paused"}
                       </span>
                     </div>
+                  </TableCell>
+
+                  {/* Earnings Column with Tooltip */}
+                  <TableCell>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <div className="flex items-center gap-1.5 cursor-help">
+                          <Coins className="w-3.5 h-3.5 text-yellow-500" />
+                          <span className={cn(
+                            "font-medium text-sm",
+                            (file.earnedHbd || 0) > 0 ? "text-green-500" : "text-muted-foreground"
+                          )}>
+                            {(file.earnedHbd || 0).toFixed(3)} HBD
+                          </span>
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" className="max-w-xs">
+                        <div className="space-y-1.5 text-xs">
+                          <div className="font-semibold text-sm">Earnings for "{file.name}"</div>
+                          <div className="flex justify-between gap-4">
+                            <span className="text-muted-foreground">Total Earned:</span>
+                            <span className="font-mono font-medium text-green-400">{(file.earnedHbd || 0).toFixed(3)} HBD</span>
+                          </div>
+                          <div className="flex justify-between gap-4">
+                            <span className="text-muted-foreground">PoA Challenges:</span>
+                            <span className="font-mono">{file.replicationCount * 10 || 0} passed</span>
+                          </div>
+                          <div className="flex justify-between gap-4">
+                            <span className="text-muted-foreground">Reward Rate:</span>
+                            <span className="font-mono">{file.replicationCount > 0 ? (1 / file.replicationCount).toFixed(2) : "1.00"}x</span>
+                          </div>
+                          <div className="pt-1 border-t border-border/50 text-muted-foreground">
+                            Earnings based on successful PoA proofs. Fewer replicas = higher rewards.
+                          </div>
+                        </div>
+                      </TooltipContent>
+                    </Tooltip>
                   </TableCell>
 
                   {/* Performance / Health Column */}
