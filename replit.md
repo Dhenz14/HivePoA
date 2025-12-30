@@ -22,6 +22,7 @@ SPK Network 2.0 (HivePoA) is a comprehensive decentralized storage validation pr
 | [Architecture](docs/ARCHITECTURE.md) | System architecture, components, and data flow |
 | [Validator Guide](docs/VALIDATOR_GUIDE.md) | How to run a PoA validator node |
 | [Storage Node Guide](docs/STORAGE_NODE_GUIDE.md) | How to provide storage and earn HBD |
+| [Local IPFS Setup](docs/LOCAL_IPFS_SETUP.md) | Set up a local IPFS node for testing |
 
 ## User Preferences
 

@@ -67,6 +67,50 @@ export async function registerRoutes(
     res.json(stats);
   });
 
+  app.get("/api/ipfs/status", async (req, res) => {
+    const { getIPFSClient } = await import("./services/ipfs-client");
+    const client = getIPFSClient();
+    const isOnline = await client.isOnline();
+    const mode = process.env.IPFS_API_URL ? "live" : "mock";
+    const apiUrl = process.env.IPFS_API_URL || "mock://in-memory";
+    
+    res.json({
+      online: isOnline,
+      mode,
+      apiUrl: mode === "live" ? apiUrl : null,
+      message: isOnline 
+        ? `Connected to ${mode === "live" ? "local IPFS node" : "mock IPFS"}`
+        : "IPFS node not reachable - check if daemon is running",
+    });
+  });
+
+  app.post("/api/ipfs/test", async (req, res) => {
+    try {
+      const { getIPFSClient } = await import("./services/ipfs-client");
+      const client = getIPFSClient();
+      
+      const testContent = `SPK Network 2.0 Test - ${Date.now()}`;
+      const cid = await client.add(testContent);
+      const retrieved = await client.cat(cid);
+      
+      const success = retrieved.toString() === testContent;
+      
+      res.json({
+        success,
+        cid,
+        content: testContent,
+        retrieved: retrieved.toString(),
+        message: success ? "IPFS add/cat test passed" : "Content mismatch",
+      });
+    } catch (error: any) {
+      res.status(500).json({
+        success: false,
+        error: error.message,
+        message: "IPFS test failed - is the daemon running?",
+      });
+    }
+  });
+
   // ============================================================
   // CDN Nodes API (Phase 1)
   // ============================================================
