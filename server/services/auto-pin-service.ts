@@ -181,7 +181,7 @@ export class AutoPinService {
 
   // Start downloading videos from network
   async startNetworkDownload(username: string): Promise<{ started: boolean; message: string; downloadCount: number }> {
-    const settings = await this.getUserSettings(username);
+    let settings = await this.getUserSettings(username);
     
     if (settings.downloadMode === 'off') {
       return { started: false, message: 'Download mode is off', downloadCount: 0 };
@@ -189,6 +189,23 @@ export class AutoPinService {
 
     if (settings.downloadInProgress) {
       return { started: false, message: 'Download already in progress', downloadCount: 0 };
+    }
+
+    // Check if we need to reset daily counters (new day in UTC)
+    const now = new Date();
+    const lastReset = settings.downloadLastReset ? new Date(settings.downloadLastReset) : new Date(0);
+    const isNewDay = now.getUTCDate() !== lastReset.getUTCDate() || 
+                     now.getUTCMonth() !== lastReset.getUTCMonth() || 
+                     now.getUTCFullYear() !== lastReset.getUTCFullYear();
+
+    if (isNewDay) {
+      await storage.createOrUpdateUserNodeSettings({
+        ...settings,
+        downloadedToday: 0,
+        downloadLastReset: now,
+      });
+      settings = { ...settings, downloadedToday: 0, downloadLastReset: now };
+      console.log(`[Auto-Pin Service] Reset daily download counter for ${username}`);
     }
 
     // Get available files that this node doesn't have yet
@@ -200,31 +217,35 @@ export class AutoPinService {
       return { started: false, message: 'Daily download quota reached', downloadCount: 0 };
     }
 
+    // Simulate downloading (in production, would actually fetch from IPFS/CDN)
+    const filesToDownload = allFiles.slice(0, Math.min(remaining, 5)); // Download up to 5 at a time
+    
     // Mark download as in progress
     await storage.createOrUpdateUserNodeSettings({
       ...settings,
       downloadInProgress: true,
     });
-
-    // Simulate downloading (in production, would actually fetch from IPFS/CDN)
-    const filesToDownload = allFiles.slice(0, Math.min(remaining, 5)); // Download up to 5 at a time
     
     console.log(`[Auto-Pin Service] Starting network download for ${username}: ${filesToDownload.length} files`);
 
     // Simulate async download process
     setTimeout(async () => {
       try {
-        // Update downloaded count
+        // Re-fetch settings to get latest downloadedToday value
+        const currentSettings = await this.getUserSettings(username);
+        const updatedDownloadedToday = (currentSettings.downloadedToday || 0) + filesToDownload.length;
+        
         await storage.createOrUpdateUserNodeSettings({
-          ...settings,
-          downloadedToday: (settings.downloadedToday || 0) + filesToDownload.length,
+          ...currentSettings,
+          downloadedToday: updatedDownloadedToday,
           downloadInProgress: false,
         });
-        console.log(`[Auto-Pin Service] Completed network download for ${username}: ${filesToDownload.length} files`);
+        console.log(`[Auto-Pin Service] Completed network download for ${username}: ${filesToDownload.length} files (total today: ${updatedDownloadedToday})`);
       } catch (error) {
         console.error(`[Auto-Pin Service] Download error for ${username}:`, error);
+        const currentSettings = await this.getUserSettings(username);
         await storage.createOrUpdateUserNodeSettings({
-          ...settings,
+          ...currentSettings,
           downloadInProgress: false,
         });
       }
