@@ -1,12 +1,15 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, HardDrive, Wallet, Server, Settings, Globe, Hexagon, Play } from "lucide-react";
+import { LayoutDashboard, HardDrive, Wallet, Server, Settings, Globe, Hexagon, Play, Wifi } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useNodeConfig } from "@/contexts/NodeConfigContext";
 
 export function Sidebar() {
   const [location] = useLocation();
+  const { config } = useNodeConfig();
 
   const links = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
+    { href: "/connect", label: "Connect Node", icon: Wifi },
     { href: "/storage", label: "Storage", icon: HardDrive },
     { href: "/browse", label: "Browse Network", icon: Play },
     { href: "/wallet", label: "Wallet", icon: Wallet },
@@ -29,16 +32,18 @@ export function Sidebar() {
           const Icon = link.icon;
           const isActive = location === link.href;
           return (
-            <Link key={link.href} href={link.href}>
-              <a className={cn(
+            <Link 
+              key={link.href} 
+              href={link.href}
+              className={cn(
                 "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-all duration-200 group",
                 isActive 
                   ? "bg-primary/10 text-primary" 
                   : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
-              )}>
-                <Icon className={cn("w-4 h-4", isActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground")} />
-                {link.label}
-              </a>
+              )}
+            >
+              <Icon className={cn("w-4 h-4", isActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground")} />
+              {link.label}
             </Link>
           );
         })}
@@ -46,8 +51,17 @@ export function Sidebar() {
 
       <div className="p-4 border-t border-border/40">
         <div className="flex items-center gap-3 px-3 py-2 text-sm text-muted-foreground">
-          <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-          <span>Trole Gateway: Online</span>
+          <div className={cn(
+            "w-2 h-2 rounded-full",
+            config.isConnected ? "bg-green-500 animate-pulse" : "bg-yellow-500"
+          )} />
+          <span>
+            {config.mode === "demo" 
+              ? "Demo Mode" 
+              : config.isConnected 
+                ? "IPFS: Connected" 
+                : "IPFS: Disconnected"}
+          </span>
         </div>
         <div className="mt-2 text-xs text-muted-foreground/50 px-3 font-mono">
           v0.1.0-alpha

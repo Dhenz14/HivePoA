@@ -8,6 +8,14 @@ SPK Network 2.0 (HivePoA) is a comprehensive decentralized storage validation pr
 
 ## Recent Changes (December 2025)
 
+### Static PWA Architecture
+- **Node Connection UI**: Users can configure their own IPFS node connection (local/remote/demo modes)
+- **Connection Modes**: Local (localhost:5001), Remote (home server/VPS/Pi), Demo (simulated)
+- **Reactive Context**: NodeConfigContext provides real-time connection status across all components
+- **localStorage Persistence**: Node settings saved locally so users don't re-enter each time
+- **Static Build**: Run `npx tsx script/build-static.ts` to build for GitHub Pages, IPFS, or any static host
+- **Key Files**: `client/src/lib/node-config.ts`, `client/src/contexts/NodeConfigContext.tsx`, `client/src/pages/connect.tsx`
+
 ### 3Speak Integration
 - **Browse Network**: Users can discover trending/new videos from 3Speak
 - **IPFS Pinning**: Pin videos to local IPFS node with progress tracking
