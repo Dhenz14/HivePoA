@@ -14,6 +14,7 @@ import Wallet from "@/pages/wallet";
 import NodeStatus from "@/pages/node";
 import ValidatorSettings from "@/pages/settings";
 import Validators from "@/pages/validators";
+import Download from "@/pages/download";
 import generatedImage from '@assets/generated_images/a_dark,_futuristic_abstract_mesh_background_with_red_accents..png';
 
 function Router() {
@@ -28,6 +29,7 @@ function Router() {
         <Route path="/node" component={NodeStatus} />
         <Route path="/settings" component={ValidatorSettings} />
         <Route path="/validators" component={Validators} />
+        <Route path="/download" component={Download} />
         <Route component={NotFound} />
       </Switch>
     </Layout>

@@ -20,6 +20,8 @@ SPK Network 2.0 (HivePoA) is a comprehensive decentralized storage validation pr
   - Auto-initializes IPFS repository on first run
   - Key Files: `desktop-agent/src-tauri/src/kubo.rs`, `desktop-agent/src-tauri/src/api.rs`
   - Build: `cd desktop-agent && npm run build`
+  - **Automated CI/CD**: GitHub Actions builds for all platforms on release
+  - **Download Page**: `/download` route auto-detects user's OS and offers the right installer
 - **Detection API**: Web app auto-detects desktop agent via `client/src/lib/desktop-agent.ts`
 - **Connection Modes**: Browser (Helia), Local (localhost:5001), Remote (home server/VPS/Pi), Demo (simulated)
 - **Reactive Context**: NodeConfigContext provides real-time connection status across all components

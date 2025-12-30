@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, HardDrive, Wallet, Server, Settings, Globe, Hexagon, Play, Wifi } from "lucide-react";
+import { LayoutDashboard, HardDrive, Wallet, Server, Settings, Globe, Hexagon, Play, Wifi, Download } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useNodeConfig } from "@/contexts/NodeConfigContext";
 
@@ -15,6 +15,7 @@ export function Sidebar() {
     { href: "/wallet", label: "Wallet", icon: Wallet },
     { href: "/node", label: "Node Status", icon: Server },
     { href: "/validators", label: "Validators", icon: Globe },
+    { href: "/download", label: "Desktop Agent", icon: Download },
     { href: "/settings", label: "Settings", icon: Settings },
   ];
 
