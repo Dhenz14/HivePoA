@@ -15,13 +15,18 @@ SPK Network 2.0 (HivePoA) is a comprehensive decentralized storage validation pr
   - Key Files: `client/src/lib/helia-client.ts`
 - **Desktop Agent (Tauri)**: One-click 24/7 IPFS node for earning HBD rewards
   - Bundles Kubo binary - no separate IPFS installation needed
-  - System tray integration - runs in background
+  - System tray integration - runs hidden in background
   - HTTP API on port 5111 for web app detection
   - Auto-initializes IPFS repository on first run
-  - Key Files: `desktop-agent/src-tauri/src/kubo.rs`, `desktop-agent/src-tauri/src/api.rs`
+  - **Hive Account Linking**: Save username to `~/.spk-ipfs/agent-config.json`
+  - **Earnings Tracking**: Persist HBD rewards, challenge count, averages
+  - **PoA Challenge Response**: `/api/challenge` endpoint for validator proofs (SHA256)
+  - **Auto-Start on Boot**: Windows registry, macOS LaunchAgent, Linux .desktop
+  - **Native Notifications**: Challenge passed, earnings milestones (0.01/0.1/1/10/100 HBD)
+  - Key Files: `desktop-agent/src-tauri/src/kubo.rs`, `desktop-agent/src-tauri/src/api.rs`, `desktop-agent/src-tauri/src/autostart.rs`, `desktop-agent/src-tauri/src/notifications.rs`
   - Build: `cd desktop-agent && npm run build`
   - **Automated CI/CD**: GitHub Actions builds for all platforms on release
-  - **Download Page**: `/download` route auto-detects user's OS and offers the right installer
+  - **Download Page**: `/download` route auto-detects user's OS and links to GitHub releases
 - **Detection API**: Web app auto-detects desktop agent via `client/src/lib/desktop-agent.ts`
 - **Connection Modes**: Browser (Helia), Local (localhost:5001), Remote (home server/VPS/Pi), Demo (simulated)
 - **Reactive Context**: NodeConfigContext provides real-time connection status across all components
