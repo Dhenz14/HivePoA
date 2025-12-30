@@ -8,6 +8,11 @@ SPK Network 2.0 (HivePoA) is a comprehensive decentralized storage validation pr
 
 ## Recent Changes (December 2025)
 
+### 3Speak Integration
+- **Browse Network**: Users can discover trending/new videos from 3Speak
+- **IPFS Pinning**: Pin videos to local IPFS node with one click
+- **CID Extraction**: Automatically extracts IPFS CIDs from playUrl
+
 ### Phase 1-4 Complete Implementation
 - **Phase 1**: CDN with geo-routing, chunked uploads, storage contracts
 - **Phase 2**: Video transcoding with encoder marketplace
@@ -60,6 +65,7 @@ Preferred communication style: Simple, everyday language.
 | Auto-Pin Service | `auto-pin-service.ts` | Auto-pin viewed content |
 | Beneficiary Service | `beneficiary-service.ts` | HBD reward splitting |
 | IPFS Gateway | `ipfs-gateway.ts` | CDN-routed IPFS proxy |
+| 3Speak Service | `threespeak-service.ts` | 3Speak video browsing and pinning |
 
 ### Data Models (shared/schema.ts)
 
@@ -107,6 +113,7 @@ Preferred communication style: Simple, everyday language.
 **Encryption**: `/api/encryption/*` - Key management
 **Auto-Pin**: `/api/settings/*`, `/api/view` - User settings
 **Beneficiaries**: `/api/beneficiaries/*`, `/api/payouts/*` - Reward splitting
+**3Speak**: `/api/threespeak/*` - Video browsing and pinning
 
 ### Key Design Decisions
 
