@@ -64,7 +64,18 @@ fn main() {
             let kubo_for_api = kubo_manager.clone();
             let handle = app.handle();
 
+            // OPTIMIZATION: Start API server FIRST (instant detection)
+            // Then initialize daemon in parallel
             tauri::async_runtime::spawn(async move {
+                // Start API immediately - web app can detect us even before daemon is ready
+                if let Err(e) = api::start_api_server(kubo_for_api).await {
+                    tracing::error!("Failed to start API server: {}", e);
+                }
+            });
+
+            tauri::async_runtime::spawn(async move {
+                let start = std::time::Instant::now();
+                
                 {
                     let mut manager = kubo.write().await;
 
@@ -79,6 +90,10 @@ fn main() {
                     }
                 }
 
+                let elapsed = start.elapsed();
+                tracing::info!("[Startup] Daemon ready in {:?}", elapsed);
+
+                // Update tray status
                 let manager = kubo.read().await;
                 if let Some(tray) = handle.tray_handle_by_id("main") {
                     let peer_id = manager.get_peer_id().unwrap_or_default();
@@ -88,14 +103,6 @@ fn main() {
                         peer_id
                     };
                     let _ = tray.get_item("status").set_title(&format!("Online: {}", short_id));
-                }
-            });
-
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                
-                if let Err(e) = api::start_api_server(kubo_for_api).await {
-                    tracing::error!("Failed to start API server: {}", e);
                 }
             });
 
