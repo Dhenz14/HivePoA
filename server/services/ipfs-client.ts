@@ -4,6 +4,7 @@ export interface IPFSClient {
   cat(cid: string): Promise<Buffer>;
   refs(cid: string): Promise<string[]>;
   add(content: Buffer | string): Promise<string>;
+  addWithPin(content: Buffer | string): Promise<string>;
   pin(cid: string): Promise<void>;
   objectStat(cid: string): Promise<{ CumulativeSize: number }>;
   isOnline(): Promise<boolean>;
@@ -78,6 +79,22 @@ export class IPFSHttpClient implements IPFSClient {
     return result.Hash;
   }
 
+  async addWithPin(content: Buffer | string): Promise<string> {
+    const formData = new FormData();
+    const blob = new Blob([content]);
+    formData.append("file", blob);
+    
+    const response = await fetch(`${this.baseUrl}/add?pin=true`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!response.ok) {
+      throw new Error(`IPFS add failed: ${response.statusText}`);
+    }
+    const result = await response.json();
+    return result.Hash;
+  }
+
   async pin(cid: string): Promise<void> {
     const response = await fetch(`${this.baseUrl}/pin/add?arg=${cid}`, {
       method: "POST",
@@ -138,6 +155,10 @@ export class MockIPFSClient implements IPFSClient {
     return cid;
   }
 
+  async addWithPin(content: Buffer | string): Promise<string> {
+    return this.add(content);
+  }
+
   async pin(cid: string): Promise<void> {
     // No-op for mock
   }
@@ -155,10 +176,28 @@ export class MockIPFSClient implements IPFSClient {
   }
 }
 
+let ipfsClientInstance: IPFSClient | null = null;
+let lastApiUrl: string | undefined = undefined;
+
 export function getIPFSClient(): IPFSClient {
   const ipfsUrl = process.env.IPFS_API_URL;
-  if (ipfsUrl) {
-    return new IPFSHttpClient(ipfsUrl);
+  
+  if (ipfsClientInstance && lastApiUrl === ipfsUrl) {
+    return ipfsClientInstance;
   }
-  return new MockIPFSClient();
+  
+  if (ipfsUrl) {
+    ipfsClientInstance = new IPFSHttpClient(ipfsUrl);
+    lastApiUrl = ipfsUrl;
+  } else {
+    ipfsClientInstance = new MockIPFSClient();
+    lastApiUrl = undefined;
+  }
+  
+  return ipfsClientInstance;
+}
+
+export function resetIPFSClient(): void {
+  ipfsClientInstance = null;
+  lastApiUrl = undefined;
 }

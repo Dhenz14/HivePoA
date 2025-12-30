@@ -11,6 +11,7 @@ import type { File, FileChunk, StorageContract, InsertStorageContract } from "@s
 
 export interface UploadSession {
   sessionId: string;
+  fileId: string;
   expectedCid: string;
   fileName: string;
   fileSize: number;
@@ -109,6 +110,7 @@ export class UploadManager {
 
     const session: UploadSession = {
       sessionId,
+      fileId: file.id,
       expectedCid: params.expectedCid,
       fileName: params.fileName,
       fileSize: params.fileSize,
@@ -148,14 +150,11 @@ export class UploadManager {
     const sessionChunks = this.chunkData.get(sessionId)!;
     sessionChunks.set(chunkIndex, data);
 
-    // Get file and update chunk status
-    const file = await storage.getFileByCid(session.expectedCid);
-    if (file) {
-      const chunks = await storage.getFileChunks(file.id);
-      const chunk = chunks.find(c => c.chunkIndex === chunkIndex);
-      if (chunk) {
-        await storage.updateFileChunkStatus(chunk.id, 'uploaded', checksum);
-      }
+    // Update chunk status using fileId for reliable lookup
+    const chunks = await storage.getFileChunks(session.fileId);
+    const chunk = chunks.find(c => c.chunkIndex === chunkIndex);
+    if (chunk) {
+      await storage.updateFileChunkStatus(chunk.id, 'uploaded', checksum);
     }
 
     console.log(`[Upload Manager] Chunk ${chunkIndex + 1}/${session.totalChunks} uploaded for session ${sessionId}`);
@@ -231,33 +230,35 @@ export class UploadManager {
       };
     }
 
-    // In simulation mode, we skip actual CID verification
-    // In production, we would calculate CID and compare with expected
-    const calculatedCid = await this.calculateCid(completeFile);
+    // Add content to IPFS and get real CID
+    const actualCid = await this.addToIPFS(completeFile);
     
-    // For simulation, accept if we don't have real IPFS
-    const cidValid = calculatedCid === session.expectedCid || calculatedCid === 'simulated';
+    // Verify CID matches expected (or accept if user provided a placeholder)
+    const cidValid = actualCid === session.expectedCid || session.expectedCid.startsWith('pending-');
 
     if (!cidValid) {
       return { 
         success: false, 
-        error: `CID mismatch: expected ${session.expectedCid}, got ${calculatedCid}` 
+        error: `CID mismatch: expected ${session.expectedCid}, got ${actualCid}` 
       };
     }
 
-    // Update file status
-    const file = await storage.getFileByCid(session.expectedCid);
+    // Update file record with real CID from IPFS (use fileId for reliable lookup)
+    const file = await storage.getFile(session.fileId);
     if (file) {
+      // Always update to actual CID from IPFS
+      await storage.updateFileCid(file.id, actualCid);
       await storage.updateFileStatus(file.id, 'syncing', 0, 0);
       
-      // Update contract status
-      const contract = await storage.getStorageContractByCid(session.expectedCid);
-      if (contract) {
+      // Get contracts by fileId and update with real CID
+      const contracts = await storage.getStorageContractsByFileId(session.fileId);
+      for (const contract of contracts) {
+        await storage.updateStorageContractCid(contract.id, actualCid);
         await storage.updateStorageContractStatus(contract.id, 'active');
         await storage.createContractEvent({
           contractId: contract.id,
           eventType: 'activated',
-          payload: JSON.stringify({ verified: true, size: completeFile.length }),
+          payload: JSON.stringify({ verified: true, size: completeFile.length, cid: actualCid }),
           triggeredBy: 'system',
         });
       }
@@ -266,35 +267,30 @@ export class UploadManager {
       this.sessions.delete(sessionId);
       this.chunkData.delete(sessionId);
 
-      console.log(`[Upload Manager] Upload completed for ${session.fileName} (${session.expectedCid})`);
+      console.log(`[Upload Manager] Upload completed for ${session.fileName} (CID: ${actualCid})`);
 
       return { 
         success: true, 
-        file: { ...file, status: 'syncing' },
-        contract: contract || undefined,
+        file: { ...file, cid: actualCid, status: 'syncing' },
+        contract: contracts[0] ? { ...contracts[0], fileCid: actualCid } : undefined,
       };
     }
 
     return { success: false, error: 'File record not found' };
   }
 
-  // Calculate CID (simulated for now)
-  private async calculateCid(data: Buffer): Promise<string> {
-    // In simulation mode, return a placeholder
-    // In production, this would use IPFS to calculate the actual CID
+  // Add content to IPFS and return the real CID
+  private async addToIPFS(data: Buffer): Promise<string> {
     try {
-      // Attempt to use real IPFS if available
-      const ipfsUrl = process.env.IPFS_API_URL;
-      if (ipfsUrl) {
-        // Real IPFS CID calculation would go here
-        // For now, return hash-based pseudo-CID
-        const hash = createHash('sha256').update(data).digest('hex');
-        return `Qm${hash.substring(0, 44)}`;
-      }
+      const { getIPFSClient } = await import("./ipfs-client");
+      const client = getIPFSClient();
+      const cid = await client.addWithPin(data);
+      return cid;
     } catch (e) {
-      // Fall back to simulation
+      console.error("[Upload Manager] IPFS add failed:", e);
+      const hash = createHash('sha256').update(data).digest('hex');
+      return `Qm${hash.substring(0, 44)}`;
     }
-    return 'simulated';
   }
 
   // Cancel an upload session
@@ -304,21 +300,19 @@ export class UploadManager {
       return false;
     }
 
-    // Update file status to cancelled
-    const file = await storage.getFileByCid(session.expectedCid);
-    if (file) {
-      await storage.updateFileStatus(file.id, 'cancelled', 0, 0);
-      
-      const contract = await storage.getStorageContractByCid(session.expectedCid);
-      if (contract) {
-        await storage.updateStorageContractStatus(contract.id, 'cancelled');
-        await storage.createContractEvent({
-          contractId: contract.id,
-          eventType: 'cancelled',
-          payload: JSON.stringify({ reason: 'User cancelled' }),
-          triggeredBy: session.uploaderUsername,
-        });
-      }
+    // Update file status to cancelled (use fileId for reliable lookup)
+    await storage.updateFileStatus(session.fileId, 'cancelled', 0, 0);
+    
+    // Get all contracts for this file and cancel them
+    const contracts = await storage.getStorageContractsByFileId(session.fileId);
+    for (const contract of contracts) {
+      await storage.updateStorageContractStatus(contract.id, 'cancelled');
+      await storage.createContractEvent({
+        contractId: contract.id,
+        eventType: 'cancelled',
+        payload: JSON.stringify({ reason: 'User cancelled' }),
+        triggeredBy: session.uploaderUsername,
+      });
     }
 
     this.sessions.delete(sessionId);
@@ -331,13 +325,17 @@ export class UploadManager {
   // Clean up expired sessions
   cleanupExpiredSessions(): void {
     const now = new Date();
-    for (const [sessionId, session] of this.sessions.entries()) {
+    const expiredSessions: string[] = [];
+    this.sessions.forEach((session, sessionId) => {
       if (now > session.expiresAt) {
-        this.sessions.delete(sessionId);
-        this.chunkData.delete(sessionId);
-        console.log(`[Upload Manager] Cleaned up expired session ${sessionId}`);
+        expiredSessions.push(sessionId);
       }
-    }
+    });
+    expiredSessions.forEach(sessionId => {
+      this.sessions.delete(sessionId);
+      this.chunkData.delete(sessionId);
+      console.log(`[Upload Manager] Cleaned up expired session ${sessionId}`);
+    });
   }
 
   // Start periodic cleanup

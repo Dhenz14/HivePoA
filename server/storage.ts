@@ -93,6 +93,7 @@ export interface IStorage {
   getAllFiles(): Promise<File[]>;
   createFile(file: InsertFile): Promise<File>;
   updateFileStatus(id: string, status: string, replicationCount: number, confidence: number): Promise<void>;
+  updateFileCid(id: string, newCid: string): Promise<void>;
   deleteFile(id: string): Promise<boolean>;
   
   // Validators
@@ -150,6 +151,8 @@ export interface IStorage {
   getActiveStorageContracts(): Promise<StorageContract[]>;
   createStorageContract(contract: InsertStorageContract): Promise<StorageContract>;
   updateStorageContractStatus(id: string, status: string): Promise<void>;
+  updateStorageContractCid(id: string, newCid: string): Promise<void>;
+  getStorageContractsByFileId(fileId: string): Promise<StorageContract[]>;
   getExpiredContracts(): Promise<StorageContract[]>;
   
   // Phase 1: Contract Events
@@ -298,6 +301,12 @@ export class DatabaseStorage implements IStorage {
   async updateFileStatus(id: string, status: string, replicationCount: number, confidence: number): Promise<void> {
     await db.update(files)
       .set({ status, replicationCount, confidence })
+      .where(eq(files.id, id));
+  }
+
+  async updateFileCid(id: string, newCid: string): Promise<void> {
+    await db.update(files)
+      .set({ cid: newCid })
       .where(eq(files.id, id));
   }
 
@@ -594,6 +603,17 @@ export class DatabaseStorage implements IStorage {
     await db.update(storageContracts)
       .set({ status })
       .where(eq(storageContracts.id, id));
+  }
+
+  async updateStorageContractCid(id: string, newCid: string): Promise<void> {
+    await db.update(storageContracts)
+      .set({ fileCid: newCid })
+      .where(eq(storageContracts.id, id));
+  }
+
+  async getStorageContractsByFileId(fileId: string): Promise<StorageContract[]> {
+    return await db.select().from(storageContracts)
+      .where(eq(storageContracts.fileId, fileId));
   }
 
   async getExpiredContracts(): Promise<StorageContract[]> {
