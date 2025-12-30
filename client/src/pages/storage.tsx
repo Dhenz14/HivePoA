@@ -4,7 +4,8 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Upload, File, Search, Copy, CheckCircle2, Clock, ShieldCheck, AlertCircle, Users, Coins, AlertTriangle, XCircle, Ban, Wifi, Network, Film, Cpu, Hash, Globe, X, Trash2 } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Upload, File, Search, Copy, CheckCircle2, Clock, ShieldCheck, AlertCircle, Users, Coins, AlertTriangle, XCircle, Ban, Wifi, Network, Film, Cpu, Hash, Globe, X, Trash2, Pin, Settings } from "lucide-react";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -12,7 +13,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, UserSettings } from "@/lib/api";
 
 export default function Storage() {
   const { toast } = useToast();
@@ -35,6 +36,32 @@ export default function Storage() {
     queryKey: ["nodes"],
     queryFn: api.getNodes,
     refetchInterval: 10000,
+  });
+
+  // Fetch user settings (simulated username "demo_user")
+  const { data: settings } = useQuery({
+    queryKey: ["settings", "demo_user"],
+    queryFn: () => api.getSettings("demo_user"),
+    refetchInterval: 30000,
+  });
+
+  // Update settings mutation
+  const updateSettingsMutation = useMutation({
+    mutationFn: (data: Partial<UserSettings>) => api.updateSettings("demo_user", data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["settings", "demo_user"] });
+      toast({
+        title: "Settings Updated",
+        description: "Your auto-pin preferences have been saved.",
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to update settings",
+        variant: "destructive",
+      });
+    },
   });
 
   // Get first node's reputation (simulate "your" node)
@@ -228,6 +255,88 @@ export default function Storage() {
           </Button>
         </div>
       </div>
+
+      {/* Auto-Pin Settings */}
+      <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
+        <CardHeader className="pb-4">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <Pin className="w-4 h-4 text-primary" />
+            Auto-Pin New Videos
+          </CardTitle>
+          <CardDescription>Automatically pin new videos from the network to earn HBD rewards</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="space-y-2">
+              <Label htmlFor="auto-pin-mode">Auto-Pin Mode</Label>
+              <Select
+                data-testid="select-auto-pin-mode"
+                value={settings?.autoPinMode || "off"}
+                onValueChange={(value: "off" | "all" | "daily_limit") => {
+                  updateSettingsMutation.mutate({ 
+                    autoPinMode: value,
+                    autoPinEnabled: value !== "off"
+                  });
+                }}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select mode" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="off">Off - Manual pinning only</SelectItem>
+                  <SelectItem value="all">All - Pin every new video</SelectItem>
+                  <SelectItem value="daily_limit">Daily Limit - Set max per day</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="daily-limit">Daily Limit</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  data-testid="input-daily-limit"
+                  id="daily-limit"
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={settings?.autoPinDailyLimit || 10}
+                  disabled={settings?.autoPinMode !== "daily_limit"}
+                  onChange={(e) => {
+                    const value = parseInt(e.target.value) || 10;
+                    updateSettingsMutation.mutate({ autoPinDailyLimit: value });
+                  }}
+                  className="w-24"
+                />
+                <span className="text-sm text-muted-foreground">videos/day</span>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Today's Progress</Label>
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  <Progress 
+                    value={settings?.autoPinMode === "daily_limit" && settings?.autoPinDailyLimit 
+                      ? ((settings?.autoPinTodayCount || 0) / settings.autoPinDailyLimit) * 100 
+                      : 0
+                    } 
+                    className="h-2"
+                  />
+                </div>
+                <span className="text-sm font-medium">
+                  {settings?.autoPinTodayCount || 0}
+                  {settings?.autoPinMode === "daily_limit" && `/${settings?.autoPinDailyLimit || 10}`}
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {settings?.autoPinMode === "off" && "Auto-pinning is disabled"}
+                {settings?.autoPinMode === "all" && "Pinning all incoming videos"}
+                {settings?.autoPinMode === "daily_limit" && `${(settings?.autoPinDailyLimit || 10) - (settings?.autoPinTodayCount || 0)} slots remaining today`}
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Reputation & Health Section */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

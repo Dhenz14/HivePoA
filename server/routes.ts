@@ -398,6 +398,8 @@ export async function registerRoutes(
     try {
       const schema = z.object({
         autoPinEnabled: z.boolean().optional(),
+        autoPinMode: z.enum(["off", "all", "daily_limit"]).optional(),
+        autoPinDailyLimit: z.number().optional(),
         autoPinThreshold: z.number().optional(),
         maxAutoPinSize: z.string().optional(),
         encryptByDefault: z.boolean().optional(),

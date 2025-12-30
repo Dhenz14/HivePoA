@@ -98,6 +98,18 @@ export interface ValidatorBlacklist {
   createdAt: string;
 }
 
+export interface UserSettings {
+  id: string;
+  username: string;
+  autoPinEnabled: boolean;
+  autoPinMode: "off" | "all" | "daily_limit";
+  autoPinDailyLimit: number;
+  autoPinTodayCount: number;
+  autoPinThreshold: number;
+  maxAutoPinSize: string;
+  encryptByDefault: boolean;
+}
+
 export const api = {
   // Files
   async getFiles(): Promise<File[]> {
@@ -197,6 +209,26 @@ export const api = {
   // Dashboard Stats
   async getStats(): Promise<DashboardStats> {
     const res = await fetch(`${API_BASE}/stats`);
+    return res.json();
+  },
+
+  // User Settings
+  async getSettings(username: string): Promise<UserSettings | null> {
+    const res = await fetch(`${API_BASE}/settings/${username}`);
+    if (!res.ok) return null;
+    return res.json();
+  },
+
+  async updateSettings(username: string, data: Partial<UserSettings>): Promise<UserSettings> {
+    const res = await fetch(`${API_BASE}/settings/${username}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const error = await res.json();
+      throw new Error(error.error || "Failed to update settings");
+    }
     return res.json();
   },
 };

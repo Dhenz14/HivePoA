@@ -156,6 +156,8 @@ export class AutoPinService {
   // Update user settings
   async updateUserSettings(username: string, updates: Partial<{
     autoPinEnabled: boolean;
+    autoPinMode: string;
+    autoPinDailyLimit: number;
     autoPinThreshold: number;
     maxAutoPinSize: string;
     encryptByDefault: boolean;
@@ -165,6 +167,8 @@ export class AutoPinService {
     return storage.createOrUpdateUserNodeSettings({
       username,
       autoPinEnabled: updates.autoPinEnabled ?? current.autoPinEnabled,
+      autoPinMode: updates.autoPinMode ?? current.autoPinMode ?? 'off',
+      autoPinDailyLimit: updates.autoPinDailyLimit ?? current.autoPinDailyLimit ?? 10,
       autoPinThreshold: updates.autoPinThreshold ?? current.autoPinThreshold ?? 60,
       maxAutoPinSize: updates.maxAutoPinSize ?? current.maxAutoPinSize ?? '104857600',
       encryptByDefault: updates.encryptByDefault ?? current.encryptByDefault,

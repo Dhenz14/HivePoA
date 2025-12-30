@@ -291,6 +291,10 @@ export const userNodeSettings = pgTable("user_node_settings", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   username: text("username").notNull().unique(),
   autoPinEnabled: boolean("auto_pin_enabled").notNull().default(false),
+  autoPinMode: text("auto_pin_mode").notNull().default("off"), // off, all, daily_limit
+  autoPinDailyLimit: integer("auto_pin_daily_limit").default(10), // Max videos per day when mode is daily_limit
+  autoPinTodayCount: integer("auto_pin_today_count").notNull().default(0), // Counter for today
+  autoPinLastReset: timestamp("auto_pin_last_reset").defaultNow(), // When counter was last reset
   autoPinThreshold: integer("auto_pin_threshold").default(60), // Only pin files with confidence > threshold
   maxAutoPinSize: text("max_auto_pin_size").default("104857600"), // 100MB default
   encryptByDefault: boolean("encrypt_by_default").notNull().default(false),
