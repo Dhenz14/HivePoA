@@ -52,7 +52,8 @@ const DOWNLOADS: Record<Platform, DownloadInfo> = {
   },
 };
 
-const GITHUB_RELEASES_URL = "https://github.com/spknetwork/spk-desktop/releases/latest";
+const GITHUB_RELEASES_URL = "https://github.com/spknetwork/spk-desktop/releases";
+const GITHUB_REPO_URL = "https://github.com/spknetwork/spk-desktop";
 
 function detectPlatform(): Platform {
   if (typeof navigator === "undefined") return "unknown";
@@ -78,13 +79,9 @@ function detectPlatform(): Platform {
   return "unknown";
 }
 
-function DownloadCard({ info, recommended }: { info: DownloadInfo; recommended: boolean }) {
-  const [downloading, setDownloading] = useState(false);
-
+function DownloadCard({ info, recommended, comingSoon }: { info: DownloadInfo; recommended: boolean; comingSoon?: boolean }) {
   const handleDownload = () => {
-    setDownloading(true);
-    window.open(`${GITHUB_RELEASES_URL}/download/${info.filename}`, "_blank");
-    setTimeout(() => setDownloading(false), 2000);
+    window.open(GITHUB_RELEASES_URL, "_blank");
   };
 
   return (
@@ -92,8 +89,11 @@ function DownloadCard({ info, recommended }: { info: DownloadInfo; recommended: 
       data-testid={`download-card-${info.platform}`}
       className={`relative transition-all hover:border-primary/50 ${recommended ? "border-primary ring-2 ring-primary/20" : ""}`}
     >
-      {recommended && (
+      {recommended && !comingSoon && (
         <Badge className="absolute -top-2 left-4 bg-primary">Recommended for you</Badge>
+      )}
+      {comingSoon && (
+        <Badge className="absolute -top-2 left-4 bg-amber-500">Coming Soon</Badge>
       )}
       <CardHeader className="pb-2">
         <div className="flex items-center gap-3">
@@ -108,17 +108,17 @@ function DownloadCard({ info, recommended }: { info: DownloadInfo; recommended: 
         <Button 
           data-testid={`download-button-${info.platform}`}
           onClick={handleDownload}
-          disabled={downloading}
           className="w-full"
-          variant={recommended ? "default" : "outline"}
+          variant={recommended && !comingSoon ? "default" : "outline"}
         >
-          {downloading ? (
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          ) : (
-            <Download className="mr-2 h-4 w-4" />
-          )}
-          {downloading ? "Starting download..." : `Download ${info.filename}`}
+          <ExternalLink className="mr-2 h-4 w-4" />
+          View on GitHub
         </Button>
+        {comingSoon && (
+          <p className="text-xs text-muted-foreground mt-2 text-center">
+            Desktop builds are in development. Star the repo to get notified!
+          </p>
+        )}
       </CardContent>
     </Card>
   );
@@ -179,14 +179,15 @@ export default function DownloadPage() {
           {detectedPlatform !== "unknown" && (
             <DownloadCard 
               info={DOWNLOADS[detectedPlatform]} 
-              recommended={true} 
+              recommended={true}
+              comingSoon={true}
             />
           )}
           
           {Object.values(DOWNLOADS)
             .filter(d => d.platform !== "unknown" && d.platform !== detectedPlatform)
             .map(info => (
-              <DownloadCard key={info.platform} info={info} recommended={false} />
+              <DownloadCard key={info.platform} info={info} recommended={false} comingSoon={true} />
             ))}
         </div>
       </div>
