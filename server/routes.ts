@@ -881,6 +881,285 @@ export async function registerRoutes(
   });
 
   // ============================================================
+  // Earnings & Analytics API (For Storage Operators)
+  // ============================================================
+
+  // Get earnings data for a node
+  app.get("/api/earnings/:username", async (req, res) => {
+    const { username } = req.params;
+    const nodes = await storage.getAllStorageNodes();
+    const node = nodes.find(n => n.hiveUsername === username) || nodes[0];
+    
+    if (!node) {
+      res.status(404).json({ error: "Node not found" });
+      return;
+    }
+
+    const challenges = await storage.getRecentChallenges(1000);
+    const nodeChallenges = challenges.filter(c => c.nodeId === node.id);
+    const transactions = await storage.getRecentTransactions(24 * 60 * 7); // 7 days
+    const nodeTransactions = transactions.filter(t => t.toUser === username && t.type === "hbd_transfer");
+    
+    // Calculate streaks
+    let currentStreak = 0;
+    let maxStreak = 0;
+    let tempStreak = 0;
+    const sortedChallenges = nodeChallenges.sort((a, b) => 
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    
+    for (const c of sortedChallenges) {
+      if (c.result === "success") {
+        tempStreak++;
+        if (tempStreak > maxStreak) maxStreak = tempStreak;
+        if (currentStreak === 0 || currentStreak === tempStreak - 1) {
+          currentStreak = tempStreak;
+        }
+      } else {
+        tempStreak = 0;
+      }
+    }
+
+    // Calculate streak bonus
+    let streakBonus = 1.0;
+    let nextBonusTier = 10;
+    let progressToNextTier = 0;
+    
+    if (currentStreak >= 100) {
+      streakBonus = 1.5;
+      nextBonusTier = 100;
+      progressToNextTier = 100;
+    } else if (currentStreak >= 50) {
+      streakBonus = 1.25;
+      nextBonusTier = 100;
+      progressToNextTier = ((currentStreak - 50) / 50) * 100;
+    } else if (currentStreak >= 10) {
+      streakBonus = 1.1;
+      nextBonusTier = 50;
+      progressToNextTier = ((currentStreak - 10) / 40) * 100;
+    } else {
+      nextBonusTier = 10;
+      progressToNextTier = (currentStreak / 10) * 100;
+    }
+
+    // Calculate earnings by time period
+    const now = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+    
+    const earningsToday = nodeTransactions
+      .filter(t => now - new Date(t.createdAt).getTime() < dayMs)
+      .reduce((sum, t) => {
+        const payload = JSON.parse(t.payload || "{}");
+        return sum + parseFloat(payload.amount?.replace(" HBD", "") || "0.001");
+      }, 0);
+    
+    const earningsWeek = nodeTransactions
+      .filter(t => now - new Date(t.createdAt).getTime() < 7 * dayMs)
+      .reduce((sum, t) => {
+        const payload = JSON.parse(t.payload || "{}");
+        return sum + parseFloat(payload.amount?.replace(" HBD", "") || "0.001");
+      }, 0);
+
+    // Project earnings based on current rate
+    const hourlyRate = earningsToday / Math.max(1, (now % dayMs) / (60 * 60 * 1000));
+    const projectedDaily = hourlyRate * 24;
+    const projectedMonthly = projectedDaily * 30;
+
+    res.json({
+      node: {
+        id: node.id,
+        username: node.hiveUsername,
+        reputation: node.reputation,
+        status: node.status,
+        consecutiveFails: (node as any).consecutiveFails || 0,
+        totalEarnedHbd: (node as any).totalEarnedHbd || 0,
+      },
+      streak: {
+        current: currentStreak,
+        max: maxStreak,
+        bonus: streakBonus,
+        bonusPercent: Math.round((streakBonus - 1) * 100),
+        nextTier: nextBonusTier,
+        progressToNextTier: Math.min(100, progressToNextTier),
+      },
+      risk: {
+        consecutiveFails: (node as any).consecutiveFails || 0,
+        maxFails: 3,
+        isBanned: node.status === "banned",
+        isProbation: node.status === "probation",
+        banRisk: ((node as any).consecutiveFails || 0) >= 2 ? "high" : 
+                 ((node as any).consecutiveFails || 0) >= 1 ? "medium" : "low",
+      },
+      earnings: {
+        today: earningsToday,
+        week: earningsWeek,
+        total: (node as any).totalEarnedHbd || 0,
+        projectedDaily,
+        projectedMonthly,
+      },
+      challenges: {
+        total: nodeChallenges.length,
+        passed: nodeChallenges.filter(c => c.result === "success").length,
+        failed: nodeChallenges.filter(c => c.result === "fail").length,
+        successRate: nodeChallenges.length > 0 
+          ? (nodeChallenges.filter(c => c.result === "success").length / nodeChallenges.length * 100).toFixed(1)
+          : "0.0",
+        avgLatency: nodeChallenges.length > 0
+          ? Math.round(nodeChallenges.reduce((sum, c) => sum + (c.latencyMs || 0), 0) / nodeChallenges.length)
+          : 0,
+      },
+    });
+  });
+
+  // Get live challenge feed
+  app.get("/api/challenges/live", async (req, res) => {
+    const limit = parseInt(req.query.limit as string) || 20;
+    const challenges = await storage.getRecentChallenges(limit);
+    const nodes = await storage.getAllStorageNodes();
+    const files = await storage.getAllFiles();
+    
+    const enrichedChallenges = challenges.map(c => {
+      const node = nodes.find(n => n.id === c.nodeId);
+      const file = files.find(f => f.id === c.fileId);
+      return {
+        id: c.id,
+        result: c.result,
+        latencyMs: c.latencyMs,
+        response: c.response,
+        createdAt: c.createdAt,
+        node: node ? { username: node.hiveUsername, reputation: node.reputation } : null,
+        file: file ? { name: file.name, cid: file.cid } : null,
+      };
+    });
+    
+    res.json(enrichedChallenges);
+  });
+
+  // Get file marketplace with rarity and ROI data
+  app.get("/api/files/marketplace", async (req, res) => {
+    const files = await storage.getAllFiles();
+    const challenges = await storage.getRecentChallenges(500);
+    
+    const filesWithROI = files.map(file => {
+      const fileChallenges = challenges.filter(c => c.fileId === file.id);
+      const passedChallenges = fileChallenges.filter(c => c.result === "success").length;
+      
+      // Calculate rarity multiplier
+      const replicationCount = file.replicationCount || 1;
+      const rarityMultiplier = 1 / Math.max(1, replicationCount);
+      
+      // Calculate ROI score (higher = better)
+      const sizeBytes = parseInt(file.size) || 1000;
+      const rewardPerProof = 0.001 * rarityMultiplier;
+      const proofsPerDay = (passedChallenges / 7) || 1; // Estimate from 7-day data
+      const dailyEarnings = rewardPerProof * proofsPerDay;
+      const roiScore = (dailyEarnings * 1000000) / sizeBytes; // HBD per MB per day
+      
+      return {
+        id: file.id,
+        name: file.name,
+        cid: file.cid,
+        size: file.size,
+        sizeBytes,
+        status: file.status,
+        replicationCount,
+        rarityMultiplier,
+        isRare: replicationCount < 3,
+        earnedHbd: (file as any).earnedHbd || 0,
+        rewardPerProof,
+        dailyEarnings,
+        roiScore,
+        challengeCount: fileChallenges.length,
+        successRate: fileChallenges.length > 0 
+          ? (passedChallenges / fileChallenges.length * 100).toFixed(1)
+          : "0.0",
+      };
+    });
+    
+    // Sort by ROI score descending
+    filesWithROI.sort((a, b) => b.roiScore - a.roiScore);
+    
+    res.json({
+      files: filesWithROI,
+      recommendations: filesWithROI.filter(f => f.isRare).slice(0, 10),
+      stats: {
+        totalFiles: files.length,
+        rareFiles: filesWithROI.filter(f => f.isRare).length,
+        avgRarityMultiplier: filesWithROI.reduce((sum, f) => sum + f.rarityMultiplier, 0) / files.length || 0,
+      },
+    });
+  });
+
+  // Get performance analytics
+  app.get("/api/analytics/performance", async (req, res) => {
+    const challenges = await storage.getRecentChallenges(1000);
+    const nodes = await storage.getAllStorageNodes();
+    
+    // Calculate proofs per hour
+    const now = Date.now();
+    const hourAgo = now - 60 * 60 * 1000;
+    const challengesLastHour = challenges.filter(c => 
+      new Date(c.createdAt).getTime() > hourAgo
+    );
+    const proofsPerHour = challengesLastHour.filter(c => c.result === "success").length;
+    
+    // Calculate bandwidth (estimated based on file sizes)
+    const files = await storage.getAllFiles();
+    const avgFileSize = files.reduce((sum, f) => sum + parseInt(f.size || "0"), 0) / files.length || 1000000;
+    const bandwidthPerHour = proofsPerHour * avgFileSize * 5; // Assume 5 blocks per proof
+    
+    // Success rate trends (last 24 hours in 1-hour buckets)
+    const trends: { hour: number; successRate: number; challenges: number }[] = [];
+    for (let i = 0; i < 24; i++) {
+      const hourStart = now - (i + 1) * 60 * 60 * 1000;
+      const hourEnd = now - i * 60 * 60 * 1000;
+      const hourChallenges = challenges.filter(c => {
+        const t = new Date(c.createdAt).getTime();
+        return t > hourStart && t <= hourEnd;
+      });
+      const passed = hourChallenges.filter(c => c.result === "success").length;
+      trends.unshift({
+        hour: 24 - i,
+        successRate: hourChallenges.length > 0 ? (passed / hourChallenges.length) * 100 : 0,
+        challenges: hourChallenges.length,
+      });
+    }
+    
+    // Latency distribution
+    const latencies = challenges.filter(c => c.latencyMs).map(c => c.latencyMs!);
+    const avgLatency = latencies.length > 0 
+      ? latencies.reduce((a, b) => a + b, 0) / latencies.length 
+      : 0;
+    const maxLatency = Math.max(...latencies, 0);
+    const minLatency = Math.min(...latencies, 0);
+    
+    res.json({
+      proofsPerHour,
+      bandwidthPerHour,
+      bandwidthFormatted: formatBytes(bandwidthPerHour),
+      latency: {
+        avg: Math.round(avgLatency),
+        max: maxLatency,
+        min: minLatency,
+        warning: avgLatency > 1500,
+      },
+      trends,
+      nodes: {
+        total: nodes.length,
+        healthy: nodes.filter(n => n.status === "active" && n.reputation >= 50).length,
+        atRisk: nodes.filter(n => n.status === "probation" || n.reputation < 30).length,
+      },
+    });
+  });
+
+  function formatBytes(bytes: number): string {
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+    return (bytes / (1024 * 1024 * 1024)).toFixed(1) + " GB";
+  }
+
+  // ============================================================
   // 3Speak Network Browsing API
   // ============================================================
   
