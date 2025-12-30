@@ -335,6 +335,39 @@ impl KuboManager {
 
         Ok(pins)
     }
+
+    pub fn get_block(&self, cid: &str, block_index: u64) -> Result<Vec<u8>, String> {
+        let binary = self.get_kubo_binary();
+        let block_path = format!("{}/{}", cid, block_index);
+        
+        let output = Command::new(&binary)
+            .args(["block", "get", &block_path])
+            .env("IPFS_PATH", &self.repo_path)
+            .output()
+            .map_err(|e| format!("Failed to run ipfs block get: {}", e))?;
+
+        if output.status.success() {
+            Ok(output.stdout)
+        } else {
+            Err(String::from_utf8_lossy(&output.stderr).to_string())
+        }
+    }
+
+    pub fn get_block_by_cid(&self, cid: &str) -> Result<Vec<u8>, String> {
+        let binary = self.get_kubo_binary();
+        
+        let output = Command::new(&binary)
+            .args(["block", "get", cid])
+            .env("IPFS_PATH", &self.repo_path)
+            .output()
+            .map_err(|e| format!("Failed to run ipfs block get: {}", e))?;
+
+        if output.status.success() {
+            Ok(output.stdout)
+        } else {
+            Err(String::from_utf8_lossy(&output.stderr).to_string())
+        }
+    }
 }
 
 impl Drop for KuboManager {

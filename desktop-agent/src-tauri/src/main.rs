@@ -5,6 +5,8 @@
 
 mod kubo;
 mod api;
+mod autostart;
+mod notifications;
 
 use std::sync::Arc;
 use tauri::{
@@ -18,6 +20,9 @@ pub struct AppState {
 
 fn main() {
     tracing_subscriber::fmt::init();
+
+    // Check if started with --minimized flag (auto-start on boot)
+    let start_minimized = std::env::args().any(|arg| arg == "--minimized");
 
     let quit = CustomMenuItem::new("quit".to_string(), "Quit SPK Desktop");
     let show = CustomMenuItem::new("show".to_string(), "Show Dashboard");
@@ -63,6 +68,14 @@ fn main() {
             let kubo = kubo_manager.clone();
             let kubo_for_api = kubo_manager.clone();
             let handle = app.handle();
+
+            // If started with --minimized, hide the window immediately
+            if start_minimized {
+                if let Some(window) = app.get_window("main") {
+                    let _ = window.hide();
+                    tracing::info!("[Startup] Started minimized to tray");
+                }
+            }
 
             // OPTIMIZATION: Start API server FIRST (instant detection)
             // Then initialize daemon in parallel
