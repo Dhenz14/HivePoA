@@ -42,6 +42,18 @@ SPK Network 2.0 (HivePoA) is a comprehensive decentralized storage validation pr
 - **Phase 3**: Multi-tier blocklists, community tagging, content fingerprinting
 - **Phase 4**: E2E encryption, auto-pinning, beneficiary rewards
 
+### PoA Engine Optimizations (December 2025)
+- **Parallel Block Fetching**: Uses Promise.all for 3-5x faster proof verification
+- **2-Second Challenge Timeout**: Reduced from 30s to prevent cheating/outsourcing
+- **LRU Block Cache**: TTL-based caching (1hr, max 1000 entries) for block CIDs
+- **Batch Challenges**: 3 challenges per round instead of 1
+- **Weighted Selection**: Low-rep nodes challenged more frequently
+- **Hive Block Entropy**: Salt includes Hive block hash for unpredictability
+- **Consecutive Fail Tracking**: 3 failures = instant ban (stored in DB)
+- **Streak Bonuses**: 10/50/100 consecutive passes earn 10%/25%/50% bonus
+- **Recovery Cooldown**: Banned nodes wait 24h before reputation recovery
+- **Config Constants**: All tunable parameters in `POA_CONFIG` object
+
 ## Documentation
 
 | Document | Description |
