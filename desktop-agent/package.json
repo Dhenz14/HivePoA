@@ -1,0 +1,14 @@
+{
+  "name": "spk-desktop",
+  "version": "0.1.0",
+  "description": "SPK Network Desktop Agent - 24/7 IPFS node for earning HBD rewards",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "download-kubo": "node scripts/download-kubo.js"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^1.5.0"
+  }
+}
