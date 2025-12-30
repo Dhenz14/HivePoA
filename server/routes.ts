@@ -887,19 +887,85 @@ export async function registerRoutes(
   });
 
   app.post("/api/threespeak/pin", async (req, res) => {
-    const { ipfs } = req.body;
+    const { ipfs, title, author } = req.body;
     if (!ipfs) {
       res.status(400).json({ error: "Missing IPFS CID" });
       return;
     }
 
     try {
-      const { getIPFSClient } = await import("./services/ipfs-client");
-      const client = getIPFSClient();
-      await client.pin(ipfs);
-      res.json({ success: true, cid: ipfs, message: "Video pinned successfully" });
+      const { pinManager } = await import("./services/pin-manager");
+      const ipfsUrl = process.env.IPFS_API_URL || "http://127.0.0.1:5001";
+      
+      const job = pinManager.createJob(ipfs, title || "3Speak Video", author || "unknown");
+      
+      res.json({ 
+        success: true, 
+        jobId: job.id, 
+        cid: ipfs, 
+        message: "Pin job started" 
+      });
+
+      pinManager.pinWithProgress(job.id, ipfsUrl)
+        .then(async (completedJob) => {
+          try {
+            const stat = await fetch(`${ipfsUrl}/api/v0/object/stat?arg=${ipfs}`, { method: "POST" });
+            let size = "Unknown";
+            if (stat.ok) {
+              const data = await stat.json();
+              const bytes = data.CumulativeSize || 0;
+              if (bytes > 1073741824) size = `${(bytes / 1073741824).toFixed(2)} GB`;
+              else if (bytes > 1048576) size = `${(bytes / 1048576).toFixed(2)} MB`;
+              else if (bytes > 1024) size = `${(bytes / 1024).toFixed(2)} KB`;
+              else size = `${bytes} B`;
+            }
+            
+            const existingFile = await storage.getFileByCid(ipfs);
+            
+            if (!existingFile) {
+              await storage.createFile({
+                name: title || "3Speak Video",
+                cid: ipfs,
+                size,
+                uploaderUsername: author || "3speak",
+                status: "pinned",
+                replicationCount: 1,
+                confidence: 100,
+                poaEnabled: true,
+              });
+              console.log(`[Pin] Saved pinned video: ${title} (${ipfs})`);
+            } else {
+              console.log(`[Pin] Video already exists: ${ipfs}`);
+            }
+          } catch (err) {
+            console.error(`[Pin] Failed to save pinned video:`, err);
+          }
+        })
+        .catch((err) => {
+          console.error(`[Pin] Pin failed for ${ipfs}:`, err.message);
+        });
     } catch (error: any) {
       res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.get("/api/pin/jobs", async (_req, res) => {
+    const { pinManager } = await import("./services/pin-manager");
+    res.json(pinManager.getAllJobs());
+  });
+
+  app.get("/api/pin/jobs/active", async (_req, res) => {
+    const { pinManager } = await import("./services/pin-manager");
+    res.json(pinManager.getActiveJobs());
+  });
+
+  app.get("/api/pin/job/:id", async (req, res) => {
+    const { pinManager } = await import("./services/pin-manager");
+    const job = pinManager.getJob(req.params.id);
+    if (job) {
+      res.json(job);
+    } else {
+      res.status(404).json({ error: "Job not found" });
     }
   });
 

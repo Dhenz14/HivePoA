@@ -1,12 +1,13 @@
-import { useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useState, useEffect } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
-import { Play, Pin, Search, Eye, Clock, User, TrendingUp, Sparkles, Loader2 } from "lucide-react";
+import { Play, Pin, Search, Eye, User, TrendingUp, Sparkles, Loader2, CheckCircle2 } from "lucide-react";
 
 interface Video {
   id: string;
@@ -27,6 +28,20 @@ interface VideoResponse {
   total: number;
   page: number;
   hasMore: boolean;
+}
+
+interface PinJob {
+  id: string;
+  cid: string;
+  title: string;
+  author: string;
+  status: "queued" | "fetching" | "pinning" | "complete" | "error";
+  progress: number;
+  bytesReceived: number;
+  totalBytes: number;
+  startedAt: number;
+  estimatedTimeRemaining: number | null;
+  error?: string;
 }
 
 function formatDuration(seconds: number): string {
@@ -52,7 +67,33 @@ function formatDate(dateStr: string): string {
   return `${Math.floor(diffDays / 30)} months ago`;
 }
 
-function VideoCard({ video, onPin, isPinning }: { video: Video; onPin: (cid: string) => void; isPinning: boolean }) {
+function formatTime(seconds: number | null): string {
+  if (seconds === null || seconds <= 0) return "";
+  if (seconds < 60) return `~${seconds}s remaining`;
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `~${mins}m ${secs}s remaining`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1073741824) return `${(bytes / 1073741824).toFixed(2)} GB`;
+  if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(2)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(2)} KB`;
+  return `${bytes} B`;
+}
+
+function VideoCard({ 
+  video, 
+  onPin, 
+  pinJob 
+}: { 
+  video: Video; 
+  onPin: (video: Video) => void; 
+  pinJob?: PinJob;
+}) {
+  const isPinning = pinJob && (pinJob.status === "queued" || pinJob.status === "fetching" || pinJob.status === "pinning");
+  const isComplete = pinJob?.status === "complete";
+  
   return (
     <Card data-testid={`video-card-${video.id}`} className="overflow-hidden hover:border-primary/50 transition-colors">
       <div className="relative aspect-video bg-muted">
@@ -103,20 +144,51 @@ function VideoCard({ video, onPin, isPinning }: { video: Video; onPin: (cid: str
             </Badge>
           ))}
         </div>
-        <Button
-          data-testid={`pin-button-${video.id}`}
-          onClick={() => onPin(video.ipfs)}
-          disabled={!video.ipfs || isPinning}
-          className="w-full"
-          size="sm"
-        >
-          {isPinning ? (
-            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-          ) : (
+        
+        {isPinning && pinJob ? (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">
+                {pinJob.status === "queued" && "Queued..."}
+                {pinJob.status === "fetching" && "Fetching from network..."}
+                {pinJob.status === "pinning" && "Pinning to node..."}
+              </span>
+              <span className="font-medium">{pinJob.progress}%</span>
+            </div>
+            <Progress value={pinJob.progress} className="h-2" data-testid={`progress-${video.id}`} />
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span>
+                {pinJob.bytesReceived > 0 && pinJob.totalBytes > 0 
+                  ? `${formatBytes(pinJob.bytesReceived)} / ${formatBytes(pinJob.totalBytes)}`
+                  : "Calculating size..."}
+              </span>
+              <span>{formatTime(pinJob.estimatedTimeRemaining)}</span>
+            </div>
+          </div>
+        ) : isComplete ? (
+          <Button
+            data-testid={`pin-button-${video.id}`}
+            disabled
+            variant="outline"
+            className="w-full border-green-500 text-green-500"
+            size="sm"
+          >
+            <CheckCircle2 className="h-4 w-4 mr-2" />
+            Pinned to Node
+          </Button>
+        ) : (
+          <Button
+            data-testid={`pin-button-${video.id}`}
+            onClick={() => onPin(video)}
+            disabled={!video.ipfs}
+            className="w-full"
+            size="sm"
+          >
             <Pin className="h-4 w-4 mr-2" />
-          )}
-          {isPinning ? "Pinning..." : "Pin to My Node"}
-        </Button>
+            Pin to My Node
+          </Button>
+        )}
+        
         {video.ipfs && (
           <p className="text-xs text-muted-foreground mt-2 font-mono truncate" title={video.ipfs}>
             CID: {video.ipfs}
@@ -130,8 +202,9 @@ function VideoCard({ video, onPin, isPinning }: { video: Video; onPin: (cid: str
 export default function Browse() {
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState("trending");
-  const [pinningCid, setPinningCid] = useState<string | null>(null);
+  const [pinJobs, setPinJobs] = useState<Record<string, PinJob>>({});
   const { toast } = useToast();
+  const queryClient = useQueryClient();
 
   const trendingQuery = useQuery<VideoResponse>({
     queryKey: ["/api/threespeak/trending"],
@@ -152,36 +225,89 @@ export default function Browse() {
     enabled: activeTab === "search" && searchQuery.length > 0,
   });
 
+  useEffect(() => {
+    const activeJobIds = Object.entries(pinJobs)
+      .filter(([_, job]) => job.status !== "complete" && job.status !== "error")
+      .map(([_, job]) => job.id);
+
+    if (activeJobIds.length === 0) return;
+
+    const interval = setInterval(async () => {
+      for (const jobId of activeJobIds) {
+        try {
+          const res = await fetch(`/api/pin/job/${jobId}`);
+          if (res.ok) {
+            const job: PinJob = await res.json();
+            setPinJobs(prev => ({ ...prev, [job.cid]: job }));
+            
+            if (job.status === "complete") {
+              toast({
+                title: "Video Pinned!",
+                description: `"${job.title}" is now stored on your node and will appear under Storage.`,
+              });
+              queryClient.invalidateQueries({ queryKey: ["files"] });
+            } else if (job.status === "error") {
+              toast({
+                title: "Pin Failed",
+                description: job.error || "Could not pin video",
+                variant: "destructive",
+              });
+            }
+          }
+        } catch {
+        }
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [pinJobs, toast, queryClient]);
+
   const pinMutation = useMutation({
-    mutationFn: async (cid: string) => {
+    mutationFn: async (video: Video) => {
       const res = await fetch("/api/threespeak/pin", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ipfs: cid }),
+        body: JSON.stringify({ 
+          ipfs: video.ipfs,
+          title: video.title,
+          author: video.author,
+        }),
       });
       if (!res.ok) throw new Error("Pin failed");
       return res.json();
     },
-    onSuccess: (data) => {
+    onSuccess: (data, video) => {
+      setPinJobs(prev => ({
+        ...prev,
+        [video.ipfs]: {
+          id: data.jobId,
+          cid: video.ipfs,
+          title: video.title,
+          author: video.author,
+          status: "queued",
+          progress: 0,
+          bytesReceived: 0,
+          totalBytes: 0,
+          startedAt: Date.now(),
+          estimatedTimeRemaining: null,
+        }
+      }));
       toast({
-        title: "Video Pinned!",
-        description: `Successfully pinned to your IPFS node. CID: ${data.cid.slice(0, 12)}...`,
+        title: "Pin Started",
+        description: `Downloading "${video.title}" to your node...`,
       });
-      setPinningCid(null);
     },
     onError: (error: any) => {
       toast({
         title: "Pin Failed",
-        description: error.message || "Could not pin video to IPFS",
+        description: error.message || "Could not start pin job",
         variant: "destructive",
       });
-      setPinningCid(null);
     },
   });
 
-  const handlePin = (cid: string) => {
-    setPinningCid(cid);
-    pinMutation.mutate(cid);
+  const handlePin = (video: Video) => {
+    pinMutation.mutate(video);
   };
 
   const handleSearch = (e: React.FormEvent) => {
@@ -203,6 +329,10 @@ export default function Browse() {
                     searchQueryResult.isLoading;
 
   const videos = getVideos();
+  
+  const activeJobCount = Object.values(pinJobs).filter(
+    j => j.status === "queued" || j.status === "fetching" || j.status === "pinning"
+  ).length;
 
   return (
     <div className="container mx-auto p-6 space-y-6">
@@ -214,6 +344,11 @@ export default function Browse() {
           </h1>
           <p className="text-muted-foreground mt-1">
             Discover and pin 3Speak videos to your local IPFS node
+            {activeJobCount > 0 && (
+              <Badge variant="secondary" className="ml-2">
+                {activeJobCount} pinning
+              </Badge>
+            )}
           </p>
         </div>
         <form onSubmit={handleSearch} className="flex gap-2 w-full md:w-auto">
@@ -265,7 +400,7 @@ export default function Browse() {
                   key={video.id}
                   video={video}
                   onPin={handlePin}
-                  isPinning={pinningCid === video.ipfs}
+                  pinJob={pinJobs[video.ipfs]}
                 />
               ))}
             </div>
@@ -289,6 +424,7 @@ export default function Browse() {
             <li>Makes the video available even if original host goes offline</li>
             <li>Earns you HBD rewards when others access content through your node</li>
             <li>Contributes to the SPK Network's storage redundancy</li>
+            <li><strong>Pinned videos appear in your Storage page</strong> under "Pinned Content"</li>
           </ul>
         </CardContent>
       </Card>
