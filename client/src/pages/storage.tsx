@@ -5,7 +5,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Upload, File, Search, Copy, CheckCircle2, Clock, ShieldCheck, AlertCircle, Users, Coins, AlertTriangle, XCircle, Ban, Wifi, Network, Film, Cpu, Hash, Globe, X, Trash2, Pin, Settings } from "lucide-react";
+import { Upload, File, Search, Copy, CheckCircle2, Clock, ShieldCheck, AlertCircle, Users, Coins, AlertTriangle, XCircle, Ban, Wifi, Network, Film, Cpu, Hash, Globe, X, Trash2, Pin, Settings, Download, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -52,13 +52,32 @@ export default function Storage() {
       queryClient.invalidateQueries({ queryKey: ["settings", "demo_user"] });
       toast({
         title: "Settings Updated",
-        description: "Your auto-pin preferences have been saved.",
+        description: "Your preferences have been saved.",
       });
     },
     onError: (error: any) => {
       toast({
         title: "Error",
         description: error.message || "Failed to update settings",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Start network download mutation
+  const startDownloadMutation = useMutation({
+    mutationFn: () => api.startNetworkDownload("demo_user"),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ["settings", "demo_user"] });
+      toast({
+        title: result.started ? "Download Started" : "Download Not Started",
+        description: result.message,
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to start download",
         variant: "destructive",
       });
     },
@@ -256,15 +275,114 @@ export default function Storage() {
         </div>
       </div>
 
-      {/* Auto-Pin Settings */}
-      <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
-        <CardHeader className="pb-4">
-          <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <Pin className="w-4 h-4 text-primary" />
-            Auto-Pin New Videos
-          </CardTitle>
-          <CardDescription>Automatically pin new videos from the network to earn HBD rewards</CardDescription>
-        </CardHeader>
+      {/* Network Download & Auto-Pin Settings */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Network Download Card */}
+        <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
+          <CardHeader className="pb-4">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <Download className="w-4 h-4 text-primary" />
+              Download Network Videos
+            </CardTitle>
+            <CardDescription>Download existing videos from the network to store and earn HBD</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="download-mode">Download Mode</Label>
+              <Select
+                data-testid="select-download-mode"
+                value={settings?.downloadMode || "off"}
+                onValueChange={(value: "off" | "all" | "quota") => {
+                  updateSettingsMutation.mutate({ downloadMode: value });
+                }}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select mode" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="off">Off - No automatic downloads</SelectItem>
+                  <SelectItem value="all">All - Download every video</SelectItem>
+                  <SelectItem value="quota">Quota - Download a set number</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="download-quota">Videos to Download</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  data-testid="input-download-quota"
+                  id="download-quota"
+                  type="number"
+                  min={1}
+                  max={1000}
+                  value={settings?.downloadQuota || 10}
+                  disabled={settings?.downloadMode !== "quota"}
+                  onChange={(e) => {
+                    const value = parseInt(e.target.value) || 10;
+                    updateSettingsMutation.mutate({ downloadQuota: value });
+                  }}
+                  className="w-24"
+                />
+                <span className="text-sm text-muted-foreground">videos</span>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Download Progress</Label>
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  <Progress 
+                    value={settings?.downloadMode === "quota" && settings?.downloadQuota 
+                      ? ((settings?.downloadedToday || 0) / settings.downloadQuota) * 100 
+                      : 0
+                    } 
+                    className="h-2"
+                  />
+                </div>
+                <span className="text-sm font-medium">
+                  {settings?.downloadedToday || 0}
+                  {settings?.downloadMode === "quota" && `/${settings?.downloadQuota || 10}`}
+                </span>
+              </div>
+            </div>
+
+            <Button
+              data-testid="button-start-download"
+              onClick={() => startDownloadMutation.mutate()}
+              disabled={settings?.downloadMode === "off" || settings?.downloadInProgress || startDownloadMutation.isPending}
+              className="w-full"
+            >
+              {settings?.downloadInProgress || startDownloadMutation.isPending ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Downloading...
+                </>
+              ) : (
+                <>
+                  <Download className="w-4 h-4 mr-2" />
+                  Start Download
+                </>
+              )}
+            </Button>
+
+            <p className="text-xs text-muted-foreground">
+              {settings?.downloadMode === "off" && "Enable a download mode to start downloading videos"}
+              {settings?.downloadMode === "all" && `Will download all ${files.length} available videos`}
+              {settings?.downloadMode === "quota" && `${(settings?.downloadQuota || 10) - (settings?.downloadedToday || 0)} videos remaining to download`}
+            </p>
+          </CardContent>
+        </Card>
+
+        {/* Auto-Pin Settings Card */}
+        <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
+          <CardHeader className="pb-4">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <Pin className="w-4 h-4 text-primary" />
+              Auto-Pin New Videos
+            </CardTitle>
+            <CardDescription>Automatically pin new videos as they appear on the network</CardDescription>
+          </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="space-y-2">
@@ -336,7 +454,8 @@ export default function Storage() {
             </div>
           </div>
         </CardContent>
-      </Card>
+        </Card>
+      </div>
 
       {/* Reputation & Health Section */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

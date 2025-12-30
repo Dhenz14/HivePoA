@@ -435,6 +435,21 @@ export async function registerRoutes(
     res.json(stats);
   });
 
+  // Network Download API
+  app.post("/api/downloads/start/:username", async (req, res) => {
+    try {
+      const result = await autoPinService.startNetworkDownload(req.params.username);
+      res.json(result);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/downloads/stats/:username", async (req, res) => {
+    const stats = await autoPinService.getDownloadStats(req.params.username);
+    res.json(stats);
+  });
+
   // ============================================================
   // Beneficiary API (Phase 4)
   // ============================================================

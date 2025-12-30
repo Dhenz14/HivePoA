@@ -235,6 +235,29 @@ export const api = {
     }
     return res.json();
   },
+
+  // Network Downloads
+  async startNetworkDownload(username: string): Promise<{ started: boolean; message: string; downloadCount: number }> {
+    const res = await fetch(`${API_BASE}/downloads/start/${username}`, {
+      method: "POST",
+    });
+    if (!res.ok) {
+      const error = await res.json();
+      throw new Error(error.error || "Failed to start download");
+    }
+    return res.json();
+  },
+
+  async getDownloadStats(username: string): Promise<{
+    mode: string;
+    quota: number;
+    downloadedToday: number;
+    inProgress: boolean;
+    availableFiles: number;
+  }> {
+    const res = await fetch(`${API_BASE}/downloads/stats/${username}`);
+    return res.json();
+  },
 };
 
 // WebSocket connection for real-time updates

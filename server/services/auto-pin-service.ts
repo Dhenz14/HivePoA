@@ -161,6 +161,8 @@ export class AutoPinService {
     autoPinThreshold: number;
     maxAutoPinSize: string;
     encryptByDefault: boolean;
+    downloadMode: string;
+    downloadQuota: number;
   }>): Promise<UserNodeSettings> {
     const current = await this.getUserSettings(username);
     
@@ -172,7 +174,87 @@ export class AutoPinService {
       autoPinThreshold: updates.autoPinThreshold ?? current.autoPinThreshold ?? 60,
       maxAutoPinSize: updates.maxAutoPinSize ?? current.maxAutoPinSize ?? '104857600',
       encryptByDefault: updates.encryptByDefault ?? current.encryptByDefault,
+      downloadMode: updates.downloadMode ?? current.downloadMode ?? 'off',
+      downloadQuota: updates.downloadQuota ?? current.downloadQuota ?? 10,
     });
+  }
+
+  // Start downloading videos from network
+  async startNetworkDownload(username: string): Promise<{ started: boolean; message: string; downloadCount: number }> {
+    const settings = await this.getUserSettings(username);
+    
+    if (settings.downloadMode === 'off') {
+      return { started: false, message: 'Download mode is off', downloadCount: 0 };
+    }
+
+    if (settings.downloadInProgress) {
+      return { started: false, message: 'Download already in progress', downloadCount: 0 };
+    }
+
+    // Get available files that this node doesn't have yet
+    const allFiles = await storage.getAllFiles();
+    const downloadLimit = settings.downloadMode === 'all' ? allFiles.length : (settings.downloadQuota || 10);
+    const remaining = downloadLimit - (settings.downloadedToday || 0);
+    
+    if (remaining <= 0) {
+      return { started: false, message: 'Daily download quota reached', downloadCount: 0 };
+    }
+
+    // Mark download as in progress
+    await storage.createOrUpdateUserNodeSettings({
+      ...settings,
+      downloadInProgress: true,
+    });
+
+    // Simulate downloading (in production, would actually fetch from IPFS/CDN)
+    const filesToDownload = allFiles.slice(0, Math.min(remaining, 5)); // Download up to 5 at a time
+    
+    console.log(`[Auto-Pin Service] Starting network download for ${username}: ${filesToDownload.length} files`);
+
+    // Simulate async download process
+    setTimeout(async () => {
+      try {
+        // Update downloaded count
+        await storage.createOrUpdateUserNodeSettings({
+          ...settings,
+          downloadedToday: (settings.downloadedToday || 0) + filesToDownload.length,
+          downloadInProgress: false,
+        });
+        console.log(`[Auto-Pin Service] Completed network download for ${username}: ${filesToDownload.length} files`);
+      } catch (error) {
+        console.error(`[Auto-Pin Service] Download error for ${username}:`, error);
+        await storage.createOrUpdateUserNodeSettings({
+          ...settings,
+          downloadInProgress: false,
+        });
+      }
+    }, 3000); // Simulate 3 second download
+
+    return { 
+      started: true, 
+      message: `Downloading ${filesToDownload.length} files from network`, 
+      downloadCount: filesToDownload.length 
+    };
+  }
+
+  // Get download stats for a user
+  async getDownloadStats(username: string): Promise<{
+    mode: string;
+    quota: number;
+    downloadedToday: number;
+    inProgress: boolean;
+    availableFiles: number;
+  }> {
+    const settings = await this.getUserSettings(username);
+    const allFiles = await storage.getAllFiles();
+    
+    return {
+      mode: settings.downloadMode || 'off',
+      quota: settings.downloadQuota || 10,
+      downloadedToday: settings.downloadedToday || 0,
+      inProgress: settings.downloadInProgress || false,
+      availableFiles: allFiles.length,
+    };
   }
 
   // Get auto-pin statistics for a user
