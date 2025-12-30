@@ -61,3 +61,6 @@ integrations = ["javascript_database:1.0.0"]
 [userenv.development]
 IPFS_API_URL = "http://127.0.0.1:5001"
 IPFS_GATEWAY_URL = "http://127.0.0.1:8081"
+
+[userenv.shared]
+GIT_URL = "https://Dhenz14:${GITHUB_TOKEN}@github.com/Dhenz14/spknetworkpoa.git"
