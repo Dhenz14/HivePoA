@@ -847,5 +847,61 @@ export async function registerRoutes(
     });
   });
 
+  // ============================================================
+  // 3Speak Network Browsing API
+  // ============================================================
+  
+  app.get("/api/threespeak/trending", async (req, res) => {
+    const { threespeakService } = await import("./services/threespeak-service");
+    const limit = parseInt(req.query.limit as string) || 20;
+    const page = parseInt(req.query.page as string) || 1;
+    const result = await threespeakService.getTrendingVideos(limit, page);
+    res.json(result);
+  });
+
+  app.get("/api/threespeak/new", async (req, res) => {
+    const { threespeakService } = await import("./services/threespeak-service");
+    const limit = parseInt(req.query.limit as string) || 20;
+    const page = parseInt(req.query.page as string) || 1;
+    const result = await threespeakService.getNewVideos(limit, page);
+    res.json(result);
+  });
+
+  app.get("/api/threespeak/search", async (req, res) => {
+    const { threespeakService } = await import("./services/threespeak-service");
+    const query = req.query.q as string || "";
+    const limit = parseInt(req.query.limit as string) || 20;
+    const result = await threespeakService.searchVideos(query, limit);
+    res.json(result);
+  });
+
+  app.get("/api/threespeak/video/:author/:permlink", async (req, res) => {
+    const { threespeakService } = await import("./services/threespeak-service");
+    const { author, permlink } = req.params;
+    const video = await threespeakService.getVideoDetails(author, permlink);
+    if (video) {
+      res.json(video);
+    } else {
+      res.status(404).json({ error: "Video not found" });
+    }
+  });
+
+  app.post("/api/threespeak/pin", async (req, res) => {
+    const { ipfs } = req.body;
+    if (!ipfs) {
+      res.status(400).json({ error: "Missing IPFS CID" });
+      return;
+    }
+
+    try {
+      const { getIPFSClient } = await import("./services/ipfs-client");
+      const client = getIPFSClient();
+      await client.pin(ipfs);
+      res.json({ success: true, cid: ipfs, message: "Video pinned successfully" });
+    } catch (error: any) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
   return httpServer;
 }

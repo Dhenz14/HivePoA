@@ -7,6 +7,7 @@ import NotFound from "@/pages/not-found";
 import { Layout } from "@/components/layout/Layout";
 import Dashboard from "@/pages/dashboard";
 import Storage from "@/pages/storage";
+import Browse from "@/pages/browse";
 import Wallet from "@/pages/wallet";
 import NodeStatus from "@/pages/node";
 import ValidatorSettings from "@/pages/settings";
@@ -19,6 +20,7 @@ function Router() {
       <Switch>
         <Route path="/" component={Dashboard} />
         <Route path="/storage" component={Storage} />
+        <Route path="/browse" component={Browse} />
         <Route path="/wallet" component={Wallet} />
         <Route path="/node" component={NodeStatus} />
         <Route path="/settings" component={ValidatorSettings} />
