@@ -36,13 +36,17 @@ jobs:
         working-directory: desktop-agent
         run: npm install
 
-      - name: Create placeholder icons
+      - name: Download Kubo binary
         working-directory: desktop-agent
         shell: bash
         run: |
-          mkdir -p assets
-          # Create a simple 16x16 green placeholder PNG
-          echo 'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAI0lEQVQ4jWNgYGD4z0ABYKKEMgMDAwOjKogVMGrAoDBgMAAAVOQBFYT/o7cAAAAASUVORK5CYII=' | base64 -d > assets/icon.png || echo "Creating placeholder"
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            node scripts/download-kubo.js win32-x64
+          elif [ "${{ runner.os }}" == "macOS" ]; then
+            node scripts/download-kubo.js darwin-x64
+          else
+            node scripts/download-kubo.js linux-x64
+          fi
 
       - name: Build application
         working-directory: desktop-agent
@@ -54,15 +58,40 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run package:${{ matrix.platform }}
 
+      - name: Create archive (Linux/Mac)
+        if: runner.os != 'Windows'
+        working-directory: desktop-agent
+        run: |
+          cd build
+          if [ -d "linux-unpacked" ]; then
+            tar -czvf spk-desktop-linux.tar.gz linux-unpacked/
+          fi
+          if [ -d "mac" ]; then
+            tar -czvf spk-desktop-mac.tar.gz mac/
+          fi
+          if [ -d "mac-arm64" ]; then
+            tar -czvf spk-desktop-mac-arm64.tar.gz mac-arm64/
+          fi
+          ls -la
+
+      - name: Create archive (Windows)
+        if: runner.os == 'Windows'
+        working-directory: desktop-agent
+        shell: pwsh
+        run: |
+          cd build
+          if (Test-Path "win-unpacked") {
+            Compress-Archive -Path "win-unpacked" -DestinationPath "spk-desktop-win.zip"
+          }
+          Get-ChildItem
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: spk-desktop-${{ matrix.platform }}
           path: |
-            desktop-agent/build/*.exe
-            desktop-agent/build/*.dmg
-            desktop-agent/build/*.AppImage
-            desktop-agent/build/*.deb
+            desktop-agent/build/*.tar.gz
+            desktop-agent/build/*.zip
           if-no-files-found: warn
 
   release:
@@ -79,13 +108,11 @@ jobs:
         with:
           path: artifacts
 
-      - name: Flatten and rename artifacts
+      - name: Flatten artifacts
         run: |
           mkdir -p release-files
-          find artifacts -name "*.dmg" -exec cp {} release-files/ \;
-          find artifacts -name "*.deb" -exec cp {} release-files/ \;
-          find artifacts -name "*.exe" -exec cp {} release-files/ \;
-          find artifacts -name "*.AppImage" -exec cp {} release-files/ \;
+          find artifacts -name "*.tar.gz" -exec cp {} release-files/ \;
+          find artifacts -name "*.zip" -exec cp {} release-files/ \;
           echo "Release files:"
           ls -la release-files/
 
@@ -106,10 +133,12 @@ jobs:
             
             **Auto-updated on every push to main.**
             
-            Download the installer for your platform:
-            - **Windows**: `.exe` file
-            - **macOS**: `.dmg` file
-            - **Linux**: `.AppImage` or `.deb` file
+            Download for your platform:
+            - **Windows**: `spk-desktop-win.zip`
+            - **macOS**: `spk-desktop-mac.tar.gz` or `spk-desktop-mac-arm64.tar.gz`
+            - **Linux**: `spk-desktop-linux.tar.gz`
+            
+            Extract and run the application.
             
             Built from commit: ${{ github.sha }}
           files: release-files/*

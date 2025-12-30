@@ -18,22 +18,29 @@ export class KuboManager {
   }
 
   private findIpfsBinary(): string {
+    const ext = process.platform === 'win32' ? '.exe' : '';
+    
     // In production, use the bundled binary from extraResources
     if (app.isPackaged) {
-      const ext = process.platform === 'win32' ? '.exe' : '';
-      const resourcePath = path.join(process.resourcesPath, `ipfs${ext}`);
+      const resourcePath = path.join(process.resourcesPath, 'kubo-bin', `ipfs${ext}`);
+      console.log('[Kubo] Looking for binary at:', resourcePath);
       if (fs.existsSync(resourcePath)) {
+        // Make sure it's executable on Unix
+        if (process.platform !== 'win32') {
+          try { fs.chmodSync(resourcePath, 0o755); } catch {}
+        }
         return resourcePath;
       }
     }
 
-    // In development, use go-ipfs from node_modules
-    const goIpfsPath = require('go-ipfs').path();
-    if (fs.existsSync(goIpfsPath)) {
-      return goIpfsPath;
+    // In development, look for downloaded kubo binary
+    const devBinaryPath = path.join(__dirname, '..', '..', 'kubo-bin', `ipfs${ext}`);
+    console.log('[Kubo] Dev binary path:', devBinaryPath);
+    if (fs.existsSync(devBinaryPath)) {
+      return devBinaryPath;
     }
 
-    throw new Error('IPFS binary not found');
+    throw new Error('IPFS binary not found. Run: npm run download-kubo');
   }
 
   async start(): Promise<void> {

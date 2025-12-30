@@ -12,7 +12,8 @@
     "package:win": "npm run build && electron-builder --win",
     "package:mac": "npm run build && electron-builder --mac",
     "package:linux": "npm run build && electron-builder --linux",
-    "postinstall": "electron-builder install-app-deps"
+    "postinstall": "electron-builder install-app-deps",
+    "download-kubo": "node scripts/download-kubo.js"
   },
   "author": "SPK Network",
   "license": "GPL-3.0",
@@ -34,59 +35,35 @@
   "dependencies": {
     "axios": "^1.6.2",
     "electron-store": "^8.1.0",
-    "express": "^4.18.2",
-    "go-ipfs": "^0.18.1"
+    "express": "^4.18.2"
   },
   "build": {
     "productName": "SPK Desktop Agent",
     "appId": "network.spk.desktop-agent",
-    "asar": true,
+    "asar": false,
     "directories": {
       "output": "build"
     },
     "files": [
       "dist/**/*",
-      "node_modules/**/*",
       "package.json"
     ],
     "extraResources": [
       {
-        "from": "node_modules/go-ipfs/go-ipfs/ipfs${ext}",
-        "to": "ipfs${ext}"
+        "from": "kubo-bin",
+        "to": "kubo-bin"
       }
     ],
     "mac": {
-      "icon": "assets/icon.icns",
-      "target": [
-        {
-          "target": "dmg",
-          "arch": ["x64", "arm64"]
-        }
-      ],
+      "target": "dir",
       "category": "public.app-category.utilities"
     },
     "win": {
-      "icon": "assets/icon.ico",
-      "target": [
-        {
-          "target": "nsis",
-          "arch": ["x64"]
-        }
-      ]
+      "target": "dir"
     },
     "linux": {
-      "icon": "assets/icon.png",
-      "target": [
-        {
-          "target": "AppImage",
-          "arch": ["x64"]
-        }
-      ],
+      "target": "dir",
       "category": "Utility"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true
     }
   }
 }
