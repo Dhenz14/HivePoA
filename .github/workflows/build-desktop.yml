@@ -6,17 +6,19 @@ on:
       - main
     paths:
       - 'desktop-agent/**'
+  release:
+    types: [created]
   workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create a new release'
+        required: false
+        default: 'true'
+        type: boolean
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-22.04, windows-latest, macos-latest]
-
-    runs-on: ${{ matrix.os }}
-
+  build-windows:
+    runs-on: windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -32,75 +34,183 @@ jobs:
 
       - name: Download Kubo binary
         working-directory: desktop-agent
-        shell: bash
-        run: |
-          if [ "${{ runner.os }}" == "Windows" ]; then
-            node scripts/download-kubo.js win32-x64
-          elif [ "${{ runner.os }}" == "macOS" ]; then
-            node scripts/download-kubo.js darwin-x64
-          else
-            node scripts/download-kubo.js linux-x64
-          fi
+        run: node scripts/download-kubo.js win32-x64
 
       - name: Build application
         working-directory: desktop-agent
         run: npm run build
 
-      - name: Package application
+      - name: Package Windows installer
         working-directory: desktop-agent
-        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          USE_HARD_LINKS: false
-          CSC_IDENTITY_AUTO_DISCOVERY: false
-        run: |
-          if [ "${{ runner.os }}" == "Windows" ]; then
-            npx electron-builder --win --x64 --dir
-          elif [ "${{ runner.os }}" == "macOS" ]; then
-            npx electron-builder --mac --x64 --dir
-          else
-            npx electron-builder --linux --x64 --dir
-          fi
+        run: npx electron-builder --win --x64
 
       - name: List build output
         working-directory: desktop-agent
-        shell: bash
         run: |
           echo "Build directory contents:"
-          ls -la build/ || echo "No build directory"
-          ls -la build/*/ 2>/dev/null || echo "No subdirectories"
+          Get-ChildItem -Path build -Recurse | Select-Object FullName
 
-      - name: Upload Linux artifact
-        if: runner.os == 'Linux'
+      - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
-          name: spk-desktop-linux
-          path: desktop-agent/build/linux-unpacked/
-          if-no-files-found: warn
-
-      - name: Upload macOS artifact
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
-        with:
-          name: spk-desktop-mac
-          path: |
-            desktop-agent/build/*.dmg
-            desktop-agent/build/mac*/
-          if-no-files-found: warn
-
-      - name: Upload Windows artifact
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: spk-desktop-win
+          name: windows-installer
           path: |
             desktop-agent/build/*.exe
-            desktop-agent/build/win-unpacked/
+          if-no-files-found: warn
+
+      - name: Upload Windows portable
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable
+          path: |
+            desktop-agent/build/*-Portable-*.exe
+          if-no-files-found: ignore
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        working-directory: desktop-agent
+        run: npm install
+
+      - name: Download Kubo binary (Intel)
+        working-directory: desktop-agent
+        run: node scripts/download-kubo.js darwin-x64
+
+      - name: Build application
+        working-directory: desktop-agent
+        run: npm run build
+
+      - name: Package macOS DMG
+        working-directory: desktop-agent
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: npx electron-builder --mac --x64
+
+      - name: List build output
+        working-directory: desktop-agent
+        run: |
+          echo "Build directory contents:"
+          ls -laR build/
+
+      - name: Upload macOS DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: |
+            desktop-agent/build/*.dmg
+            desktop-agent/build/*.zip
+          if-no-files-found: warn
+
+  build-macos-arm:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        working-directory: desktop-agent
+        run: npm install
+
+      - name: Download Kubo binary (ARM)
+        working-directory: desktop-agent
+        run: node scripts/download-kubo.js darwin-arm64
+
+      - name: Build application
+        working-directory: desktop-agent
+        run: npm run build
+
+      - name: Package macOS ARM DMG
+        working-directory: desktop-agent
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: npx electron-builder --mac --arm64
+
+      - name: List build output
+        working-directory: desktop-agent
+        run: |
+          echo "Build directory contents:"
+          ls -laR build/
+
+      - name: Upload macOS ARM DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm-dmg
+          path: |
+            desktop-agent/build/*-arm64*.dmg
+            desktop-agent/build/*-arm64*.zip
+          if-no-files-found: warn
+
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        working-directory: desktop-agent
+        run: npm install
+
+      - name: Download Kubo binary
+        working-directory: desktop-agent
+        run: node scripts/download-kubo.js linux-x64
+
+      - name: Build application
+        working-directory: desktop-agent
+        run: npm run build
+
+      - name: Package Linux AppImage and deb
+        working-directory: desktop-agent
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --linux --x64
+
+      - name: List build output
+        working-directory: desktop-agent
+        run: |
+          echo "Build directory contents:"
+          ls -laR build/
+
+      - name: Upload Linux AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: desktop-agent/build/*.AppImage
+          if-no-files-found: warn
+
+      - name: Upload Linux deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: desktop-agent/build/*.deb
           if-no-files-found: warn
 
   release:
-    needs: build
+    needs: [build-windows, build-macos, build-macos-arm, build-linux]
     runs-on: ubuntu-latest
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
     permissions:
       contents: write
     
@@ -115,16 +225,39 @@ jobs:
       - name: Prepare release files
         run: |
           mkdir -p release-files
-          # Create archives for unpacked directories
-          if [ -d "artifacts/spk-desktop-win/win-unpacked" ]; then
-            cd artifacts/spk-desktop-win && zip -r ../../release-files/spk-desktop-win.zip win-unpacked/ && cd ../..
+          
+          # Copy Windows installer
+          if [ -d "artifacts/windows-installer" ]; then
+            cp artifacts/windows-installer/*.exe release-files/ 2>/dev/null || true
           fi
-          if [ -d "artifacts/spk-desktop-mac/mac" ]; then
-            cd artifacts/spk-desktop-mac && tar -czvf ../../release-files/spk-desktop-mac.tar.gz mac/ && cd ../..
+          
+          # Copy Windows portable
+          if [ -d "artifacts/windows-portable" ]; then
+            cp artifacts/windows-portable/*.exe release-files/ 2>/dev/null || true
           fi
-          if [ -d "artifacts/spk-desktop-linux/linux-unpacked" ]; then
-            cd artifacts/spk-desktop-linux && tar -czvf ../../release-files/spk-desktop-linux.tar.gz linux-unpacked/ && cd ../..
+          
+          # Copy macOS DMG
+          if [ -d "artifacts/macos-dmg" ]; then
+            cp artifacts/macos-dmg/*.dmg release-files/ 2>/dev/null || true
+            cp artifacts/macos-dmg/*.zip release-files/ 2>/dev/null || true
           fi
+          
+          # Copy macOS ARM DMG
+          if [ -d "artifacts/macos-arm-dmg" ]; then
+            cp artifacts/macos-arm-dmg/*.dmg release-files/ 2>/dev/null || true
+            cp artifacts/macos-arm-dmg/*.zip release-files/ 2>/dev/null || true
+          fi
+          
+          # Copy Linux AppImage
+          if [ -d "artifacts/linux-appimage" ]; then
+            cp artifacts/linux-appimage/*.AppImage release-files/ 2>/dev/null || true
+          fi
+          
+          # Copy Linux deb
+          if [ -d "artifacts/linux-deb" ]; then
+            cp artifacts/linux-deb/*.deb release-files/ 2>/dev/null || true
+          fi
+          
           echo "Release files:"
           ls -la release-files/
 
@@ -139,16 +272,26 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: "Latest Desktop Build"
+          name: "SPK Desktop Agent - Latest Build"
           body: |
-            ## SPK Desktop Agent - Latest Build
+            ## SPK Desktop Agent - One-Click Installers
             
             **Auto-updated on every push to main.**
             
-            Download for your platform:
-            - **Windows**: `spk-desktop-win.zip` - Extract and run
-            - **macOS**: `spk-desktop-mac.tar.gz` - Extract and run
-            - **Linux**: `spk-desktop-linux.tar.gz` - Extract and run
+            ### Download for your platform:
+            
+            | Platform | File | Instructions |
+            |----------|------|--------------|
+            | **Windows** | `SPK-Desktop-Agent-Setup-*.exe` | Run installer, creates desktop shortcut |
+            | **macOS (Intel)** | `SPK-Desktop-Agent-*.dmg` | Open DMG, drag to Applications |
+            | **macOS (Apple Silicon)** | `SPK-Desktop-Agent-*-arm64.dmg` | Open DMG, drag to Applications |
+            | **Linux** | `SPK-Desktop-Agent-*.AppImage` | `chmod +x` then double-click |
+            | **Linux (Debian)** | `SPK-Desktop-Agent-*.deb` | `sudo dpkg -i` to install |
+            
+            ### After Installation:
+            1. Launch **SPK Desktop Agent** from your applications
+            2. The app runs in your system tray/menu bar
+            3. Link your Hive account to start earning HBD rewards
             
             Built from commit: ${{ github.sha }}
           files: release-files/*
