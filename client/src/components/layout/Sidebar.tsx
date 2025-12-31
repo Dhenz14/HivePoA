@@ -1,11 +1,13 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, HardDrive, Wallet, Server, Settings, Globe, Hexagon, Play, Wifi, Download, Coins, ShoppingBag, BarChart3, Shield, Zap, AlertTriangle } from "lucide-react";
+import { LayoutDashboard, HardDrive, Wallet, Server, Settings, Globe, Hexagon, Play, Wifi, Download, Coins, ShoppingBag, BarChart3, Shield, Zap, AlertTriangle, LogIn, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useNodeConfig } from "@/contexts/NodeConfigContext";
+import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
 
 export function Sidebar() {
   const [location] = useLocation();
   const { config } = useNodeConfig();
+  const { user, isAuthenticated, logout } = useValidatorAuth();
 
   const mainLinks = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -63,29 +65,63 @@ export function Sidebar() {
         })}
 
         <div className="pt-4 pb-2">
-          <span className="px-3 text-xs font-semibold text-muted-foreground/70 uppercase tracking-wider">
-            Validator
-          </span>
+          <div className="flex items-center justify-between px-3">
+            <span className="text-xs font-semibold text-muted-foreground/70 uppercase tracking-wider">
+              Validator
+            </span>
+            {isAuthenticated && user && (
+              <span className="text-xs text-primary font-medium">
+                @{user.username}
+              </span>
+            )}
+          </div>
         </div>
-        {validatorLinks.map((link) => {
-          const Icon = link.icon;
-          const isActive = location === link.href;
-          return (
-            <Link 
-              key={link.href} 
-              href={link.href}
-              className={cn(
-                "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-all duration-200 group",
-                isActive 
-                  ? "bg-primary/10 text-primary" 
-                  : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
-              )}
+        
+        {!isAuthenticated ? (
+          <Link 
+            href="/validator-login"
+            className={cn(
+              "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-all duration-200 group",
+              location === "/validator-login"
+                ? "bg-primary/10 text-primary" 
+                : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
+            )}
+            data-testid="link-validator-login"
+          >
+            <LogIn className={cn("w-4 h-4", location === "/validator-login" ? "text-primary" : "text-muted-foreground group-hover:text-foreground")} />
+            Validator Login
+          </Link>
+        ) : (
+          <>
+            {validatorLinks.map((link) => {
+              const Icon = link.icon;
+              const isActive = location === link.href;
+              return (
+                <Link 
+                  key={link.href} 
+                  href={link.href}
+                  className={cn(
+                    "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-all duration-200 group",
+                    isActive 
+                      ? "bg-primary/10 text-primary" 
+                      : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
+                  )}
+                >
+                  <Icon className={cn("w-4 h-4", isActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground")} />
+                  {link.label}
+                </Link>
+              );
+            })}
+            <button
+              onClick={logout}
+              className="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-all duration-200 group text-muted-foreground hover:text-foreground hover:bg-accent/50 w-full"
+              data-testid="button-validator-logout"
             >
-              <Icon className={cn("w-4 h-4", isActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground")} />
-              {link.label}
-            </Link>
-          );
-        })}
+              <LogOut className="w-4 h-4 text-muted-foreground group-hover:text-foreground" />
+              Logout
+            </button>
+          </>
+        )}
 
         <div className="pt-4 pb-2">
           <span className="px-3 text-xs font-semibold text-muted-foreground/70 uppercase tracking-wider">

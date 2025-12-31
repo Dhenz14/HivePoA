@@ -6,6 +6,7 @@ import { Shield, Activity, Clock, Skull, TrendingUp, TrendingDown, CheckCircle2,
 import { useQuery } from "@tanstack/react-query";
 import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip } from "recharts";
 import { cn } from "@/lib/utils";
+import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
 
 interface HourlyActivityItem {
   hour: number;
@@ -45,8 +46,13 @@ interface ValidatorDashboardData {
   earnings: number;
 }
 
-async function fetchValidatorDashboard(username: string): Promise<ValidatorDashboardData> {
-  const res = await fetch(`/api/validator/dashboard/${username}`);
+async function fetchValidatorDashboard(username: string, sessionToken?: string): Promise<ValidatorDashboardData> {
+  const headers: HeadersInit = {};
+  if (sessionToken) {
+    headers['Authorization'] = `Bearer ${sessionToken}`;
+  }
+  
+  const res = await fetch(`/api/validator/dashboard/${username}`, { headers });
   if (!res.ok) {
     return {
       validator: {
@@ -96,9 +102,13 @@ function getStatusBadgeVariant(status: string): "default" | "secondary" | "destr
 }
 
 export default function ValidatorDashboard() {
+  const { user } = useValidatorAuth();
+  const username = user?.username || "demo_user";
+  const sessionToken = user?.sessionToken;
+  
   const { data, isLoading } = useQuery({
-    queryKey: ["validator", "dashboard", "demo_user"],
-    queryFn: () => fetchValidatorDashboard("demo_user"),
+    queryKey: ["validator", "dashboard", username],
+    queryFn: () => fetchValidatorDashboard(username, sessionToken),
     refetchInterval: 5000,
   });
 

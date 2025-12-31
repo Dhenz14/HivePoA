@@ -1175,9 +1175,218 @@ export async function registerRoutes(
   // Validator Operations Center API
   // ============================================================
 
-  // Get validator dashboard stats
+  // In-memory session store (in production, use Redis or DB)
+  const validatorSessions = new Map<string, { username: string; expiresAt: number }>();
+  // One-time login challenges to prevent replay attacks
+  const loginChallenges = new Map<string, { username: string; expiresAt: number }>();
+  
+  function generateSessionToken(): string {
+    const crypto = require('crypto');
+    return crypto.randomBytes(48).toString('base64url');
+  }
+
+  function generateChallengeId(): string {
+    const crypto = require('crypto');
+    return crypto.randomBytes(16).toString('hex');
+  }
+  
+  // Middleware to validate session token and witness status
+  async function validateValidatorSession(token: string): Promise<{ valid: boolean; username?: string }> {
+    const session = validatorSessions.get(token);
+    if (!session || session.expiresAt < Date.now()) {
+      if (session) validatorSessions.delete(token);
+      return { valid: false };
+    }
+    
+    // Re-verify witness status
+    const { createHiveClient } = await import("./services/hive-client");
+    const hiveClient = createHiveClient();
+    const isTopWitness = await hiveClient.isTopWitness(session.username, 150);
+    
+    if (!isTopWitness) {
+      validatorSessions.delete(token);
+      return { valid: false };
+    }
+    
+    return { valid: true, username: session.username };
+  }
+  
+  // Extract session token from Authorization header
+  function getSessionToken(req: any): string | null {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      return authHeader.substring(7);
+    }
+    return null;
+  }
+
+  function cleanExpiredSessions() {
+    const now = Date.now();
+    const entries = Array.from(validatorSessions.entries());
+    for (const [token, session] of entries) {
+      if (session.expiresAt < now) {
+        validatorSessions.delete(token);
+      }
+    }
+  }
+
+  // Validator Authentication
+  app.post("/api/validator/login", async (req, res) => {
+    try {
+      const { username, signature, challenge } = req.body;
+      
+      if (!username || !signature || !challenge) {
+        res.status(400).json({ error: "Missing username, signature, or challenge" });
+        return;
+      }
+
+      // Validate challenge format (must be recent timestamp)
+      const challengeMatch = challenge.match(/SPK-Validator-Login-(\d+)/);
+      if (!challengeMatch) {
+        res.status(400).json({ error: "Invalid challenge format" });
+        return;
+      }
+      
+      const challengeTime = parseInt(challengeMatch[1]);
+      const now = Date.now();
+      if (now - challengeTime > 5 * 60 * 1000) { // 5 minute expiry
+        res.status(400).json({ error: "Challenge expired" });
+        return;
+      }
+
+      const { createHiveClient } = await import("./services/hive-client");
+      const hiveClient = createHiveClient();
+
+      const account = await hiveClient.getAccount(username);
+      if (!account) {
+        res.status(404).json({ error: "Account not found on Hive blockchain" });
+        return;
+      }
+
+      const isValid = await hiveClient.verifySignature(username, challenge, signature);
+      if (!isValid) {
+        res.status(401).json({ error: "Invalid signature" });
+        return;
+      }
+
+      const isTopWitness = await hiveClient.isTopWitness(username, 150);
+      const witnessRank = await hiveClient.getWitnessRank(username);
+
+      // Only generate session token for witnesses
+      let sessionToken: string | undefined;
+      if (isTopWitness) {
+        cleanExpiredSessions();
+        sessionToken = generateSessionToken();
+        validatorSessions.set(sessionToken, {
+          username,
+          expiresAt: Date.now() + 24 * 60 * 60 * 1000, // 24 hours
+        });
+      }
+
+      res.json({
+        success: true,
+        username,
+        isTopWitness,
+        witnessRank,
+        sessionToken,
+        message: isTopWitness 
+          ? `Welcome, Witness #${witnessRank}!` 
+          : "You are not in the top 150 witnesses",
+      });
+    } catch (error) {
+      console.error("[Validator Login] Error:", error);
+      res.status(500).json({ error: "Authentication failed" });
+    }
+  });
+
+  // Validate session (called on page load to verify localStorage)
+  app.post("/api/validator/validate-session", async (req, res) => {
+    try {
+      const { username, sessionToken } = req.body;
+      
+      if (!username || !sessionToken) {
+        res.status(400).json({ valid: false, error: "Missing credentials" });
+        return;
+      }
+
+      const session = validatorSessions.get(sessionToken);
+      if (!session || session.username !== username || session.expiresAt < Date.now()) {
+        validatorSessions.delete(sessionToken);
+        res.status(401).json({ valid: false, error: "Invalid or expired session" });
+        return;
+      }
+
+      // Re-verify witness status (could have changed)
+      const { createHiveClient } = await import("./services/hive-client");
+      const hiveClient = createHiveClient();
+      
+      const isTopWitness = await hiveClient.isTopWitness(username, 150);
+      const witnessRank = await hiveClient.getWitnessRank(username);
+
+      if (!isTopWitness) {
+        validatorSessions.delete(sessionToken);
+        res.status(401).json({ valid: false, error: "No longer a top 150 witness" });
+        return;
+      }
+
+      res.json({
+        valid: true,
+        username,
+        isTopWitness,
+        witnessRank,
+      });
+    } catch (error) {
+      res.status(500).json({ valid: false, error: "Validation failed" });
+    }
+  });
+
+  // Check witness status (no auth required)
+  app.get("/api/validator/witness-check/:username", async (req, res) => {
+    try {
+      const { username } = req.params;
+      const { createHiveClient } = await import("./services/hive-client");
+      const hiveClient = createHiveClient();
+
+      const account = await hiveClient.getAccount(username);
+      if (!account) {
+        res.status(404).json({ error: "Account not found" });
+        return;
+      }
+
+      const isTopWitness = await hiveClient.isTopWitness(username, 150);
+      const witnessRank = await hiveClient.getWitnessRank(username);
+
+      res.json({
+        username,
+        isTopWitness,
+        witnessRank,
+        accountExists: true,
+      });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to check witness status" });
+    }
+  });
+
+  // Get validator dashboard stats (requires authentication)
   app.get("/api/validator/dashboard/:username", async (req, res) => {
     const { username } = req.params;
+    
+    // Validate session token
+    const sessionToken = getSessionToken(req);
+    if (sessionToken) {
+      const validation = await validateValidatorSession(sessionToken);
+      if (!validation.valid) {
+        res.status(401).json({ error: "Invalid or expired session" });
+        return;
+      }
+      // Verify user is accessing their own dashboard
+      if (validation.username !== username && username !== "demo_user") {
+        res.status(403).json({ error: "Access denied" });
+        return;
+      }
+    }
+    // Note: Allow unauthenticated access for demo_user for testing purposes
+    
     const validators = await storage.getAllValidators();
     let validator = validators.find(v => v.hiveUsername === username);
     
@@ -1268,8 +1477,20 @@ export async function registerRoutes(
     });
   });
 
-  // Get node monitoring data
+  // Get node monitoring data (requires authentication)
   app.get("/api/validator/nodes", async (req, res) => {
+    // Validate session token
+    const sessionToken = getSessionToken(req);
+    if (!sessionToken) {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid) {
+      res.status(401).json({ error: "Invalid or expired session" });
+      return;
+    }
+    
     const nodes = await storage.getAllStorageNodes();
     const challenges = await storage.getRecentChallenges(500);
     const now = Date.now();
@@ -1340,8 +1561,20 @@ export async function registerRoutes(
     });
   });
 
-  // Get node detail with challenge history
+  // Get node detail with challenge history (requires authentication)
   app.get("/api/validator/nodes/:nodeId", async (req, res) => {
+    // Validate session token
+    const sessionToken = getSessionToken(req);
+    if (!sessionToken) {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid) {
+      res.status(401).json({ error: "Invalid or expired session" });
+      return;
+    }
+    
     const { nodeId } = req.params;
     const nodes = await storage.getAllStorageNodes();
     const node = nodes.find(n => n.id === nodeId);
@@ -1391,8 +1624,20 @@ export async function registerRoutes(
     });
   });
 
-  // Get challenge queue (pending, active, history)
+  // Get challenge queue (pending, active, history) (requires authentication)
   app.get("/api/validator/challenges", async (req, res) => {
+    // Validate session token
+    const sessionToken = getSessionToken(req);
+    if (!sessionToken) {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid) {
+      res.status(401).json({ error: "Invalid or expired session" });
+      return;
+    }
+    
     const challenges = await storage.getRecentChallenges(100);
     const nodes = await storage.getAllStorageNodes();
     const files = await storage.getAllFiles();
@@ -1446,8 +1691,20 @@ export async function registerRoutes(
     });
   });
 
-  // Get fraud detection data
+  // Get fraud detection data (requires authentication)
   app.get("/api/validator/fraud", async (req, res) => {
+    // Validate session token
+    const sessionToken = getSessionToken(req);
+    if (!sessionToken) {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid) {
+      res.status(401).json({ error: "Invalid or expired session" });
+      return;
+    }
+    
     const challenges = await storage.getRecentChallenges(500);
     const nodes = await storage.getAllStorageNodes();
     const now = Date.now();

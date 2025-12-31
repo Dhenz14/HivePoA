@@ -9,6 +9,7 @@ import { AlertTriangle, ShieldAlert, Hash, Users, Flag, Eye, Ban, ChevronDown, C
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
 
 interface SuspiciousPattern {
   type: string;
@@ -46,8 +47,13 @@ interface FraudData {
   };
 }
 
-async function fetchFraudData(): Promise<FraudData> {
-  const res = await fetch("/api/validator/fraud");
+async function fetchFraudData(sessionToken?: string): Promise<FraudData> {
+  const headers: HeadersInit = {};
+  if (sessionToken) {
+    headers['Authorization'] = `Bearer ${sessionToken}`;
+  }
+  
+  const res = await fetch("/api/validator/fraud", { headers });
   if (!res.ok) {
     return {
       suspiciousPatterns: [],
@@ -98,13 +104,15 @@ function getPatternTypeLabel(type: string): string {
 }
 
 export default function FraudDetection() {
+  const { user } = useValidatorAuth();
+  const sessionToken = user?.sessionToken;
   const { toast } = useToast();
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [banningNode, setBanningNode] = useState<{ id: string; username: string } | null>(null);
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["validator", "fraud"],
-    queryFn: fetchFraudData,
+    queryFn: () => fetchFraudData(sessionToken),
     refetchInterval: 30000,
   });
 

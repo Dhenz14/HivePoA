@@ -11,6 +11,7 @@ import { Server, CheckCircle2, AlertTriangle, XCircle, Clock, Activity, Shield, 
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { motion } from "framer-motion";
+import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
 
 interface NodeDetails {
   id: string;
@@ -47,8 +48,13 @@ interface NodesData {
   };
 }
 
-async function fetchNodes(): Promise<NodesData> {
-  const res = await fetch("/api/validator/nodes");
+async function fetchNodes(sessionToken?: string): Promise<NodesData> {
+  const headers: HeadersInit = {};
+  if (sessionToken) {
+    headers['Authorization'] = `Bearer ${sessionToken}`;
+  }
+  
+  const res = await fetch("/api/validator/nodes", { headers });
   if (!res.ok) {
     return {
       all: [],
@@ -115,13 +121,15 @@ function getLatencyColor(latency: number): string {
 }
 
 export default function NodeMonitoring() {
+  const { user } = useValidatorAuth();
+  const sessionToken = user?.sessionToken;
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<NodeDetails | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
 
   const { data, isLoading } = useQuery({
     queryKey: ["validator", "nodes"],
-    queryFn: fetchNodes,
+    queryFn: () => fetchNodes(sessionToken),
     refetchInterval: 10000,
   });
 

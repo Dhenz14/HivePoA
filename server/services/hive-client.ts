@@ -1,4 +1,4 @@
-import { Client, PrivateKey, Asset, TransferOperation, CustomJsonOperation } from "@hiveio/dhive";
+import { Client, PrivateKey, Asset, TransferOperation, CustomJsonOperation, Signature, PublicKey, cryptoUtils } from "@hiveio/dhive";
 
 export interface HiveConfig {
   nodes: string[];
@@ -165,6 +165,39 @@ export class HiveClient {
     return topWitnesses.includes(username);
   }
 
+  async getWitnessRank(username: string): Promise<number | null> {
+    const witnesses = await this.getTopWitnesses(150);
+    const index = witnesses.indexOf(username);
+    return index >= 0 ? index + 1 : null;
+  }
+
+  async verifySignature(username: string, message: string, signature: string): Promise<boolean> {
+    try {
+      const account = await this.getAccount(username);
+      if (!account) return false;
+
+      const messageHash = cryptoUtils.sha256(message);
+      const sig = Signature.fromString(signature);
+
+      const postingAuth = account.posting;
+      for (const [pubKeyStr] of postingAuth.key_auths) {
+        try {
+          const pubKey = PublicKey.fromString(pubKeyStr as string);
+          const recovered = sig.recover(messageHash);
+          if (recovered.toString() === pubKey.toString()) {
+            return true;
+          }
+        } catch {
+          continue;
+        }
+      }
+      return false;
+    } catch (error) {
+      console.error("[Hive] Signature verification failed:", error);
+      return false;
+    }
+  }
+
   async getBlockchainTime(): Promise<Date> {
     const props = await this.client.database.getDynamicGlobalProperties();
     return new Date(props.time + "Z");
@@ -249,7 +282,18 @@ export class MockHiveClient {
   }
 
   async isTopWitness(username: string, topN: number = 150): Promise<boolean> {
-    return Math.random() > 0.5;
+    const topWitnesses = await this.getTopWitnesses(topN);
+    return topWitnesses.includes(username);
+  }
+
+  async getWitnessRank(username: string): Promise<number | null> {
+    const witnesses = await this.getTopWitnesses(150);
+    const index = witnesses.indexOf(username);
+    return index >= 0 ? index + 1 : null;
+  }
+
+  async verifySignature(username: string, message: string, signature: string): Promise<boolean> {
+    return signature.length > 10;
   }
 
   async getBlockchainTime(): Promise<Date> {

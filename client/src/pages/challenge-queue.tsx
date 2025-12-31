@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
+import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
 
 type ChallengeResult = "pass" | "fail" | "timeout" | "pending";
 
@@ -45,8 +46,13 @@ interface ChallengeStats {
   challenges: Challenge[];
 }
 
-async function fetchChallenges(): Promise<ChallengeStats> {
-  const res = await fetch("/api/validator/challenges");
+async function fetchChallenges(sessionToken?: string): Promise<ChallengeStats> {
+  const headers: HeadersInit = {};
+  if (sessionToken) {
+    headers['Authorization'] = `Bearer ${sessionToken}`;
+  }
+  
+  const res = await fetch("/api/validator/challenges", { headers });
   if (!res.ok) {
     throw new Error(`Failed to fetch challenges: ${res.status} ${res.statusText}`);
   }
@@ -125,6 +131,8 @@ function getStatusIcon(result: ChallengeResult) {
 }
 
 export default function ChallengeQueue() {
+  const { user } = useValidatorAuth();
+  const sessionToken = user?.sessionToken;
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState("active");
   const [selectedChallenge, setSelectedChallenge] = useState<Challenge | null>(null);
@@ -133,7 +141,7 @@ export default function ChallengeQueue() {
 
   const { data: stats, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["validator", "challenges"],
-    queryFn: fetchChallenges,
+    queryFn: () => fetchChallenges(sessionToken),
     refetchInterval: 5000,
     retry: 2,
   });
