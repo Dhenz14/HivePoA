@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-20.04, windows-latest, macos-latest]
+        os: [ubuntu-22.04, windows-latest, macos-latest]
 
     runs-on: ${{ matrix.os }}
 
@@ -59,7 +59,7 @@ jobs:
           elif [ "${{ runner.os }}" == "macOS" ]; then
             npx electron-builder --mac --x64 --dir
           else
-            npx electron-builder --linux --x64
+            npx electron-builder --linux --x64 --dir
           fi
 
       - name: List build output
@@ -75,7 +75,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: spk-desktop-linux
-          path: desktop-agent/build/*.AppImage
+          path: desktop-agent/build/linux-unpacked/
           if-no-files-found: warn
 
       - name: Upload macOS artifact
@@ -122,8 +122,9 @@ jobs:
           if [ -d "artifacts/spk-desktop-mac/mac" ]; then
             cd artifacts/spk-desktop-mac && tar -czvf ../../release-files/spk-desktop-mac.tar.gz mac/ && cd ../..
           fi
-          # Copy AppImage files directly
-          find artifacts -name "*.AppImage" -exec cp {} release-files/ \;
+          if [ -d "artifacts/spk-desktop-linux/linux-unpacked" ]; then
+            cd artifacts/spk-desktop-linux && tar -czvf ../../release-files/spk-desktop-linux.tar.gz linux-unpacked/ && cd ../..
+          fi
           echo "Release files:"
           ls -la release-files/
 
@@ -147,12 +148,12 @@ jobs:
             Download for your platform:
             - **Windows**: `spk-desktop-win.zip` - Extract and run
             - **macOS**: `spk-desktop-mac.tar.gz` - Extract and run
-            - **Linux**: `.AppImage` - Make executable with `chmod +x` and run
+            - **Linux**: `spk-desktop-linux.tar.gz` - Extract and run
             
             Built from commit: ${{ github.sha }}
           files: release-files/*
           draft: false
           prerelease: false
-          make_latest: true
+          fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
