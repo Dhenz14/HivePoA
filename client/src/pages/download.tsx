@@ -19,29 +19,29 @@ const DOWNLOADS: Record<Platform, DownloadInfo> = {
     platform: "windows",
     label: "Windows",
     icon: <Monitor className="h-6 w-6" />,
-    filename: "spk-desktop-win.zip",
-    description: "Windows 10/11 (64-bit)",
+    filename: "SPK-Desktop-Agent-Setup-1.0.0.exe",
+    description: "Windows 10/11 (64-bit) - One-click installer",
   },
   macos: {
     platform: "macos",
     label: "macOS",
     icon: <Apple className="h-6 w-6" />,
-    filename: "spk-desktop-mac.tar.gz",
-    description: "macOS 10.15+",
+    filename: "SPK-Desktop-Agent-1.0.0.dmg",
+    description: "macOS 10.15+ (Intel)",
   },
   "macos-arm": {
     platform: "macos-arm",
     label: "macOS",
     icon: <Apple className="h-6 w-6" />,
-    filename: "spk-desktop-mac.tar.gz",
-    description: "macOS 10.15+",
+    filename: "SPK-Desktop-Agent-1.0.0-arm64.dmg",
+    description: "macOS 11+ (Apple Silicon)",
   },
   linux: {
     platform: "linux",
     label: "Linux",
     icon: <Terminal className="h-6 w-6" />,
-    filename: "spk-desktop-linux.tar.gz",
-    description: "Linux (64-bit)",
+    filename: "SPK-Desktop-Agent-1.0.0.AppImage",
+    description: "Linux (64-bit) - Double-click to run",
   },
   unknown: {
     platform: "unknown",
@@ -186,6 +186,49 @@ export default function DownloadPage() {
             ))}
         </div>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Installation Instructions</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid md:grid-cols-3 gap-4 text-sm">
+            <div className="space-y-2">
+              <h4 className="font-semibold flex items-center gap-2">
+                <Monitor className="h-4 w-4" /> Windows
+              </h4>
+              <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
+                <li>Run the .exe installer</li>
+                <li>Click "Install" when prompted</li>
+                <li>Find the app in Start Menu or Desktop</li>
+                <li>Look for the icon in your system tray</li>
+              </ol>
+            </div>
+            <div className="space-y-2">
+              <h4 className="font-semibold flex items-center gap-2">
+                <Apple className="h-4 w-4" /> macOS
+              </h4>
+              <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
+                <li>Open the .dmg file</li>
+                <li>Drag the app to Applications</li>
+                <li>Launch from Applications folder</li>
+                <li>Look for the icon in your menu bar</li>
+              </ol>
+            </div>
+            <div className="space-y-2">
+              <h4 className="font-semibold flex items-center gap-2">
+                <Terminal className="h-4 w-4" /> Linux
+              </h4>
+              <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
+                <li>Make file executable (chmod +x)</li>
+                <li>Double-click the .AppImage</li>
+                <li>Or run from terminal</li>
+                <li>Look for the icon in your system tray</li>
+              </ol>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="text-center space-y-2">
         <a 

@@ -4,6 +4,26 @@
 
 Built with **Electron** for reliable cross-platform support.
 
+## Quick Start (Users)
+
+### Windows
+1. Download `SPK-Desktop-Agent-Setup-x.x.x.exe`
+2. Run the installer - it creates a desktop shortcut
+3. Click the **SPK Desktop Agent** icon to launch
+4. The app runs in your system tray (look for the SPK icon near your clock)
+
+### macOS
+1. Download `SPK-Desktop-Agent-x.x.x.dmg`
+2. Open the DMG and drag the app to Applications
+3. Launch **SPK Desktop Agent** from Applications
+4. The app runs in your menu bar
+
+### Linux
+1. Download `SPK-Desktop-Agent-x.x.x.AppImage`
+2. Make it executable: `chmod +x SPK-Desktop-Agent-*.AppImage`
+3. Double-click to run, or run from terminal
+4. The app runs in your system tray
+
 ## Features
 
 - **One-Click Install**: Download, run, done. IPFS auto-initializes via bundled `go-ipfs`.

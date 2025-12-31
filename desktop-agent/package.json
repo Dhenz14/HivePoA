@@ -40,7 +40,7 @@
   "build": {
     "productName": "SPK Desktop Agent",
     "appId": "network.spk.desktop-agent",
-    "asar": false,
+    "asar": true,
     "directories": {
       "output": "build"
     },
@@ -55,15 +55,29 @@
       }
     ],
     "mac": {
-      "target": "dir",
-      "category": "public.app-category.utilities"
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.utilities",
+      "icon": "assets/icon.icns"
     },
     "win": {
-      "target": "dir"
+      "target": ["nsis", "portable"],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "SPK Desktop Agent"
+    },
+    "portable": {
+      "artifactName": "SPK-Desktop-Agent-Portable-${version}.${ext}"
     },
     "linux": {
-      "target": "dir",
-      "category": "Utility"
+      "target": ["AppImage", "deb"],
+      "category": "Utility",
+      "icon": "assets/icon.png"
     }
   }
 }
