@@ -11,6 +11,7 @@ import { encryptionService } from "./services/encryption-service";
 import { autoPinService } from "./services/auto-pin-service";
 import { beneficiaryService } from "./services/beneficiary-service";
 import { ipfsGateway } from "./services/ipfs-gateway";
+import { p2pSignaling } from "./p2p-signaling";
 import { WebSocketServer } from "ws";
 import { insertFileSchema, insertValidatorBlacklistSchema } from "@shared/schema";
 import { z } from "zod";
@@ -41,6 +42,10 @@ export async function registerRoutes(
       console.log("[WebSocket] Client disconnected");
     });
   });
+
+  // P2P CDN WebSocket for peer signaling (Phase 6)
+  const p2pWss = new WebSocketServer({ server: httpServer, path: "/p2p" });
+  p2pSignaling.init(p2pWss);
 
   // Start background services
   hiveSimulator.start();
@@ -2238,6 +2243,113 @@ export async function registerRoutes(
       };
       
       res.json(exportData);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ============================================================
+  // Phase 6: P2P CDN API
+  // ============================================================
+
+  app.get("/api/p2p/stats", async (req, res) => {
+    try {
+      const dbStats = await storage.getCurrentP2pNetworkStats();
+      const realtimeStats = p2pSignaling.getStats();
+      
+      res.json({
+        realtime: realtimeStats,
+        database: dbStats,
+        combined: {
+          activePeers: realtimeStats.activePeers > 0 ? realtimeStats.activePeers : dbStats.activePeers,
+          activeRooms: realtimeStats.activeRooms > 0 ? realtimeStats.activeRooms : dbStats.activeRooms,
+          totalBytesShared: dbStats.totalBytesShared,
+          avgP2pRatio: dbStats.avgP2pRatio,
+        },
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/p2p/rooms", async (req, res) => {
+    try {
+      const rooms = await storage.getActiveP2pRooms();
+      const realtimeStats = p2pSignaling.getStats();
+      
+      const enrichedRooms = rooms.map(room => {
+        const realtimeRoom = realtimeStats.rooms.find(r => r.id === room.id);
+        return {
+          ...room,
+          realtimePeers: realtimeRoom?.peerCount || 0,
+        };
+      });
+      
+      res.json(enrichedRooms);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/p2p/history", async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 100;
+      const stats = await storage.getP2pNetworkStats(limit);
+      res.json(stats);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/p2p/contributors", async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 50;
+      const contributors = await storage.getTopContributors(limit);
+      res.json(contributors);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/p2p/contributions/:username", async (req, res) => {
+    try {
+      const contributions = await storage.getP2pContributionsByUsername(req.params.username);
+      
+      const totals = contributions.reduce((acc, c) => ({
+        totalBytesShared: acc.totalBytesShared + (c.bytesShared || 0),
+        totalSegmentsShared: acc.totalSegmentsShared + (c.segmentsShared || 0),
+        totalSessionSeconds: acc.totalSessionSeconds + (c.sessionDurationSec || 0),
+        sessionCount: acc.sessionCount + 1,
+      }), { totalBytesShared: 0, totalSegmentsShared: 0, totalSessionSeconds: 0, sessionCount: 0 });
+      
+      res.json({
+        username: req.params.username,
+        ...totals,
+        avgP2pRatio: contributions.length > 0
+          ? contributions.reduce((sum, c) => sum + (c.p2pRatio || 0), 0) / contributions.length
+          : 0,
+        recentContributions: contributions.slice(0, 20),
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/p2p/room/:videoCid", async (req, res) => {
+    try {
+      const room = await storage.getP2pRoomByCid(req.params.videoCid);
+      if (!room) {
+        res.status(404).json({ error: "Room not found" });
+        return;
+      }
+      
+      const realtimeStats = p2pSignaling.getStats();
+      const realtimeRoom = realtimeStats.rooms.find(r => r.id === room.id);
+      
+      res.json({
+        ...room,
+        realtimePeers: realtimeRoom?.peerCount || 0,
+      });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }

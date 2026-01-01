@@ -6,6 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
 import { Users, Upload, Download, Wifi, WifiOff } from 'lucide-react';
 import { P2PVideoEngine, P2PStats, createP2PEngine } from '@/lib/p2p-engine';
+import { P2PSignalingClient } from '@/lib/p2p-signaling-client';
 
 interface P2PVideoPlayerProps {
   manifestUrl: string;
@@ -15,6 +16,7 @@ interface P2PVideoPlayerProps {
   autoPlay?: boolean;
   showStats?: boolean;
   p2pEnabled?: boolean;
+  hiveUsername?: string;
   onP2PToggle?: (enabled: boolean) => void;
 }
 
@@ -26,10 +28,13 @@ export function P2PVideoPlayer({
   autoPlay = false,
   showStats = true,
   p2pEnabled = true,
+  hiveUsername,
   onP2PToggle,
 }: P2PVideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const engineRef = useRef<P2PVideoEngine | null>(null);
+  const signalingRef = useRef<P2PSignalingClient | null>(null);
+  const statsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [isP2PEnabled, setIsP2PEnabled] = useState(p2pEnabled);
   const [stats, setStats] = useState<P2PStats>({
     httpDownloaded: 0,
@@ -41,6 +46,7 @@ export function P2PVideoPlayer({
   const [connectedPeers, setConnectedPeers] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isSignalingConnected, setIsSignalingConnected] = useState(false);
 
   const handleStatsUpdate = useCallback((newStats: P2PStats) => {
     setStats(newStats);
@@ -53,6 +59,61 @@ export function P2PVideoPlayer({
   const handlePeerDisconnect = useCallback((peerId: string) => {
     setConnectedPeers(prev => prev.filter(id => id !== peerId));
   }, []);
+
+  useEffect(() => {
+    if (!isP2PEnabled || !videoCid) return;
+
+    const signaling = new P2PSignalingClient({
+      onConnect: () => {
+        setIsSignalingConnected(true);
+        if (videoCid) {
+          signaling.joinRoom(videoCid, hiveUsername);
+        }
+      },
+      onDisconnect: () => {
+        setIsSignalingConnected(false);
+      },
+      onPeerList: (message) => {
+        if (message.payload?.peers) {
+          setConnectedPeers(message.payload.peers.map((p: any) => p.peerId));
+        } else if (message.payload?.newPeer) {
+          setConnectedPeers(prev => [...prev, message.payload.newPeer.peerId]);
+        } else if (message.payload?.removedPeer) {
+          setConnectedPeers(prev => prev.filter(id => id !== message.payload.removedPeer));
+        }
+      },
+      onError: (message) => {
+        console.error('[P2P] Signaling error:', message.payload?.message);
+      },
+    });
+
+    signalingRef.current = signaling;
+    signaling.connect();
+
+    statsIntervalRef.current = setInterval(() => {
+      if (signalingRef.current && engineRef.current) {
+        const currentStats = engineRef.current.getStats();
+        signalingRef.current.updateStats({
+          bytesUploaded: currentStats.p2pUploaded,
+          bytesDownloaded: currentStats.httpDownloaded + currentStats.p2pDownloaded,
+          segmentsShared: Math.floor(currentStats.p2pUploaded / 65536),
+          peersConnected: connectedPeers.length,
+        });
+      }
+    }, 10000);
+
+    return () => {
+      if (statsIntervalRef.current) {
+        clearInterval(statsIntervalRef.current);
+        statsIntervalRef.current = null;
+      }
+      if (signalingRef.current) {
+        signalingRef.current.leaveRoom();
+        signalingRef.current.disconnect();
+        signalingRef.current = null;
+      }
+    };
+  }, [isP2PEnabled, videoCid, hiveUsername, connectedPeers.length]);
 
   useEffect(() => {
     if (!videoRef.current || !manifestUrl) return;
@@ -96,6 +157,7 @@ export function P2PVideoPlayer({
 
   const totalDownloaded = stats.httpDownloaded + stats.p2pDownloaded;
   const bandwidthSaved = stats.p2pDownloaded;
+  const displayPeerCount = connectedPeers.length || stats.peerCount;
 
   return (
     <div className="space-y-4">
@@ -122,13 +184,23 @@ export function P2PVideoPlayer({
           Your browser does not support the video tag.
         </video>
         
-        {isP2PEnabled && stats.peerCount > 0 && (
+        {isP2PEnabled && displayPeerCount > 0 && (
           <Badge 
             className="absolute top-3 right-3 bg-green-600/80 backdrop-blur-sm"
             data-testid="badge-p2p-peers"
           >
             <Users className="h-3 w-3 mr-1" />
-            {stats.peerCount} peers
+            {displayPeerCount} peers
+          </Badge>
+        )}
+        
+        {isSignalingConnected && (
+          <Badge 
+            className="absolute top-3 left-3 bg-blue-600/80 backdrop-blur-sm"
+            data-testid="badge-signaling-connected"
+          >
+            <Wifi className="h-3 w-3 mr-1" />
+            Connected
           </Badge>
         )}
       </div>
@@ -201,7 +273,7 @@ export function P2PVideoPlayer({
                   Connected Peers
                 </div>
                 <p className="font-medium" data-testid="text-peer-count">
-                  {connectedPeers.length}
+                  {displayPeerCount}
                 </p>
               </div>
             </div>

@@ -33,6 +33,13 @@ The system features a hybrid Progressive Web App (PWA) architecture:
     -   **Fraud Detection**: Identifies suspicious patterns, outsourcing, collusion, and hash mismatches.
     -   **Payout Report Generator**: Validators generate payout reports from PoA data, exportable as JSON for wallet execution.
 -   **Network Wallet Dashboard**: Tracks central wallet deposits, pending/executed payouts, and available balance for the storage payment system.
+-   **P2P CDN Network**: Viewer-contributed bandwidth sharing system that reduces CDN costs by 50-70% through WebRTC-based peer-to-peer video segment sharing:
+    -   **P2P Video Player**: HLS.js-based player with p2p-media-loader integration for seamless P2P streaming.
+    -   **WebSocket Signaling**: Real-time peer coordination at `/p2p` endpoint for room management and WebRTC negotiation.
+    -   **Room Management**: Automatic room creation per video CID, peer discovery, and geographic matching.
+    -   **Contribution Tracking**: Tracks bytes shared, segments uploaded, session duration, and P2P ratio per viewer.
+    -   **P2P Network Dashboard**: Real-time network stats, active rooms, top contributors leaderboard, and history charts.
+    -   **Desktop Agent Super-Seeders**: 24/7 desktop agents act as super-seeders with existing Kubo daemon.
 
 ### Frontend Architecture
 -   **Framework**: React 18 with TypeScript
@@ -56,10 +63,10 @@ The system features a hybrid Progressive Web App (PWA) architecture:
 -   **Reputation-Based Filtering**: Implements quality tiers for storage nodes based on their reputation.
 
 ### Data Models
-The system uses PostgreSQL with Drizzle ORM, organizing data into core tables for storage nodes, files, validators, PoA challenges, and Hive transactions, alongside specific tables for CDN, transcoding, moderation, encryption, and reward allocation features across different development phases.
+The system uses PostgreSQL with Drizzle ORM, organizing data into core tables for storage nodes, files, validators, PoA challenges, and Hive transactions, alongside specific tables for CDN, transcoding, moderation, encryption, reward allocation, and P2P CDN features (p2p_sessions, p2p_contributions, p2p_rooms, p2p_network_stats) across different development phases.
 
 ### API Routes
-A comprehensive set of API routes manages various functionalities including IPFS gateway, CDN, uploads, contracts, transcoding, moderation, encryption, user settings, beneficiaries, and 3Speak integration.
+A comprehensive set of API routes manages various functionalities including IPFS gateway, CDN, uploads, contracts, transcoding, moderation, encryption, user settings, beneficiaries, 3Speak integration, and P2P CDN stats/contributions (`/api/p2p/*`).
 
 ## External Dependencies
 

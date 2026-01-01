@@ -538,6 +538,7 @@ export const p2pSessions = pgTable("p2p_sessions", {
   videoCid: text("video_cid").notNull(),
   roomId: text("room_id").notNull(),
   hiveUsername: text("hive_username"),
+  isDesktopAgent: boolean("is_desktop_agent").notNull().default(false),
   ipAddress: text("ip_address"),
   userAgent: text("user_agent"),
   geoRegion: text("geo_region"),
