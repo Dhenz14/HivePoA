@@ -31,6 +31,8 @@ The system features a hybrid Progressive Web App (PWA) architecture:
     -   **Node Monitoring**: Health map, risk assessment, and detailed drilldown for storage nodes.
     -   **Challenge Queue**: Manages pending, active, and historical challenges.
     -   **Fraud Detection**: Identifies suspicious patterns, outsourcing, collusion, and hash mismatches.
+    -   **Payout Report Generator**: Validators generate payout reports from PoA data, exportable as JSON for wallet execution.
+-   **Network Wallet Dashboard**: Tracks central wallet deposits, pending/executed payouts, and available balance for the storage payment system.
 
 ### Frontend Architecture
 -   **Framework**: React 18 with TypeScript

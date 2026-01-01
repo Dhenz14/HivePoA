@@ -1997,8 +1997,19 @@ export async function registerRoutes(
     }
   });
 
-  // Add a wallet deposit (for testing or manual entry)
+  // Add a wallet deposit (requires validator auth - for manual entry/testing)
   app.post("/api/wallet/deposits", async (req, res) => {
+    const sessionToken = getSessionToken(req);
+    if (!sessionToken) {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid) {
+      res.status(401).json({ error: "Invalid or expired session" });
+      return;
+    }
+
     try {
       const { fromUsername, hbdAmount, memo, txHash, purpose } = req.body;
       if (!fromUsername || !hbdAmount || !txHash) {
