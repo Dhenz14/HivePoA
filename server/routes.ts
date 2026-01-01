@@ -1964,5 +1964,273 @@ export async function registerRoutes(
     });
   });
 
+  // ============================================================
+  // Phase 5: Payout System API
+  // ============================================================
+
+  // Get wallet dashboard data (public)
+  app.get("/api/wallet/dashboard", async (req, res) => {
+    try {
+      const balance = await storage.getWalletBalance();
+      const recentDeposits = await storage.getWalletDeposits(10);
+      const pendingReports = await storage.getPayoutReports(20);
+      
+      res.json({
+        balance,
+        recentDeposits,
+        pendingReports: pendingReports.filter(r => r.status === 'pending'),
+        executedReports: pendingReports.filter(r => r.status === 'executed'),
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get all wallet deposits
+  app.get("/api/wallet/deposits", async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 50;
+      const deposits = await storage.getWalletDeposits(limit);
+      res.json(deposits);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Add a wallet deposit (for testing or manual entry)
+  app.post("/api/wallet/deposits", async (req, res) => {
+    try {
+      const { fromUsername, hbdAmount, memo, txHash, purpose } = req.body;
+      if (!fromUsername || !hbdAmount || !txHash) {
+        res.status(400).json({ error: "fromUsername, hbdAmount, and txHash are required" });
+        return;
+      }
+      const deposit = await storage.createWalletDeposit({
+        fromUsername,
+        hbdAmount,
+        memo: memo || null,
+        txHash,
+        purpose: purpose || "storage",
+        processed: false,
+      });
+      res.json(deposit);
+    } catch (error: any) {
+      if (error.message?.includes("duplicate key")) {
+        res.status(409).json({ error: "Deposit with this txHash already exists" });
+      } else {
+        res.status(500).json({ error: error.message });
+      }
+    }
+  });
+
+  // Get PoA data for payout generation (requires validator auth)
+  app.get("/api/validator/payout/poa-data", async (req, res) => {
+    const sessionToken = getSessionToken(req);
+    if (!sessionToken) {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid) {
+      res.status(401).json({ error: "Invalid or expired session" });
+      return;
+    }
+
+    try {
+      const startDate = req.query.startDate ? new Date(req.query.startDate as string) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      const endDate = req.query.endDate ? new Date(req.query.endDate as string) : new Date();
+      
+      const poaData = await storage.getPoaDataForPayout(startDate, endDate);
+      const totalHbd = poaData.reduce((sum, p) => sum + parseFloat(p.totalHbd), 0).toFixed(3);
+      
+      res.json({
+        period: { start: startDate.toISOString(), end: endDate.toISOString() },
+        recipients: poaData,
+        totalHbd,
+        recipientCount: poaData.length,
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Generate a payout report (requires validator auth)
+  app.post("/api/validator/payout/generate", async (req, res) => {
+    const sessionToken = getSessionToken(req);
+    if (!sessionToken) {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid || !validation.username) {
+      res.status(401).json({ error: "Invalid or expired session" });
+      return;
+    }
+
+    try {
+      const { periodStart, periodEnd } = req.body;
+      if (!periodStart || !periodEnd) {
+        res.status(400).json({ error: "periodStart and periodEnd are required" });
+        return;
+      }
+
+      const startDate = new Date(periodStart);
+      const endDate = new Date(periodEnd);
+      
+      const poaData = await storage.getPoaDataForPayout(startDate, endDate);
+      const totalHbd = poaData.reduce((sum, p) => sum + parseFloat(p.totalHbd), 0).toFixed(3);
+
+      // Create the payout report
+      const report = await storage.createPayoutReport({
+        validatorUsername: validation.username,
+        periodStart: startDate,
+        periodEnd: endDate,
+        totalHbd,
+        recipientCount: poaData.length,
+        status: "pending",
+      });
+
+      // Create line items
+      const lineItems = await storage.createPayoutLineItems(
+        poaData.map(p => ({
+          reportId: report.id,
+          recipientUsername: p.username,
+          hbdAmount: p.totalHbd,
+          proofCount: p.proofCount,
+          successRate: p.successRate,
+          paid: false,
+        }))
+      );
+
+      res.json({
+        report,
+        lineItems,
+        summary: {
+          totalHbd,
+          recipientCount: poaData.length,
+        },
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get all payout reports (requires validator auth)
+  app.get("/api/validator/payout/reports", async (req, res) => {
+    const sessionToken = getSessionToken(req);
+    if (!sessionToken) {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid) {
+      res.status(401).json({ error: "Invalid or expired session" });
+      return;
+    }
+
+    try {
+      const limit = parseInt(req.query.limit as string) || 20;
+      const reports = await storage.getPayoutReports(limit);
+      res.json(reports);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get a specific payout report with line items
+  app.get("/api/validator/payout/reports/:id", async (req, res) => {
+    const sessionToken = getSessionToken(req);
+    if (!sessionToken) {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid) {
+      res.status(401).json({ error: "Invalid or expired session" });
+      return;
+    }
+
+    try {
+      const report = await storage.getPayoutReport(req.params.id);
+      if (!report) {
+        res.status(404).json({ error: "Report not found" });
+        return;
+      }
+      const lineItems = await storage.getPayoutLineItems(report.id);
+      res.json({ report, lineItems });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Update report status (for approving/executing payouts)
+  app.patch("/api/validator/payout/reports/:id", async (req, res) => {
+    const sessionToken = getSessionToken(req);
+    if (!sessionToken) {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid) {
+      res.status(401).json({ error: "Invalid or expired session" });
+      return;
+    }
+
+    try {
+      const { status, executedTxHash } = req.body;
+      if (!status) {
+        res.status(400).json({ error: "status is required" });
+        return;
+      }
+      await storage.updatePayoutReportStatus(req.params.id, status, executedTxHash);
+      const report = await storage.getPayoutReport(req.params.id);
+      res.json(report);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Export payout report as JSON (for wallet execution)
+  app.get("/api/validator/payout/reports/:id/export", async (req, res) => {
+    const sessionToken = getSessionToken(req);
+    if (!sessionToken) {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid) {
+      res.status(401).json({ error: "Invalid or expired session" });
+      return;
+    }
+
+    try {
+      const report = await storage.getPayoutReport(req.params.id);
+      if (!report) {
+        res.status(404).json({ error: "Report not found" });
+        return;
+      }
+      const lineItems = await storage.getPayoutLineItems(report.id);
+      
+      // Export format for wallet execution
+      const exportData = {
+        reportId: report.id,
+        period: `${report.periodStart?.toISOString().split('T')[0]}_to_${report.periodEnd?.toISOString().split('T')[0]}`,
+        generatedBy: report.validatorUsername,
+        generatedAt: report.createdAt?.toISOString(),
+        totalHbd: report.totalHbd,
+        payouts: lineItems.map(item => ({
+          username: item.recipientUsername,
+          amount: item.hbdAmount,
+          proofs: item.proofCount,
+          successRate: item.successRate.toFixed(1),
+        })),
+      };
+      
+      res.json(exportData);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   return httpServer;
 }
