@@ -28,6 +28,10 @@ import {
   viewEvents,
   beneficiaryAllocations,
   payoutHistory,
+  // Phase 5: Payout System
+  walletDeposits,
+  payoutReports,
+  payoutLineItems,
   type StorageNode,
   type InsertStorageNode,
   type File,
@@ -75,6 +79,13 @@ import {
   type InsertBeneficiaryAllocation,
   type PayoutHistory,
   type InsertPayoutHistory,
+  // Phase 5: Payout System Types
+  type WalletDeposit,
+  type InsertWalletDeposit,
+  type PayoutReport,
+  type InsertPayoutReport,
+  type PayoutLineItem,
+  type InsertPayoutLineItem,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, sql, ilike, or, notInArray, gte, lte, lt } from "drizzle-orm";
@@ -224,6 +235,28 @@ export interface IStorage {
   // Phase 4: Payout History
   createPayoutHistory(payout: InsertPayoutHistory): Promise<PayoutHistory>;
   getPayoutHistory(username: string, limit: number): Promise<PayoutHistory[]>;
+
+  // Phase 5: Wallet Deposits
+  createWalletDeposit(deposit: InsertWalletDeposit): Promise<WalletDeposit>;
+  getWalletDeposits(limit: number): Promise<WalletDeposit[]>;
+  getWalletDepositsByUser(username: string): Promise<WalletDeposit[]>;
+  getUnprocessedDeposits(): Promise<WalletDeposit[]>;
+  markDepositProcessed(id: string): Promise<void>;
+  getWalletBalance(): Promise<{ totalDeposits: string; totalPaid: string; available: string }>;
+
+  // Phase 5: Payout Reports
+  createPayoutReport(report: InsertPayoutReport): Promise<PayoutReport>;
+  getPayoutReport(id: string): Promise<PayoutReport | undefined>;
+  getPayoutReports(limit: number): Promise<PayoutReport[]>;
+  getPayoutReportsByValidator(validatorUsername: string): Promise<PayoutReport[]>;
+  updatePayoutReportStatus(id: string, status: string, executedTxHash?: string): Promise<void>;
+
+  // Phase 5: Payout Line Items
+  createPayoutLineItem(item: InsertPayoutLineItem): Promise<PayoutLineItem>;
+  createPayoutLineItems(items: InsertPayoutLineItem[]): Promise<PayoutLineItem[]>;
+  getPayoutLineItems(reportId: string): Promise<PayoutLineItem[]>;
+  markLineItemPaid(id: string, txHash: string): Promise<void>;
+  getPoaDataForPayout(startDate: Date, endDate: Date): Promise<{ username: string; proofCount: number; successRate: number; totalHbd: string }[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -951,6 +984,142 @@ export class DatabaseStorage implements IStorage {
       .where(eq(payoutHistory.recipientUsername, username))
       .orderBy(desc(payoutHistory.createdAt))
       .limit(limit);
+  }
+
+  // ============================================================
+  // Phase 5: Wallet Deposits
+  // ============================================================
+  async createWalletDeposit(deposit: InsertWalletDeposit): Promise<WalletDeposit> {
+    const [created] = await db.insert(walletDeposits).values(deposit).returning();
+    return created;
+  }
+
+  async getWalletDeposits(limit: number): Promise<WalletDeposit[]> {
+    return await db.select().from(walletDeposits)
+      .orderBy(desc(walletDeposits.createdAt))
+      .limit(limit);
+  }
+
+  async getWalletDepositsByUser(username: string): Promise<WalletDeposit[]> {
+    return await db.select().from(walletDeposits)
+      .where(eq(walletDeposits.fromUsername, username))
+      .orderBy(desc(walletDeposits.createdAt));
+  }
+
+  async getUnprocessedDeposits(): Promise<WalletDeposit[]> {
+    return await db.select().from(walletDeposits)
+      .where(eq(walletDeposits.processed, false))
+      .orderBy(desc(walletDeposits.createdAt));
+  }
+
+  async markDepositProcessed(id: string): Promise<void> {
+    await db.update(walletDeposits)
+      .set({ processed: true })
+      .where(eq(walletDeposits.id, id));
+  }
+
+  async getWalletBalance(): Promise<{ totalDeposits: string; totalPaid: string; available: string }> {
+    const depositsResult = await db.select({
+      total: sql<string>`COALESCE(SUM(CAST(${walletDeposits.hbdAmount} AS DECIMAL)), 0)::TEXT`
+    }).from(walletDeposits);
+
+    const paidResult = await db.select({
+      total: sql<string>`COALESCE(SUM(CAST(${payoutLineItems.hbdAmount} AS DECIMAL)), 0)::TEXT`
+    }).from(payoutLineItems)
+      .where(eq(payoutLineItems.paid, true));
+
+    const totalDeposits = depositsResult[0]?.total || "0";
+    const totalPaid = paidResult[0]?.total || "0";
+    const available = (parseFloat(totalDeposits) - parseFloat(totalPaid)).toFixed(3);
+
+    return { totalDeposits, totalPaid, available };
+  }
+
+  // ============================================================
+  // Phase 5: Payout Reports
+  // ============================================================
+  async createPayoutReport(report: InsertPayoutReport): Promise<PayoutReport> {
+    const [created] = await db.insert(payoutReports).values(report).returning();
+    return created;
+  }
+
+  async getPayoutReport(id: string): Promise<PayoutReport | undefined> {
+    const [report] = await db.select().from(payoutReports).where(eq(payoutReports.id, id));
+    return report || undefined;
+  }
+
+  async getPayoutReports(limit: number): Promise<PayoutReport[]> {
+    return await db.select().from(payoutReports)
+      .orderBy(desc(payoutReports.createdAt))
+      .limit(limit);
+  }
+
+  async getPayoutReportsByValidator(validatorUsername: string): Promise<PayoutReport[]> {
+    return await db.select().from(payoutReports)
+      .where(eq(payoutReports.validatorUsername, validatorUsername))
+      .orderBy(desc(payoutReports.createdAt));
+  }
+
+  async updatePayoutReportStatus(id: string, status: string, executedTxHash?: string): Promise<void> {
+    const updateData: any = { status };
+    if (status === 'executed') {
+      updateData.executedAt = new Date();
+    }
+    if (executedTxHash) {
+      updateData.executedTxHash = executedTxHash;
+    }
+    await db.update(payoutReports)
+      .set(updateData)
+      .where(eq(payoutReports.id, id));
+  }
+
+  // ============================================================
+  // Phase 5: Payout Line Items
+  // ============================================================
+  async createPayoutLineItem(item: InsertPayoutLineItem): Promise<PayoutLineItem> {
+    const [created] = await db.insert(payoutLineItems).values(item).returning();
+    return created;
+  }
+
+  async createPayoutLineItems(items: InsertPayoutLineItem[]): Promise<PayoutLineItem[]> {
+    if (items.length === 0) return [];
+    return await db.insert(payoutLineItems).values(items).returning();
+  }
+
+  async getPayoutLineItems(reportId: string): Promise<PayoutLineItem[]> {
+    return await db.select().from(payoutLineItems)
+      .where(eq(payoutLineItems.reportId, reportId))
+      .orderBy(desc(sql`CAST(${payoutLineItems.hbdAmount} AS DECIMAL)`));
+  }
+
+  async markLineItemPaid(id: string, txHash: string): Promise<void> {
+    await db.update(payoutLineItems)
+      .set({ paid: true, txHash })
+      .where(eq(payoutLineItems.id, id));
+  }
+
+  async getPoaDataForPayout(startDate: Date, endDate: Date): Promise<{ username: string; proofCount: number; successRate: number; totalHbd: string }[]> {
+    const results = await db.select({
+      hiveUsername: storageNodes.hiveUsername,
+      successCount: sql<number>`COUNT(CASE WHEN ${poaChallenges.result} = 'success' THEN 1 END)::INTEGER`,
+      totalCount: sql<number>`COUNT(*)::INTEGER`,
+    })
+    .from(poaChallenges)
+    .innerJoin(storageNodes, eq(poaChallenges.nodeId, storageNodes.id))
+    .where(and(
+      gte(poaChallenges.createdAt, startDate),
+      lte(poaChallenges.createdAt, endDate)
+    ))
+    .groupBy(storageNodes.hiveUsername);
+
+    const HBD_PER_PROOF = 0.001;
+
+    return results.map(r => ({
+      username: r.hiveUsername,
+      proofCount: r.successCount,
+      successRate: r.totalCount > 0 ? (r.successCount / r.totalCount) * 100 : 0,
+      totalHbd: (r.successCount * HBD_PER_PROOF).toFixed(3)
+    }));
   }
 }
 
