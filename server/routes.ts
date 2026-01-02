@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
+import { randomBytes } from "crypto";
 import { storage } from "./storage";
 import { hiveSimulator } from "./services/hive-simulator";
 import { poaEngine } from "./services/poa-engine";
@@ -1200,13 +1201,11 @@ export async function registerRoutes(
   const loginChallenges = new Map<string, { username: string; expiresAt: number }>();
   
   function generateSessionToken(): string {
-    const crypto = require('crypto');
-    return crypto.randomBytes(48).toString('base64url');
+    return randomBytes(48).toString('base64url');
   }
 
   function generateChallengeId(): string {
-    const crypto = require('crypto');
-    return crypto.randomBytes(16).toString('hex');
+    return randomBytes(16).toString('hex');
   }
   
   // Middleware to validate session token and witness status
