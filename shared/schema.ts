@@ -256,12 +256,20 @@ export const encoderNodes = pgTable("encoder_nodes", {
   encoderType: text("encoder_type").notNull().default("community"), // desktop, browser, community
   presetsSupported: text("presets_supported").notNull().default("hls,mp4-720p"), // Comma-separated
   basePriceHbd: text("base_price_hbd").notNull().default("0.01"), // Base price per minute of video
+  // Per-quality pricing (HBD per minute of video)
+  price1080p: text("price_1080p").notNull().default("0.02"),
+  price720p: text("price_720p").notNull().default("0.01"),
+  price480p: text("price_480p").notNull().default("0.005"),
+  priceAllQualities: text("price_all_qualities").notNull().default("0.03"), // Bundle discount
+  minOfferHbd: text("min_offer_hbd").notNull().default("0.005"), // Minimum offer they'll accept
   availability: text("availability").notNull().default("available"), // available, busy, offline
   jobsCompleted: integer("jobs_completed").notNull().default(0),
   jobsInProgress: integer("jobs_in_progress").notNull().default(0),
   avgProcessingTime: integer("avg_processing_time").default(0), // Seconds per minute of video
   hardwareAcceleration: text("hardware_acceleration"), // nvenc, vaapi, qsv, none
   rating: real("rating").default(5.0), // 0-5 star rating
+  reputationScore: integer("reputation_score").notNull().default(100), // 0-1000, higher = better
+  successRate: real("success_rate").notNull().default(100.0), // Percentage of successful jobs
   status: text("status").notNull().default("active"), // active, suspended
   lastHeartbeat: timestamp("last_heartbeat").defaultNow(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -320,6 +328,23 @@ export const encodingJobEvents = pgTable("encoding_job_events", {
   newStatus: text("new_status"),
   encoderId: varchar("encoder_id"),
   details: text("details"), // JSON with event-specific data
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Encoding Job Offers - Custom price offers from users
+export const encodingJobOffers = pgTable("encoding_job_offers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  jobId: varchar("job_id").notNull(),
+  owner: text("owner").notNull(), // Hive username of uploader
+  inputCid: text("input_cid").notNull(),
+  qualitiesRequested: text("qualities_requested").notNull(), // Comma-separated: 1080p,720p,480p
+  videoDurationSec: integer("video_duration_sec").notNull(),
+  offeredHbd: text("offered_hbd").notNull(), // User's offered price
+  marketPriceHbd: text("market_price_hbd").notNull(), // Current lowest market price for reference
+  status: text("status").notNull().default("pending"), // pending, accepted, expired, cancelled
+  acceptedEncoderId: varchar("accepted_encoder_id"),
+  acceptedAt: timestamp("accepted_at"),
+  expiresAt: timestamp("expires_at").notNull(), // Offer expiry time
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -593,6 +618,12 @@ export const insertEncodingJobEventSchema = createInsertSchema(encodingJobEvents
   createdAt: true,
 });
 
+export const insertEncodingJobOfferSchema = createInsertSchema(encodingJobOffers).omit({
+  id: true,
+  createdAt: true,
+  acceptedAt: true,
+});
+
 export const insertBlocklistEntrySchema = createInsertSchema(blocklistEntries).omit({
   id: true,
   createdAt: true,
@@ -805,6 +836,9 @@ export type InsertEncoderCapability = z.infer<typeof insertEncoderCapabilitiesSc
 
 export type EncodingJobEvent = typeof encodingJobEvents.$inferSelect;
 export type InsertEncodingJobEvent = z.infer<typeof insertEncodingJobEventSchema>;
+
+export type EncodingJobOffer = typeof encodingJobOffers.$inferSelect;
+export type InsertEncodingJobOffer = z.infer<typeof insertEncodingJobOfferSchema>;
 
 // Phase 3: Blocklist Types
 export type BlocklistEntry = typeof blocklistEntries.$inferSelect;
