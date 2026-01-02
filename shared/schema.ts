@@ -191,7 +191,7 @@ export const encodingJobs = pgTable("encoding_jobs", {
   permlink: text("permlink").notNull(), // Video permlink
   inputCid: text("input_cid").notNull(), // Source video CID
   outputCid: text("output_cid"), // Final manifest CID
-  status: text("status").notNull().default("queued"), // queued, downloading, encoding, uploading, completed, failed
+  status: text("status").notNull().default("queued"), // queued, assigned, downloading, encoding, uploading, completed, failed, cancelled
   progress: integer("progress").notNull().default(0), // 0-100
   encodingMode: text("encoding_mode").notNull().default("auto"), // self, community, auto
   encoderType: text("encoder_type"), // desktop, browser, community
@@ -208,6 +208,23 @@ export const encodingJobs = pgTable("encoding_jobs", {
   inputSizeBytes: integer("input_size_bytes"),
   outputSizeBytes: integer("output_size_bytes"),
   processingTimeSec: integer("processing_time_sec"),
+  // Job assignment fields
+  assignedAt: timestamp("assigned_at"),
+  assignedEncoderId: varchar("assigned_encoder_id"),
+  leaseExpiresAt: timestamp("lease_expires_at"),
+  // Retry logic
+  attempts: integer("attempts").notNull().default(0),
+  maxAttempts: integer("max_attempts").notNull().default(3),
+  lastError: text("last_error"),
+  nextRetryAt: timestamp("next_retry_at"),
+  // Progress tracking
+  currentStage: text("current_stage"), // downloading, encoding_1080p, encoding_720p, encoding_480p, uploading
+  stageProgress: integer("stage_progress").default(0),
+  // Security
+  jobSignature: text("job_signature"), // For community encoders
+  webhookSecret: text("webhook_secret"),
+  // Priority
+  priority: integer("priority").notNull().default(0), // Higher = more urgent
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -280,6 +297,30 @@ export const userEncodingSettings = pgTable("user_encoding_settings", {
   webhookUrl: text("webhook_url"), // Default webhook for completions
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// Encoder Capabilities - Hardware and codec capabilities per encoder
+export const encoderCapabilities = pgTable("encoder_capabilities", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  encoderNodeId: varchar("encoder_node_id").notNull(),
+  codec: text("codec").notNull(), // h264, h265, vp9, av1
+  maxResolution: text("max_resolution").notNull(), // 480p, 720p, 1080p, 4k
+  hwAccelType: text("hw_accel_type"), // nvenc, vaapi, qsv, videotoolbox
+  estimatedSpeed: real("estimated_speed"), // x realtime (e.g., 2.5 = 2.5x faster than realtime)
+  verified: boolean("verified").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Encoding Job Events - Audit trail for job lifecycle
+export const encodingJobEvents = pgTable("encoding_job_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  jobId: varchar("job_id").notNull(),
+  eventType: text("event_type").notNull(), // created, assigned, started, progress, completed, failed, retried, cancelled
+  previousStatus: text("previous_status"),
+  newStatus: text("new_status"),
+  encoderId: varchar("encoder_id"),
+  details: text("details"), // JSON with event-specific data
+  createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
 // ============================================================
@@ -542,6 +583,16 @@ export const insertUserEncodingSettingsSchema = createInsertSchema(userEncodingS
   updatedAt: true,
 });
 
+export const insertEncoderCapabilitiesSchema = createInsertSchema(encoderCapabilities).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertEncodingJobEventSchema = createInsertSchema(encodingJobEvents).omit({
+  id: true,
+  createdAt: true,
+});
+
 export const insertBlocklistEntrySchema = createInsertSchema(blocklistEntries).omit({
   id: true,
   createdAt: true,
@@ -748,6 +799,12 @@ export type InsertEncodingProfile = z.infer<typeof insertEncodingProfileSchema>;
 
 export type UserEncodingSettings = typeof userEncodingSettings.$inferSelect;
 export type InsertUserEncodingSettings = z.infer<typeof insertUserEncodingSettingsSchema>;
+
+export type EncoderCapability = typeof encoderCapabilities.$inferSelect;
+export type InsertEncoderCapability = z.infer<typeof insertEncoderCapabilitiesSchema>;
+
+export type EncodingJobEvent = typeof encodingJobEvents.$inferSelect;
+export type InsertEncodingJobEvent = z.infer<typeof insertEncodingJobEventSchema>;
 
 // Phase 3: Blocklist Types
 export type BlocklistEntry = typeof blocklistEntries.$inferSelect;
