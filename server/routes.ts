@@ -2524,6 +2524,113 @@ export async function registerRoutes(
     }
   });
 
+  // Marketplace endpoint - get encoders sorted by reputation with pricing
+  app.get("/api/encoding/encoders/market", async (req, res) => {
+    try {
+      const { quality, sortBy } = req.query;
+      const encoders = await storage.getMarketplaceEncoders(
+        quality as string || "all",
+        sortBy as string || "reputation"
+      );
+      
+      // Calculate effective pricing for the requested quality
+      const enrichedEncoders = encoders.map(encoder => ({
+        ...encoder,
+        effectivePrice: quality === "1080p" ? encoder.price1080p :
+                        quality === "720p" ? encoder.price720p :
+                        quality === "480p" ? encoder.price480p :
+                        encoder.priceAllQualities,
+      }));
+      
+      res.json(enrichedEncoders);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Create custom price offer
+  app.post("/api/encoding/offers", async (req, res) => {
+    try {
+      const { inputCid, qualitiesRequested, videoDurationSec, offeredHbd, owner, permlink, expiresInHours } = req.body;
+      
+      // Get current lowest market price for comparison
+      const encoders = await storage.getMarketplaceEncoders("all", "price");
+      const lowestEncoder = encoders[0];
+      const marketPrice = lowestEncoder?.priceAllQualities || "0.03";
+      
+      // Create the job first (in waiting_offer state)
+      const job = await storage.createEncodingJob({
+        inputCid,
+        owner,
+        permlink: permlink || `offer-${Date.now()}`,
+        status: "waiting_offer", // Custom status for offer-based jobs
+        priority: 0,
+        encodingMode: "community",
+      });
+      
+      // Create the offer
+      const expiresAt = new Date(Date.now() + (expiresInHours || 24) * 60 * 60 * 1000);
+      const offer = await storage.createEncodingJobOffer({
+        jobId: job.id,
+        owner,
+        inputCid,
+        qualitiesRequested: qualitiesRequested.join(","),
+        videoDurationSec,
+        offeredHbd,
+        marketPriceHbd: marketPrice,
+        expiresAt,
+      });
+      
+      res.json({ job, offer });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get pending offers (for encoders to browse)
+  app.get("/api/encoding/offers", async (req, res) => {
+    try {
+      const { status } = req.query;
+      const offers = await storage.getEncodingJobOffers(status as string || "pending");
+      res.json(offers);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Accept an offer (encoder picks up a custom price job)
+  app.post("/api/encoding/offers/:id/accept", async (req, res) => {
+    try {
+      const { encoderId } = req.body;
+      const offer = await storage.acceptEncodingJobOffer(req.params.id, encoderId);
+      
+      if (!offer) {
+        return res.status(404).json({ error: "Offer not found or already accepted" });
+      }
+      
+      // Update the job to queued status and assign encoder
+      await storage.updateEncodingJob(offer.jobId, {
+        status: "queued",
+        encoderNodeId: encoderId,
+        hbdCost: offer.offeredHbd,
+      });
+      
+      res.json(offer);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get user's offers
+  app.get("/api/encoding/offers/user/:username", async (req, res) => {
+    try {
+      const offers = await storage.getUserEncodingOffers(req.params.username);
+      res.json(offers);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   app.post("/api/encoding/encoders/register", async (req, res) => {
     try {
       const validated = encoderRegisterSchema.safeParse(req.body);

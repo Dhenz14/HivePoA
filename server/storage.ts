@@ -16,6 +16,7 @@ import {
   // Phase 2: Transcoding
   transcodeJobs,
   encoderNodes,
+  encodingJobs,
   // Phase 3: Blocklists
   blocklistEntries,
   platformBlocklists,
@@ -64,6 +65,8 @@ import {
   type InsertTranscodeJob,
   type EncoderNode,
   type InsertEncoderNode,
+  type EncodingJob,
+  type InsertEncodingJob,
   type BlocklistEntry,
   type InsertBlocklistEntry,
   type PlatformBlocklist,
@@ -100,6 +103,10 @@ import {
   type InsertP2pRoom,
   type P2pNetworkStats,
   type InsertP2pNetworkStats,
+  // Phase 7: Encoding Job Offers
+  encodingJobOffers,
+  type EncodingJobOffer,
+  type InsertEncodingJobOffer,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, sql, ilike, or, notInArray, gte, lte, lt } from "drizzle-orm";
@@ -200,6 +207,17 @@ export interface IStorage {
   getAvailableEncoderNodes(): Promise<EncoderNode[]>;
   createEncoderNode(node: InsertEncoderNode): Promise<EncoderNode>;
   updateEncoderNodeAvailability(id: string, availability: string): Promise<void>;
+  getMarketplaceEncoders(quality: string, sortBy: string): Promise<EncoderNode[]>;
+  
+  // Encoding Jobs (new hybrid encoding system)
+  createEncodingJob(job: InsertEncodingJob): Promise<EncodingJob>;
+  updateEncodingJob(id: string, updates: Partial<EncodingJob>): Promise<void>;
+  
+  // Encoding Job Offers (custom price offers)
+  createEncodingJobOffer(offer: InsertEncodingJobOffer): Promise<EncodingJobOffer>;
+  getEncodingJobOffers(status: string): Promise<EncodingJobOffer[]>;
+  acceptEncodingJobOffer(id: string, encoderId: string): Promise<EncodingJobOffer | undefined>;
+  getUserEncodingOffers(username: string): Promise<EncodingJobOffer[]>;
   
   // Phase 3: Blocklist Entries
   getBlocklistEntries(scope: string, scopeOwnerId?: string): Promise<BlocklistEntry[]>;
@@ -805,6 +823,73 @@ export class DatabaseStorage implements IStorage {
     await db.update(encoderNodes)
       .set({ availability })
       .where(eq(encoderNodes.id, id));
+  }
+
+  async getMarketplaceEncoders(quality: string, sortBy: string): Promise<EncoderNode[]> {
+    let orderClause;
+    if (sortBy === "price") {
+      // Sort by price for the specific quality
+      const priceColumn = quality === "1080p" ? encoderNodes.price1080p :
+                          quality === "720p" ? encoderNodes.price720p :
+                          quality === "480p" ? encoderNodes.price480p :
+                          encoderNodes.priceAllQualities;
+      orderClause = priceColumn;
+    } else {
+      // Default: sort by reputation (higher is better)
+      orderClause = desc(encoderNodes.reputationScore);
+    }
+    
+    return await db.select().from(encoderNodes)
+      .where(and(
+        eq(encoderNodes.status, "active"),
+        eq(encoderNodes.availability, "available"),
+        eq(encoderNodes.encoderType, "community")
+      ))
+      .orderBy(orderClause);
+  }
+
+  // ============================================================
+  // Phase 7: Encoding Jobs & Offers
+  // ============================================================
+  async createEncodingJob(job: InsertEncodingJob): Promise<EncodingJob> {
+    const [created] = await db.insert(encodingJobs).values(job).returning();
+    return created;
+  }
+
+  async updateEncodingJob(id: string, updates: Partial<EncodingJob>): Promise<void> {
+    await db.update(encodingJobs).set(updates).where(eq(encodingJobs.id, id));
+  }
+
+  async createEncodingJobOffer(offer: InsertEncodingJobOffer): Promise<EncodingJobOffer> {
+    const [created] = await db.insert(encodingJobOffers).values(offer).returning();
+    return created;
+  }
+
+  async getEncodingJobOffers(status: string): Promise<EncodingJobOffer[]> {
+    return await db.select().from(encodingJobOffers)
+      .where(eq(encodingJobOffers.status, status))
+      .orderBy(desc(encodingJobOffers.createdAt));
+  }
+
+  async acceptEncodingJobOffer(id: string, encoderId: string): Promise<EncodingJobOffer | undefined> {
+    const [updated] = await db.update(encodingJobOffers)
+      .set({
+        status: "accepted",
+        acceptedEncoderId: encoderId,
+        acceptedAt: new Date(),
+      })
+      .where(and(
+        eq(encodingJobOffers.id, id),
+        eq(encodingJobOffers.status, "pending")
+      ))
+      .returning();
+    return updated || undefined;
+  }
+
+  async getUserEncodingOffers(username: string): Promise<EncodingJobOffer[]> {
+    return await db.select().from(encodingJobOffers)
+      .where(eq(encodingJobOffers.owner, username))
+      .orderBy(desc(encodingJobOffers.createdAt));
   }
 
   // ============================================================
