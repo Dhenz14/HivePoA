@@ -42,11 +42,14 @@ The system features a hybrid Progressive Web App (PWA) architecture:
     -   **Desktop Agent Super-Seeders**: 24/7 desktop agents act as super-seeders with existing Kubo daemon.
 -   **Hybrid Encoding System**: Self-encoding capability with community fallback for video transcoding:
     -   **Desktop Agent Priority**: Uses local FFmpeg with GPU acceleration (NVENC, VAAPI, QSV) for free encoding.
-    -   **Browser Fallback**: WebCodecs-based encoding for short videos when desktop agent unavailable.
+    -   **Browser Fallback**: WebCodecs-based encoding for short videos (<2 min) when desktop agent unavailable. Note: Browser encoding produces video-only output suitable for previews.
     -   **Community Encoders**: Marketplace of encoding nodes for reliable paid encoding.
-    -   **Encoding Dashboard**: Job queue management, status tracking, encoder registration, and settings configuration.
+    -   **Job Scheduler**: Lease-based job assignment with priority queue, retry logic with exponential backoff, and automatic expired lease cleanup.
+    -   **Encoding Orchestrator**: Coordinates job lifecycle, webhook notifications with HMAC signatures, and encoder selection.
+    -   **Desktop Agent Bridge API**: RESTful endpoints for desktop agents to claim/progress/complete encoding jobs.
+    -   **Encoding Dashboard**: Job queue management, status tracking, encoder registration, real-time progress, and settings configuration.
     -   **Multi-Quality HLS**: Standard output format with 1080p/720p/480p renditions, H.264 High Profile @ Level 4.1.
-    -   **Webhook Callbacks**: Real-time job status updates via webhooks to external systems.
+    -   **Webhook Callbacks**: Real-time job status updates via webhooks to external systems with signature verification and replay protection.
 
 ### Frontend Architecture
 -   **Framework**: React 18 with TypeScript
