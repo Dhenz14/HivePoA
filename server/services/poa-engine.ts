@@ -24,11 +24,24 @@ export const POA_CONFIG = {
   STREAK_BONUS_50: 1.25,  // 25% bonus for 50 consecutive
   STREAK_BONUS_100: 1.5,  // 50% bonus for 100 consecutive
   
-  // Cooldown
+  // Time-based reward multipliers (SPK Network style)
+  // Files not validated recently get bonus rewards
+  TIME_BONUS_1_HOUR: 1.0,    // Base reward
+  TIME_BONUS_1_DAY: 1.25,    // 25% bonus after 1 day
+  TIME_BONUS_1_WEEK: 1.5,    // 50% bonus after 1 week
+  TIME_BONUS_1_MONTH: 2.0,   // 100% bonus after 1 month
+  
+  // Cooldown - prevents re-challenging same node+file combo too quickly
   BAN_COOLDOWN_HOURS: 24,
+  NODE_FILE_COOLDOWN_MS: 60 * 60 * 1000,  // 1 hour cooldown per node+file combination
+  NODE_COOLDOWN_MS: 5 * 60 * 1000,        // 5 minute cooldown per node (any file)
   
   // Challenge batching
   CHALLENGES_PER_ROUND: 3,
+  
+  // Default challenge interval (can be overridden)
+  // SPK uses time-based validation, we use 2-5 minute intervals for demo purposes
+  DEFAULT_CHALLENGE_INTERVAL_MS: 2 * 60 * 1000, // 2 minutes (was 5 seconds)
   
   // Cache
   BLOCK_CACHE_TTL_MS: 3600000, // 1 hour
@@ -108,13 +121,19 @@ export class PoAEngine {
 
   // Track consecutive successes for streak bonuses
   private nodeStreaks: Map<string, number> = new Map();
+  
+  // Cooldown tracking: prevents re-challenging same node+file too quickly
+  // Key: `${nodeId}:${fileId}`, Value: timestamp of last challenge
+  private nodeFileCooldowns: Map<string, number> = new Map();
+  // Key: nodeId, Value: timestamp of last challenge (any file)
+  private nodeCooldowns: Map<string, number> = new Map();
 
   constructor(config?: Partial<PoAConfig>) {
     this.config = {
       validatorUsername: config?.validatorUsername || "validator-police",
       spkNodeUrl: config?.spkNodeUrl || process.env.SPK_POA_URL,
       ipfsApiUrl: config?.ipfsApiUrl || process.env.IPFS_API_URL,
-      challengeIntervalMs: config?.challengeIntervalMs || 5000,
+      challengeIntervalMs: config?.challengeIntervalMs || POA_CONFIG.DEFAULT_CHALLENGE_INTERVAL_MS,
       useMockMode: config?.useMockMode ?? !process.env.SPK_POA_URL,
       broadcastToHive: config?.broadcastToHive ?? !!process.env.HIVE_POSTING_KEY,
     };
@@ -247,12 +266,60 @@ export class PoAEngine {
     return files[files.length - 1];
   }
 
+  // Check if a node is on cooldown (recently challenged)
+  private isNodeOnCooldown(nodeId: string): boolean {
+    const lastChallenge = this.nodeCooldowns.get(nodeId);
+    if (!lastChallenge) return false;
+    return Date.now() - lastChallenge < POA_CONFIG.NODE_COOLDOWN_MS;
+  }
+
+  // Check if a specific node+file combo is on cooldown
+  private isNodeFileComboCooldown(nodeId: string, fileId: string): boolean {
+    const key = `${nodeId}:${fileId}`;
+    const lastChallenge = this.nodeFileCooldowns.get(key);
+    if (!lastChallenge) return false;
+    return Date.now() - lastChallenge < POA_CONFIG.NODE_FILE_COOLDOWN_MS;
+  }
+
+  // Record that a challenge was issued (update cooldowns)
+  private recordChallengeCooldown(nodeId: string, fileId: string): void {
+    const now = Date.now();
+    this.nodeCooldowns.set(nodeId, now);
+    this.nodeFileCooldowns.set(`${nodeId}:${fileId}`, now);
+    
+    // Clean up old cooldown entries periodically (keep maps from growing)
+    if (this.nodeFileCooldowns.size > 1000) {
+      const cutoff = now - POA_CONFIG.NODE_FILE_COOLDOWN_MS;
+      Array.from(this.nodeFileCooldowns.entries()).forEach(([key, timestamp]) => {
+        if (timestamp < cutoff) this.nodeFileCooldowns.delete(key);
+      });
+    }
+    if (this.nodeCooldowns.size > 500) {
+      const cutoff = now - POA_CONFIG.NODE_COOLDOWN_MS;
+      Array.from(this.nodeCooldowns.entries()).forEach(([key, timestamp]) => {
+        if (timestamp < cutoff) this.nodeCooldowns.delete(key);
+      });
+    }
+  }
+
+  // Filter nodes that are not on cooldown
+  private filterCooldownNodes(nodes: any[]): any[] {
+    return nodes.filter(node => !this.isNodeOnCooldown(node.id));
+  }
+
   private async runChallenge() {
     if (!this.validatorId) return;
 
     // Get only eligible nodes (excludes blacklisted ones)
-    const nodes = await storage.getEligibleNodesForValidator(this.validatorId);
+    let nodes = await storage.getEligibleNodesForValidator(this.validatorId);
     if (nodes.length === 0) return;
+
+    // Filter out nodes that are on cooldown (recently challenged)
+    nodes = this.filterCooldownNodes(nodes);
+    if (nodes.length === 0) {
+      // All nodes are on cooldown, skip this round
+      return;
+    }
 
     const files = await storage.getAllFiles();
     if (files.length === 0) return;
@@ -265,11 +332,29 @@ export class PoAEngine {
     );
 
     const challengePromises: Promise<void>[] = [];
+    const challengedNodes = new Set<string>(); // Track nodes challenged this round
 
     for (let i = 0; i < batchSize; i++) {
       // OPTIMIZATION: Weighted selection for nodes and files
-      const selectedNode = this.selectWeightedNode(nodes);
-      const selectedFile = this.selectWeightedFile(files);
+      // Also filter out nodes already challenged this round
+      const availableNodes = nodes.filter(n => !challengedNodes.has(n.id));
+      if (availableNodes.length === 0) break;
+      
+      const selectedNode = this.selectWeightedNode(availableNodes);
+      
+      // Find a file that hasn't been challenged with this node recently
+      let selectedFile = this.selectWeightedFile(files);
+      let attempts = 0;
+      while (this.isNodeFileComboCooldown(selectedNode.id, selectedFile.id) && attempts < 5) {
+        selectedFile = this.selectWeightedFile(files);
+        attempts++;
+      }
+      
+      // Mark node as challenged this round
+      challengedNodes.add(selectedNode.id);
+      
+      // Record cooldown
+      this.recordChallengeCooldown(selectedNode.id, selectedFile.id);
 
       // OPTIMIZATION: Add Hive block hash entropy to salt
       const salt = createSaltWithEntropy(this.currentHiveBlockHash);
