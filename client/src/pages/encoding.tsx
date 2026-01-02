@@ -414,9 +414,10 @@ export default function EncodingPage() {
   };
 
   const calculateTotalCost = (encoder: EncoderNode | null) => {
-    if (!encoder || wizardState.videoDuration === 0) return "0.00";
+    if (!encoder) return "0.00";
     const qualities = getSelectedQualities();
-    const durationMinutes = wizardState.videoDuration / 60;
+    // Use minimum 1 minute for pricing when duration unknown
+    const durationMinutes = Math.max(wizardState.videoDuration, 60) / 60;
     
     if (qualities.length === 3) {
       return (parseFloat(encoder.priceAllQualities) * durationMinutes).toFixed(4);
@@ -441,6 +442,7 @@ export default function EncodingPage() {
   };
 
   const formatDurationDisplay = (seconds: number) => {
+    if (seconds === 0) return "Unknown (will estimate)";
     const minutes = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${minutes}:${secs.toString().padStart(2, "0")}`;
@@ -449,7 +451,7 @@ export default function EncodingPage() {
   const canProceedToStep = (step: WizardStep): boolean => {
     switch (step) {
       case 2:
-        return !!wizardState.file && wizardState.videoDuration > 0 && !!wizardState.owner;
+        return !!wizardState.file && !!wizardState.owner;
       case 3:
         return getSelectedQualities().length > 0;
       case 4:
