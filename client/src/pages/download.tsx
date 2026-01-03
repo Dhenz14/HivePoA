@@ -54,7 +54,7 @@ const DOWNLOADS: Record<Platform, DownloadInfo> = {
 
 const GITHUB_REPO = "Dhenz14/spknetworkpoa";
 const GITHUB_RELEASES_URL = `https://github.com/${GITHUB_REPO}/releases`;
-const GITHUB_LATEST_DOWNLOAD = `https://github.com/${GITHUB_REPO}/releases/download/latest`;
+const GITHUB_LATEST_DOWNLOAD = `https://github.com/${GITHUB_REPO}/releases/download/v1.0.0`;
 
 function detectPlatform(): Platform {
   if (typeof navigator === "undefined") return "unknown";
