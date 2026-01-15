@@ -19,28 +19,28 @@ const DOWNLOADS: Record<Platform, DownloadInfo> = {
     platform: "windows",
     label: "Windows",
     icon: <Monitor className="h-6 w-6" />,
-    patterns: [".exe"],
+    patterns: ["win.zip", "windows.zip", ".exe", "Setup.exe"],
     description: "Windows 10/11 (64-bit) - One-click installer",
   },
   macos: {
     platform: "macos",
     label: "macOS",
     icon: <Apple className="h-6 w-6" />,
-    patterns: [".dmg", "-x64.dmg", "-intel.dmg"],
-    description: "macOS 10.15+ (Intel)",
+    patterns: ["mac.tar.gz", "mac.zip", "macos.tar.gz", ".dmg"],
+    description: "macOS 10.15+",
   },
   "macos-arm": {
     platform: "macos-arm",
-    label: "macOS",
+    label: "macOS (Apple Silicon)",
     icon: <Apple className="h-6 w-6" />,
-    patterns: ["-arm64.dmg", "-arm.dmg"],
-    description: "macOS 11+ (Apple Silicon)",
+    patterns: ["arm64.dmg", "arm.dmg", "arm64.tar.gz"],
+    description: "macOS 11+ (M1/M2/M3)",
   },
   linux: {
     platform: "linux",
     label: "Linux",
     icon: <Terminal className="h-6 w-6" />,
-    patterns: [".AppImage"],
+    patterns: ["linux.tar.gz", "linux.zip", ".AppImage", ".deb"],
     description: "Linux (64-bit) - Double-click to run",
   },
   unknown: {
@@ -95,7 +95,7 @@ function detectPlatform(): Platform {
 
 function findAssetForPlatform(assets: GitHubAsset[], info: DownloadInfo): GitHubAsset | null {
   for (const pattern of info.patterns) {
-    const asset = assets.find(a => a.name.toLowerCase().endsWith(pattern.toLowerCase()));
+    const asset = assets.find(a => a.name.toLowerCase().includes(pattern.toLowerCase()));
     if (asset) return asset;
   }
   return null;
