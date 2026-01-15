@@ -1,6 +1,6 @@
 {
   "name": "spk-desktop-agent",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "SPK Network Desktop Agent - Earn HBD by providing IPFS storage",
   "main": "./dist/main/index.js",
   "scripts": {
@@ -64,16 +64,14 @@
     "mac": {
       "target": ["dmg", "zip"],
       "category": "public.app-category.utilities",
-      "icon": "assets/icon.icns"
+      "icon": "assets/icon.png"
     },
     "win": {
       "target": ["nsis", "portable"],
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.png"
     },
     "nsis": {
       "oneClick": true,
-      "installerIcon": "assets/icon.ico",
-      "uninstallerIcon": "assets/icon.ico",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "SPK Desktop Agent"
