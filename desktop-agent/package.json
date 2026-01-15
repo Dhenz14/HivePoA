@@ -1,6 +1,6 @@
 {
   "name": "spk-desktop-agent",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "SPK Network Desktop Agent - Earn HBD by providing IPFS storage",
   "main": "./dist/main/index.js",
   "scripts": {
