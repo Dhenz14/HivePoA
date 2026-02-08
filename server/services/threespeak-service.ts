@@ -27,7 +27,7 @@ export interface ThreeSpeakResponse {
 
 class ThreeSpeakService {
   private baseUrl = "https://3speak.tv";
-  private apiUrl = "https://3speak.tv/apiv2";
+  private apiUrl = "https://legacy.3speak.tv/apiv2";
 
   async getTrendingVideos(limit: number = 20, page: number = 1): Promise<ThreeSpeakResponse> {
     try {
@@ -98,7 +98,7 @@ class ThreeSpeakService {
 
   private extractCidFromUrl(url: string): string {
     if (!url) return "";
-    const match = url.match(/\/ipfs\/(Qm[a-zA-Z0-9]{44}|baf[a-zA-Z0-9]{50,})/);
+    const match = url.match(/\/ipfs\/(Qm[a-zA-Z0-9]+|baf[a-zA-Z0-9]+)/);
     return match ? match[1] : "";
   }
 
@@ -140,7 +140,7 @@ class ThreeSpeakService {
         duration: 845,
         views: 12500,
         created: "2024-12-15T10:00:00Z",
-        ipfs: "QmX7bK5Wv9P3mN2rL1qF4hJ6dS8aZ0cE9vT2uY5iO3pA",
+        ipfs: "QmenNBhE332Bb9gXfuxULYHHhZYppL5LoWUvKkm51h8Crq",
         tags: ["technology", "web3", "ipfs"],
       },
       {
@@ -153,7 +153,7 @@ class ThreeSpeakService {
         duration: 1230,
         views: 8900,
         created: "2024-12-14T15:30:00Z",
-        ipfs: "QmY8aL2Wx0R4nM3sK2pG5jH7eT9bZ1dF0wU3vX6yI4qB",
+        ipfs: "QmXCTTGyNTxqiUCpwugEvxYFo9t8gQeo4T1xdxxt4A2CYc",
         tags: ["hive", "blockchain", "tutorial"],
       },
       {
@@ -166,7 +166,7 @@ class ThreeSpeakService {
         duration: 2100,
         views: 5600,
         created: "2024-12-13T09:15:00Z",
-        ipfs: "QmZ9bM3Xy1S5oN4tL3qH6kI8fU0cA2eV7wR4xJ9zK5nC",
+        ipfs: "QmdU1V8Eefmv5E77Ct6hNG8A3f9b75dZmVS6ZVvw5ynnrn",
         tags: ["spk", "storage", "ipfs"],
       },
       {
@@ -179,7 +179,7 @@ class ThreeSpeakService {
         duration: 1560,
         views: 4200,
         created: "2024-12-12T14:00:00Z",
-        ipfs: "QmA1cN4Zy2T6pO5uK4rI7lE0gW3hX8jU6sY9vB2mD1oF",
+        ipfs: "QmUNLLsPACCz1vLxQVkXqqLX5R1X345qqfHbsf67hvA3Nn",
         tags: ["art", "nft", "creative"],
       },
       {
@@ -192,7 +192,7 @@ class ThreeSpeakService {
         duration: 980,
         views: 3100,
         created: "2024-12-11T11:45:00Z",
-        ipfs: "QmB2dO5Az3U7qP6vL5sJ8mF1hY4iZ0kT9wC3xA7nE2pG",
+        ipfs: "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
         tags: ["governance", "dao", "community"],
       },
       {
@@ -205,7 +205,7 @@ class ThreeSpeakService {
         duration: 720,
         views: 7800,
         created: "2024-12-10T16:20:00Z",
-        ipfs: "QmC3eP6Ba4V8rQ7wM6tK9nG2iX5jA1lS0uD4yB8oF3qH",
+        ipfs: "QmT78zSuBmuS4z925WZfrqQ1qHaJ56DQaTfyMUF7F8ff5o",
         tags: ["ipfs", "pinning", "storage"],
       },
     ];

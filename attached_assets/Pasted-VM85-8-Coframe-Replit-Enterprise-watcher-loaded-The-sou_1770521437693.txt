@@ -1,0 +1,196 @@
+VM85:8 [Coframe] Replit Enterprise watcher loaded
+The source list for the Content Security Policy directive 'default-src' contains an invalid source: ''unsafe-dynamic''. It will be ignored.
+The source list for the Content Security Policy directive 'default-src' contains an invalid source: ''unsafe-dynamic''. It will be ignored.
+The source list for the Content Security Policy directive 'default-src' contains an invalid source: ''unsafe-dynamic''. It will be ignored.
+The source list for the Content Security Policy directive 'default-src' contains an invalid source: ''unsafe-dynamic''. It will be ignored.
+The source list for the Content Security Policy directive 'default-src' contains an invalid source: ''unsafe-dynamic''. It will be ignored.
+The source list for the Content Security Policy directive 'default-src' contains an invalid source: ''unsafe-dynamic''. It will be ignored.
+The source list for the Content Security Policy directive 'default-src' contains an invalid source: ''unsafe-dynamic''. It will be ignored.
+The source list for the Content Security Policy directive 'default-src' contains an invalid source: ''unsafe-dynamic''. It will be ignored.
+The source list for the Content Security Policy directive 'default-src' contains an invalid source: ''unsafe-dynamic''. It will be ignored.
+The source list for the Content Security Policy directive 'default-src' contains an invalid source: ''unsafe-dynamic''. It will be ignored.
+The source list for the Content Security Policy directive 'default-src' contains an invalid source: ''unsafe-dynamic''. It will be ignored.
+The source list for the Content Security Policy directive 'default-src' contains an invalid source: ''unsafe-dynamic''. It will be ignored.
+The Content-Security-Policy directive 'default-src' contains 'report-uri' as a source expression. Did you want to add it as a directive and forget a semicolon?
+The Content-Security-Policy directive 'default-src' contains 'report-uri' as a source expression. Did you want to add it as a directive and forget a semicolon?
+The Content-Security-Policy directive 'default-src' contains 'report-uri' as a source expression. Did you want to add it as a directive and forget a semicolon?
+The Content-Security-Policy directive 'default-src' contains 'report-uri' as a source expression. Did you want to add it as a directive and forget a semicolon?
+The Content-Security-Policy directive 'default-src' contains 'report-uri' as a source expression. Did you want to add it as a directive and forget a semicolon?
+The Content-Security-Policy directive 'default-src' contains 'report-uri' as a source expression. Did you want to add it as a directive and forget a semicolon?
+The Content-Security-Policy directive 'default-src' contains 'report-uri' as a source expression. Did you want to add it as a directive and forget a semicolon?
+The Content-Security-Policy directive 'default-src' contains 'report-uri' as a source expression. Did you want to add it as a directive and forget a semicolon?
+The Content-Security-Policy directive 'default-src' contains 'report-uri' as a source expression. Did you want to add it as a directive and forget a semicolon?
+The Content-Security-Policy directive 'default-src' contains 'report-uri' as a source expression. Did you want to add it as a directive and forget a semicolon?
+The Content-Security-Policy directive 'default-src' contains 'report-uri' as a source expression. Did you want to add it as a directive and forget a semicolon?
+The Content-Security-Policy directive 'default-src' contains 'report-uri' as a source expression. Did you want to add it as a directive and forget a semicolon?
+The source list for Content Security Policy directive 'default-src' contains a source with an invalid path: '/api/4509669501698048/security/?sentry_key=7eb3d90eb4660416caf507087367e67e'. The query component, including the '?', will be ignored.
+The source list for Content Security Policy directive 'default-src' contains a source with an invalid path: '/api/4509669501698048/security/?sentry_key=7eb3d90eb4660416caf507087367e67e'. The query component, including the '?', will be ignored.
+The source list for Content Security Policy directive 'default-src' contains a source with an invalid path: '/api/4509669501698048/security/?sentry_key=7eb3d90eb4660416caf507087367e67e'. The query component, including the '?', will be ignored.
+The source list for Content Security Policy directive 'default-src' contains a source with an invalid path: '/api/4509669501698048/security/?sentry_key=7eb3d90eb4660416caf507087367e67e'. The query component, including the '?', will be ignored.
+The source list for Content Security Policy directive 'default-src' contains a source with an invalid path: '/api/4509669501698048/security/?sentry_key=7eb3d90eb4660416caf507087367e67e'. The query component, including the '?', will be ignored.
+The source list for Content Security Policy directive 'default-src' contains a source with an invalid path: '/api/4509669501698048/security/?sentry_key=7eb3d90eb4660416caf507087367e67e'. The query component, including the '?', will be ignored.
+The source list for Content Security Policy directive 'default-src' contains a source with an invalid path: '/api/4509669501698048/security/?sentry_key=7eb3d90eb4660416caf507087367e67e'. The query component, including the '?', will be ignored.
+The source list for Content Security Policy directive 'default-src' contains a source with an invalid path: '/api/4509669501698048/security/?sentry_key=7eb3d90eb4660416caf507087367e67e'. The query component, including the '?', will be ignored.
+The source list for Content Security Policy directive 'default-src' contains a source with an invalid path: '/api/4509669501698048/security/?sentry_key=7eb3d90eb4660416caf507087367e67e'. The query component, including the '?', will be ignored.
+The source list for Content Security Policy directive 'default-src' contains a source with an invalid path: '/api/4509669501698048/security/?sentry_key=7eb3d90eb4660416caf507087367e67e'. The query component, including the '?', will be ignored.
+The source list for Content Security Policy directive 'default-src' contains a source with an invalid path: '/api/4509669501698048/security/?sentry_key=7eb3d90eb4660416caf507087367e67e'. The query component, including the '?', will be ignored.
+The source list for Content Security Policy directive 'default-src' contains a source with an invalid path: '/api/4509669501698048/security/?sentry_key=7eb3d90eb4660416caf507087367e67e'. The query component, including the '?', will be ignored.
+/t/ragnarok:1 The source list for the Content Security Policy directive 'default-src' contains an invalid source: ''unsafe-dynamic''. It will be ignored.
+/t/ragnarok:1 The Content-Security-Policy directive 'default-src' contains 'report-uri' as a source expression. Did you want to add it as a directive and forget a semicolon?
+/t/ragnarok:1 The source list for Content Security Policy directive 'default-src' contains a source with an invalid path: '/api/4509669501698048/security/?sentry_key=7eb3d90eb4660416caf507087367e67e'. The query component, including the '?', will be ignored.
+282000bd8b6d40de.js:14 
+      /////////////////////
+   ///////////////////////////
+  ////////@@@@@@@//////////////
+  ////////@@@@@@@//////////////
+  ////////@@@@@@@//////////////        Curious and driven?
+  ///////////////@@@@@@@///////        Work with us!
+  ///////////////@@@@@@@///////
+  ///////////////@@@@@@@///////        https://join.replit.com/hack.with.us
+  ////////@@@@@@@//////////////
+  ////////@@@@@@@//////////////
+  ////////@@@@@@#//////////////
+   ///////////////////////////
+      /////////////////////
+      
+282000bd8b6d40de.js:14 Download the Apollo DevTools for a better development experience: https://chrome.google.com/webstore/detail/apollo-client-developer-t/jdkknkkbebbapilgoeccciglkfbmbnfm
+blakejs-browser.js:243 ✅ blakejs loaded successfully (self-contained version)
+blakejs-browser.js:244   Available functions: Array(5)
+paywall-detector.js:318 🛡️ Paywall Detector loaded - 100% client-side, no external dependencies
+content.js:13 🏛️ ArcHive Content Script Loaded
+content.js:434 🏛️ ArcHive Content Script Ready - 100% Decentralized
+282000bd8b6d40de.js:14 [LaunchDarkly] LaunchDarkly client initialized
+282000bd8b6d40de.js:14 Cache data may be lost when replacing the settings field of a Org object.
+
+This could cause additional (usually avoidable) network requests to fetch data that were otherwise cached.
+
+To address this problem (which is not a bug in Apollo Client), either ensure all objects of type OrgSettings have an ID or a custom merge function, or define a custom merge function for the Org.settings field, so InMemoryCache can safely merge these objects:
+
+  existing: {"__typename":"OrgSettings","requirePrivateDeployments":false,"disablePasswordProtectedDeployments":false,"adminOnlyPasswordProtectedDeploymentsBypass":false,"banPublicApps":false,"banSourceCodeExport":false,"adminOnlyPublicDeployments":false,"higherPowerModelDisabled":false,"modelfarmDisabled":false,"openrouterDisabled":false,"openaiDisabled":false,"anthropicDisabled":false,"geminiDisabled":false,"scimViewerUpgradeLink":"","requireGitRemoteBeforeDeployment":false,"adminOnlyGitRemoteBeforeDeploymentBypass":false,"requireSecurityScanOnDeployment":false,"adminOnlySecurityScanOnDeploymentBypass":false}
+  incoming: {"__typename":"OrgSettings","banAttachmentUploads":false}
+
+For more information about these options, please refer to the documentation:
+
+  * Ensuring entity objects have IDs: https://go.apollo.dev/c/generating-unique-identifiers
+  * Defining custom merge functions: https://go.apollo.dev/c/merging-non-normalized-objects
+
+(anonymous) @ 282000bd8b6d40de.js:14
+282000bd8b6d40de.js:14 [ai-chat] Creating connection with chat proxy enabled
+(anonymous) @ 282000bd8b6d40de.js:14
+/t/ragnarok/repls:1 Banner not shown: beforeinstallpromptevent.preventDefault() called. The page must call beforeinstallpromptevent.prompt() to show the banner.
+282000bd8b6d40de.js:14 [ai-chat] Creating connection with chat proxy enabled
+(anonymous) @ 282000bd8b6d40de.js:14
+282000bd8b6d40de.js:14 Extension Error: An error occurred while loading the extension manifest: Manifest does not exist for extension 88d1957f-e5f9-4bbe-8b56-60edc458561a Object
+(anonymous) @ 282000bd8b6d40de.js:14
+282000bd8b6d40de.js:14 Extension Error: An error occurred while loading the extension manifest: Manifest does not exist for extension adccbcd2-c9d6-4778-b0cb-20e1bf289634 Object
+(anonymous) @ 282000bd8b6d40de.js:14
+282000bd8b6d40de.js:14 Extension Error: An error occurred while loading the extension manifest: Manifest does not exist for extension 71b9e9dd-9e9b-4615-8d28-3187422a5ba7 Object
+(anonymous) @ 282000bd8b6d40de.js:14
+282000bd8b6d40de.js:14 Extension Error: An error occurred while loading the extension manifest: Manifest does not exist for extension d526fa49-4249-4a76-99b8-6a8e548e485f Object
+(anonymous) @ 282000bd8b6d40de.js:14
+282000bd8b6d40de.js:14 Extension Error: An error occurred while loading the extension manifest: Manifest does not exist for extension 7636883a-2637-421c-aa98-27ffc46d202b Object
+(anonymous) @ 282000bd8b6d40de.js:14
+282000bd8b6d40de.js:14 Extension Error: An error occurred while loading the extension manifest: Manifest does not exist for extension 857b2e2f-2c57-42be-8033-400c06d95624 Object
+(anonymous) @ 282000bd8b6d40de.js:14
+9954129c7dd6dc22.js:2 Error while parsing the 'sandbox' attribute: 'allow-downloads-without-user-activation' is an invalid sandbox flag.
+C @ 9954129c7dd6dc22.js:2
+9954129c7dd6dc22.js:2 Unrecognized feature: 'ambient-light-sensor'.
+C @ 9954129c7dd6dc22.js:2
+9954129c7dd6dc22.js:2 Unrecognized feature: 'battery'.
+C @ 9954129c7dd6dc22.js:2
+9954129c7dd6dc22.js:2 Unrecognized feature: 'execution-while-not-rendered'.
+C @ 9954129c7dd6dc22.js:2
+9954129c7dd6dc22.js:2 Unrecognized feature: 'execution-while-out-of-viewport'.
+C @ 9954129c7dd6dc22.js:2
+9954129c7dd6dc22.js:2 Unrecognized feature: 'layout-animations'.
+C @ 9954129c7dd6dc22.js:2
+9954129c7dd6dc22.js:2 Unrecognized feature: 'legacy-image-formats'.
+C @ 9954129c7dd6dc22.js:2
+9954129c7dd6dc22.js:2 Unrecognized feature: 'navigation-override'.
+C @ 9954129c7dd6dc22.js:2
+9954129c7dd6dc22.js:2 Unrecognized feature: 'oversized-images'.
+C @ 9954129c7dd6dc22.js:2
+9954129c7dd6dc22.js:2 Unrecognized feature: 'publickey-credentials'.
+C @ 9954129c7dd6dc22.js:2
+9954129c7dd6dc22.js:2 Unrecognized feature: 'speaker-selection'.
+C @ 9954129c7dd6dc22.js:2
+9954129c7dd6dc22.js:2 Unrecognized feature: 'unoptimized-images'.
+C @ 9954129c7dd6dc22.js:2
+9954129c7dd6dc22.js:2 Unrecognized feature: 'unsized-media'.
+C @ 9954129c7dd6dc22.js:2
+9954129c7dd6dc22.js:2 Unrecognized feature: 'pointer-lock'.
+C @ 9954129c7dd6dc22.js:2
+9954129c7dd6dc22.js:2 Allow attribute will take precedence over 'allowfullscreen'.
+C @ 9954129c7dd6dc22.js:2
+9954129c7dd6dc22.js:2 Allow attribute will take precedence over 'allowpaymentrequest'.
+C @ 9954129c7dd6dc22.js:2
+db88b08f-2990-4d58-a782-930319b7a590-00-235iopzr5fj4n.spock.replit.dev/__replco/workspace_iframe.html?initialPath=%2F&id=%3Ars0%3A:32 Error while parsing the 'sandbox' attribute: 'allow-downloads-without-user-activation' is an invalid sandbox flag.
+db88b08f-2990-4d58-a782-930319b7a590-00-235iopzr5fj4n.spock.replit.dev/__replco/workspace_iframe.html?initialPath=%2F&id=%3Ars0%3A:32 Unrecognized feature: 'ambient-light-sensor'.
+db88b08f-2990-4d58-a782-930319b7a590-00-235iopzr5fj4n.spock.replit.dev/__replco/workspace_iframe.html?initialPath=%2F&id=%3Ars0%3A:32 Unrecognized feature: 'battery'.
+db88b08f-2990-4d58-a782-930319b7a590-00-235iopzr5fj4n.spock.replit.dev/__replco/workspace_iframe.html?initialPath=%2F&id=%3Ars0%3A:32 Unrecognized feature: 'execution-while-not-rendered'.
+db88b08f-2990-4d58-a782-930319b7a590-00-235iopzr5fj4n.spock.replit.dev/__replco/workspace_iframe.html?initialPath=%2F&id=%3Ars0%3A:32 Unrecognized feature: 'execution-while-out-of-viewport'.
+db88b08f-2990-4d58-a782-930319b7a590-00-235iopzr5fj4n.spock.replit.dev/__replco/workspace_iframe.html?initialPath=%2F&id=%3Ars0%3A:32 Unrecognized feature: 'layout-animations'.
+db88b08f-2990-4d58-a782-930319b7a590-00-235iopzr5fj4n.spock.replit.dev/__replco/workspace_iframe.html?initialPath=%2F&id=%3Ars0%3A:32 Unrecognized feature: 'legacy-image-formats'.
+db88b08f-2990-4d58-a782-930319b7a590-00-235iopzr5fj4n.spock.replit.dev/__replco/workspace_iframe.html?initialPath=%2F&id=%3Ars0%3A:32 Unrecognized feature: 'navigation-override'.
+db88b08f-2990-4d58-a782-930319b7a590-00-235iopzr5fj4n.spock.replit.dev/__replco/workspace_iframe.html?initialPath=%2F&id=%3Ars0%3A:32 Unrecognized feature: 'oversized-images'.
+db88b08f-2990-4d58-a782-930319b7a590-00-235iopzr5fj4n.spock.replit.dev/__replco/workspace_iframe.html?initialPath=%2F&id=%3Ars0%3A:32 Unrecognized feature: 'publickey-credentials'.
+db88b08f-2990-4d58-a782-930319b7a590-00-235iopzr5fj4n.spock.replit.dev/__replco/workspace_iframe.html?initialPath=%2F&id=%3Ars0%3A:32 Unrecognized feature: 'speaker-selection'.
+db88b08f-2990-4d58-a782-930319b7a590-00-235iopzr5fj4n.spock.replit.dev/__replco/workspace_iframe.html?initialPath=%2F&id=%3Ars0%3A:32 Unrecognized feature: 'unoptimized-images'.
+db88b08f-2990-4d58-a782-930319b7a590-00-235iopzr5fj4n.spock.replit.dev/__replco/workspace_iframe.html?initialPath=%2F&id=%3Ars0%3A:32 Unrecognized feature: 'unsized-media'.
+db88b08f-2990-4d58-a782-930319b7a590-00-235iopzr5fj4n.spock.replit.dev/__replco/workspace_iframe.html?initialPath=%2F&id=%3Ars0%3A:32 Allow attribute will take precedence over 'allowfullscreen'.
+db88b08f-2990-4d58-a782-930319b7a590-00-235iopzr5fj4n.spock.replit.dev/__replco/workspace_iframe.html?initialPath=%2F&id=%3Ars0%3A:32 Allow attribute will take precedence over 'allowpaymentrequest'.
+client:745 WebSocket connection to 'wss://db88b08f-2990-4d58-a782-930319b7a590-00-235iopzr5fj4n.spock.replit.dev/vite-hmr?token=ODA1HN0g2DC9' failed: 
+createConnection @ client:745
+client:755 WebSocket connection to 'wss://localhost:5173/?token=ODA1HN0g2DC9' failed: 
+createConnection @ client:755
+workspace_iframe.html?initialPath=%2Fbrowse&id=%3Ars0%3A:32 Error while parsing the 'sandbox' attribute: 'allow-downloads-without-user-activation' is an invalid sandbox flag.
+injected.js:37 [vite] connecting...
+client:745 WebSocket connection to 'wss://db88b08f-2990-4d58-a782-930319b7a590-00-235iopzr5fj4n.spock.replit.dev/vite-hmr?token=ODA1HN0g2DC9' failed: 
+createConnection @ client:745
+client:755 WebSocket connection to 'wss://localhost:5173/?token=ODA1HN0g2DC9' failed: 
+createConnection @ client:755
+injected.js:37 [vite] failed to connect to websocket.
+your current setup:
+  (browser) db88b08f-2990-4d58-a782-930319b7a590-00-235iopzr5fj4n.spock.replit.dev/ <--[HTTP]--> localhost:5173/ (server)
+  (browser) db88b08f-2990-4d58-a782-930319b7a590-00-235iopzr5fj4n.spock.replit.dev:/vite-hmr <--[WebSocket (failing)]--> localhost:5173/ (server)
+Check out your Vite / network configuration and https://vite.dev/config/server-options.html#server-hmr .
+(anonymous) @ injected.js:37
+injected.js:37 In HTML, <div> cannot be a descendant of <p>.
+This will cause a hydration error.
+
+  ...
+    <TooltipProvider data-replit-metadata="client/src..." data-component-name="TooltipPro...">
+      <TooltipProviderProvider scope={undefined} isOpenDelayedRef={{current:true}} delayDuration={700} onOpen={function} ...>
+        <AlertsProvider data-replit-metadata="client/src..." data-component-name="AlertsProv...">
+          <div>
+          <Toaster>
+          <Router data-replit-metadata="client/src..." data-component-name="Router">
+            <Layout data-replit-metadata="client/src..." data-component-name="Layout">
+              <div data-replit-metadata="client/src..." data-component-name="div" className="flex min-h...">
+                <Sidebar>
+                <main data-replit-metadata="client/src..." data-component-name="main" className="flex-1 ove...">
+                  <Switch data-replit-metadata="client/src..." data-component-name="Switch">
+                    <Route data-replit-metadata="client/src..." data-component-name="Route" path="/browse" ...>
+                      <Browse params={{}}>
+                        <div data-replit-metadata="client/src..." data-component-name="div" className="container ...">
+                          <div data-replit-metadata="client/src..." data-component-name="div" className="flex flex-...">
+                            <div data-replit-metadata="client/src..." data-component-name="div">
+                              <h1>
+>                             <p
+>                               data-replit-metadata="client/src/pages/browse.tsx:345:10"
+>                               data-component-name="p"
+>                               className="text-muted-foreground mt-1"
+>                             >
+                                <Badge data-replit-metadata="client/src..." data-component-name="Badge" ...>
+>                                 <div
+>                                   data-replit-metadata="client/src/pages/browse.tsx:348:14"
+>                                   data-component-name="Badge"
+>                                   className="whitespace-nowrap inline-flex items-center rounded-md border px-2.5 py-..."
+>                                 >
+                            ...
+                          ...
+
+(anonymous) @ injected.js:37
+injected.js:37 <p> cannot contain a nested <div>.
+See this log for the ancestor stack trace.
+(anonymous) @ injected.js:37

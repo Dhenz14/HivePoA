@@ -125,13 +125,19 @@ class PinManager {
     try {
       this.updateJob(job.id, { status: "fetching" });
 
-      const statResponse = await fetch(`${ipfsApiUrl}/api/v0/object/stat?arg=${cid}`, {
-        method: "POST",
-      });
-      
-      if (statResponse.ok) {
-        const stat = await statResponse.json();
-        this.updateJob(job.id, { totalBytes: stat.CumulativeSize || 0 });
+      try {
+        const statResponse = await fetch(`${ipfsApiUrl}/api/v0/object/stat?arg=${cid}`, {
+          method: "POST",
+        });
+        
+        if (statResponse.ok) {
+          const stat = await statResponse.json();
+          this.updateJob(job.id, { totalBytes: stat.CumulativeSize || 0 });
+        } else {
+          console.log(`[Pin] Stat failed for ${cid}: ${statResponse.statusText}, continuing with pin`);
+        }
+      } catch (statError: any) {
+        console.log(`[Pin] Stat error for ${cid}: ${statError.message}, continuing with pin`);
       }
 
       this.updateJob(job.id, { status: "pinning" });
@@ -141,7 +147,13 @@ class PinManager {
       });
 
       if (!pinResponse.ok) {
-        throw new Error(`Pin failed: ${pinResponse.statusText}`);
+        let errorDetail = pinResponse.statusText;
+        try {
+          const errBody = await pinResponse.json();
+          if (errBody.Message) errorDetail = errBody.Message;
+        } catch {}
+        console.log(`[Pin] Pin failed for ${cid}: ${errorDetail}`);
+        throw new Error(`Pin failed: ${errorDetail}`);
       }
 
       if (pinResponse.body) {
