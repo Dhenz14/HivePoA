@@ -1,11 +1,17 @@
 /**
  * Transcoding Service
  * Repurposed from SPK Network's oratr video encoding
- * 
- * Handles video transcoding to HLS, MP4, and WebM formats
+ *
+ * Handles video transcoding to HLS, MP4, and WebM formats.
+ * Uses real FFmpeg via VideoProcessor when available, falls back to simulation.
  */
 
 import { storage } from "../storage";
+import { videoProcessor, VideoProcessor } from "./video-processor";
+import { getIPFSClient } from "./ipfs-client";
+import { execSync } from "child_process";
+import * as path from "path";
+import * as fs from "fs";
 import type { TranscodeJob, EncoderNode, InsertTranscodeJob } from "@shared/schema";
 
 export interface TranscodePreset {
@@ -29,11 +35,28 @@ export const TRANSCODE_PRESETS: TranscodePreset[] = [
 export class TranscodingService {
   private processingInterval: NodeJS.Timeout | null = null;
   private isProcessing = false;
+  private ffmpegAvailable = false;
 
   // Start the transcoding worker
   start(): void {
+    this.ffmpegAvailable = this.checkFfmpeg();
+    if (this.ffmpegAvailable) {
+      console.log("[Transcoding Service] FFmpeg detected — real encoding enabled");
+    } else {
+      console.warn("[Transcoding Service] FFmpeg not found — using simulated encoding");
+    }
     this.processingInterval = setInterval(() => this.processQueue(), 5000);
     console.log("[Transcoding Service] Started job processor");
+  }
+
+  private checkFfmpeg(): boolean {
+    try {
+      const cmd = process.platform === "win32" ? "where ffmpeg" : "which ffmpeg";
+      execSync(cmd, { encoding: "utf-8", timeout: 5000, stdio: "pipe" });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   stop(): void {
@@ -113,30 +136,95 @@ export class TranscodingService {
     }
   }
 
-  // Simulate the encoding process
+  // Process encoding: use real FFmpeg if available, otherwise simulate
   private async simulateEncoding(job: TranscodeJob, encoder: EncoderNode | null): Promise<void> {
-    const preset = TRANSCODE_PRESETS.find(p => p.id === job.preset);
-    
-    // Simulate progress updates
+    if (this.ffmpegAvailable) {
+      await this.realEncoding(job, encoder);
+    } else {
+      await this.fallbackSimulatedEncoding(job, encoder);
+    }
+  }
+
+  // Real FFmpeg encoding via VideoProcessor
+  private async realEncoding(job: TranscodeJob, encoder: EncoderNode | null): Promise<void> {
+    const outputDir = path.join(process.cwd(), "transcoded", job.id);
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    // Download input file from IPFS to a temp location
+    const ipfsClient = getIPFSClient();
+    const inputPath = path.join(outputDir, "input");
+    try {
+      const data = await ipfsClient.cat(job.inputCid);
+      fs.writeFileSync(inputPath, data);
+    } catch (error) {
+      console.error(`[Transcoding Service] Failed to fetch input from IPFS: ${error}`);
+      await storage.updateTranscodeJobStatus(job.id, 'failed', 0, undefined, `IPFS fetch failed: ${error}`);
+      if (encoder) await storage.updateEncoderNodeAvailability(encoder.id, 'available');
+      return;
+    }
+
+    // Wire up progress events
+    const progressHandler = async (progress: { percent: number; stage: string }) => {
+      await storage.updateTranscodeJobStatus(job.id, 'processing', progress.percent).catch(() => {});
+    };
+    videoProcessor.on("progress", progressHandler);
+
+    try {
+      const result = await videoProcessor.encode({
+        inputPath,
+        outputDir: path.join(outputDir, "output"),
+      });
+
+      videoProcessor.off("progress", progressHandler);
+
+      if (result.success) {
+        // Upload output to IPFS
+        let outputCid = `local_${job.id}`;
+        try {
+          const masterPlaylist = fs.readFileSync(result.outputPaths.masterPlaylist);
+          outputCid = await ipfsClient.addWithPin(masterPlaylist);
+        } catch {
+          console.warn(`[Transcoding Service] Failed to upload to IPFS, keeping local reference`);
+        }
+
+        await storage.updateTranscodeJobStatus(job.id, 'completed', 100, outputCid);
+        console.log(`[Transcoding Service] Job ${job.id} completed with FFmpeg (${result.processingTimeSec.toFixed(1)}s, ${result.hardwareAccelUsed})`);
+      } else {
+        await storage.updateTranscodeJobStatus(job.id, 'failed', 0, undefined, result.error);
+        console.error(`[Transcoding Service] Job ${job.id} FFmpeg failed: ${result.error}`);
+      }
+    } catch (error) {
+      videoProcessor.off("progress", progressHandler);
+      await storage.updateTranscodeJobStatus(job.id, 'failed', 0, undefined, String(error));
+    }
+
+    // Clean up temp files
+    try { fs.rmSync(inputPath, { force: true }); } catch {}
+
+    if (encoder) {
+      await storage.updateEncoderNodeAvailability(encoder.id, 'available');
+    }
+  }
+
+  // Fallback simulation when FFmpeg is not available
+  private async fallbackSimulatedEncoding(job: TranscodeJob, encoder: EncoderNode | null): Promise<void> {
     const progressSteps = [10, 25, 50, 75, 90, 100];
-    
+
     for (const progress of progressSteps) {
-      await new Promise(resolve => setTimeout(resolve, 500)); // 500ms between updates
+      await new Promise(resolve => setTimeout(resolve, 500));
       await storage.updateTranscodeJobStatus(job.id, 'processing', progress);
     }
 
-    // Generate simulated output CID
     const outputCid = `Qm${Math.random().toString(36).substring(2, 15)}${Math.random().toString(36).substring(2, 15)}transcoded`;
-
-    // Mark as completed
     await storage.updateTranscodeJobStatus(job.id, 'completed', 100, outputCid);
 
-    // Free up encoder if assigned
     if (encoder) {
       await storage.updateEncoderNodeAvailability(encoder.id, 'available');
     }
 
-    console.log(`[Transcoding Service] Job ${job.id} completed with output ${outputCid}`);
+    console.log(`[Transcoding Service] Job ${job.id} completed (simulated) with output ${outputCid}`);
   }
 
   // Get job status with details

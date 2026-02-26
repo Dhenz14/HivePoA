@@ -6,6 +6,7 @@
  */
 
 import { storage } from "../storage";
+import { getIPFSClient } from "./ipfs-client";
 import type { ViewEvent, UserNodeSettings, File } from "@shared/schema";
 
 export interface AutoPinResult {
@@ -109,15 +110,20 @@ export class AutoPinService {
     }
   }
 
-  // Pin a file (simulated - in production would call IPFS)
+  // Pin a file via IPFS
   private async pinFile(file: File, username: string): Promise<void> {
-    // In production, this would:
-    // 1. Connect to user's local IPFS node
-    // 2. Call ipfs.pin.add(file.cid)
-    // 3. Track the pin in the database
-    
-    // For simulation, we just log and could track in a pins table
-    console.log(`[Auto-Pin Service] Simulated pin: ${file.cid} for ${username}`);
+    const ipfsClient = getIPFSClient();
+    try {
+      const online = await ipfsClient.isOnline();
+      if (!online) {
+        console.warn(`[Auto-Pin Service] IPFS offline — skipping pin for ${file.cid}`);
+        return;
+      }
+      await ipfsClient.pin(file.cid);
+      console.log(`[Auto-Pin Service] Pinned ${file.cid} for ${username} via IPFS`);
+    } catch (error) {
+      console.error(`[Auto-Pin Service] Failed to pin ${file.cid}:`, error);
+    }
   }
 
   // Record a view event
@@ -278,19 +284,13 @@ export class AutoPinService {
     };
   }
 
-  // Get auto-pin statistics for a user
+  // Get auto-pin statistics for a user from the database
   async getAutoPinStats(username: string): Promise<{
     totalViews: number;
     completedViews: number;
     pinnedContent: number;
   }> {
-    // This would query the database for stats
-    // For now, return mock data
-    return {
-      totalViews: Math.floor(Math.random() * 100),
-      completedViews: Math.floor(Math.random() * 50),
-      pinnedContent: Math.floor(Math.random() * 20),
-    };
+    return storage.getViewEventStats(username);
   }
 }
 

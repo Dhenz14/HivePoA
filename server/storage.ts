@@ -1438,6 +1438,110 @@ export class DatabaseStorage implements IStorage {
       avgP2pRatio: avgRatio[0]?.avg || 0,
     };
   }
+  // ============================================================
+  // Analytics: Real performance data from PoA challenges
+  // ============================================================
+  async getChallengesLast24Hours(): Promise<{ hour: number; successCount: number; failCount: number; totalCount: number; avgLatency: number }[]> {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const results = await db.select({
+      hour: sql<number>`EXTRACT(HOUR FROM ${poaChallenges.createdAt})::INTEGER`,
+      successCount: sql<number>`COUNT(CASE WHEN ${poaChallenges.result} = 'success' THEN 1 END)::INTEGER`,
+      failCount: sql<number>`COUNT(CASE WHEN ${poaChallenges.result} = 'fail' THEN 1 END)::INTEGER`,
+      totalCount: sql<number>`COUNT(*)::INTEGER`,
+      avgLatency: sql<number>`COALESCE(AVG(${poaChallenges.latencyMs}), 0)::INTEGER`,
+    })
+    .from(poaChallenges)
+    .where(gte(poaChallenges.createdAt, since))
+    .groupBy(sql`EXTRACT(HOUR FROM ${poaChallenges.createdAt})`)
+    .orderBy(sql`EXTRACT(HOUR FROM ${poaChallenges.createdAt})`);
+
+    return results;
+  }
+
+  async getPerformanceMetrics(): Promise<{
+    totalChallenges: number;
+    successRate: number;
+    avgLatency: number;
+    minLatency: number;
+    maxLatency: number;
+  }> {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const results = await db.select({
+      totalCount: sql<number>`COUNT(*)::INTEGER`,
+      successCount: sql<number>`COUNT(CASE WHEN ${poaChallenges.result} = 'success' THEN 1 END)::INTEGER`,
+      avgLatency: sql<number>`COALESCE(AVG(${poaChallenges.latencyMs}), 0)::INTEGER`,
+      minLatency: sql<number>`COALESCE(MIN(${poaChallenges.latencyMs}), 0)::INTEGER`,
+      maxLatency: sql<number>`COALESCE(MAX(${poaChallenges.latencyMs}), 0)::INTEGER`,
+    })
+    .from(poaChallenges)
+    .where(gte(poaChallenges.createdAt, since));
+
+    const row = results[0];
+    return {
+      totalChallenges: row?.totalCount || 0,
+      successRate: row?.totalCount ? (row.successCount / row.totalCount) * 100 : 0,
+      avgLatency: row?.avgLatency || 0,
+      minLatency: row?.minLatency || 0,
+      maxLatency: row?.maxLatency || 0,
+    };
+  }
+
+  async getNodeHealthSummary(): Promise<{ active: number; probation: number; banned: number; total: number }> {
+    const results = await db.select({
+      status: storageNodes.status,
+      count: sql<number>`COUNT(*)::INTEGER`,
+    })
+    .from(storageNodes)
+    .groupBy(storageNodes.status);
+
+    const summary = { active: 0, probation: 0, banned: 0, total: 0 };
+    for (const row of results) {
+      if (row.status === "active") summary.active = row.count;
+      else if (row.status === "probation") summary.probation = row.count;
+      else if (row.status === "banned") summary.banned = row.count;
+      summary.total += row.count;
+    }
+    return summary;
+  }
+
+  async getViewEventStats(username: string): Promise<{ totalViews: number; completedViews: number; pinnedContent: number }> {
+    const results = await db.select({
+      totalViews: sql<number>`COUNT(*)::INTEGER`,
+      completedViews: sql<number>`COUNT(CASE WHEN ${viewEvents.completed} = true THEN 1 END)::INTEGER`,
+      pinnedContent: sql<number>`COUNT(CASE WHEN ${viewEvents.autoPinTriggered} = true THEN 1 END)::INTEGER`,
+    })
+    .from(viewEvents)
+    .where(eq(viewEvents.viewerUsername, username));
+
+    const row = results[0];
+    return {
+      totalViews: row?.totalViews || 0,
+      completedViews: row?.completedViews || 0,
+      pinnedContent: row?.pinnedContent || 0,
+    };
+  }
+
+  async getRecentNodeLogs(limit: number = 50): Promise<{ timestamp: Date; level: string; message: string; source: string }[]> {
+    const challenges = await db.select({
+      createdAt: poaChallenges.createdAt,
+      result: poaChallenges.result,
+      latencyMs: poaChallenges.latencyMs,
+      hiveUsername: storageNodes.hiveUsername,
+    })
+    .from(poaChallenges)
+    .innerJoin(storageNodes, eq(poaChallenges.nodeId, storageNodes.id))
+    .orderBy(desc(poaChallenges.createdAt))
+    .limit(limit);
+
+    return challenges.map(c => ({
+      timestamp: c.createdAt,
+      level: c.result === "success" ? "info" : "warn",
+      message: c.result === "success"
+        ? `PoA challenge passed for ${c.hiveUsername} (${c.latencyMs}ms)`
+        : `PoA challenge failed for ${c.hiveUsername} (${c.latencyMs}ms)`,
+      source: "poa-engine",
+    }));
+  }
 }
 
 export const storage = new DatabaseStorage();

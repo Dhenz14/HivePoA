@@ -1,4 +1,5 @@
 import { Client, PrivateKey, Asset, TransferOperation, CustomJsonOperation, Signature, PublicKey, cryptoUtils } from "@hiveio/dhive";
+import crypto from "crypto";
 
 export interface HiveConfig {
   nodes: string[];
@@ -202,6 +203,11 @@ export class HiveClient {
     const props = await this.client.database.getDynamicGlobalProperties();
     return new Date(props.time + "Z");
   }
+
+  async getLatestBlockHash(): Promise<string> {
+    const props = await this.client.database.getDynamicGlobalProperties();
+    return props.head_block_id;
+  }
 }
 
 export class MockHiveClient {
@@ -299,6 +305,13 @@ export class MockHiveClient {
 
   async getBlockchainTime(): Promise<Date> {
     return new Date();
+  }
+
+  async getLatestBlockHash(): Promise<string> {
+    return crypto
+      .createHash("sha256")
+      .update(`mock-block-${Math.floor(Date.now() / 3000)}`)
+      .digest("hex");
   }
 
   setBalance(username: string, balance: string): void {

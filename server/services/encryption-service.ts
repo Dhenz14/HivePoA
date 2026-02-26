@@ -6,7 +6,7 @@
  * Keys can be derived from Hive posting key or generated independently
  */
 
-import { randomBytes, createCipheriv, createDecipheriv, createHash, pbkdf2Sync } from "crypto";
+import { randomBytes, createCipheriv, createDecipheriv, createHash, pbkdf2Sync, hkdfSync } from "crypto";
 import { storage } from "../storage";
 import type { UserKey } from "@shared/schema";
 
@@ -50,13 +50,17 @@ export class EncryptionService {
     };
   }
 
-  // Derive key from Hive posting key (simulated - would use actual key derivation in production)
+  // Derive encryption key from Hive posting key using HKDF
   deriveKeyFromHiveKey(hiveUsername: string, postingKey: string): string {
-    // In production, this would use proper key derivation from Hive keys
-    // For simulation, we use the hash of combined values
-    const combined = `${hiveUsername}:${postingKey}:spk-e2e`;
-    const hash = createHash('sha256').update(combined).digest();
-    return hash.toString('base64');
+    // HKDF: extract-then-expand key derivation (RFC 5869)
+    // Input key material: the Hive posting key
+    // Salt: username (provides domain separation per user)
+    // Info: application context string
+    const ikm = Buffer.from(postingKey, 'utf-8');
+    const salt = Buffer.from(hiveUsername, 'utf-8');
+    const info = Buffer.from('spk-network-e2e-encryption-v1', 'utf-8');
+    const derivedKey = hkdfSync('sha256', ikm, salt, info, this.KEY_LENGTH);
+    return Buffer.from(derivedKey).toString('base64');
   }
 
   // Encrypt data
@@ -193,15 +197,17 @@ export class EncryptionService {
     return this.decrypt(encryptedData, key, nonce);
   }
 
-  // Generate a sharing key for a specific file (allows sharing encrypted content)
+  // Generate a sharing key for a specific file using HKDF
   generateSharingKey(fileKey: string, recipientPublicKey: string): string {
-    // In production, this would use asymmetric encryption (e.g., ECDH)
-    // For simulation, we combine the keys
-    const combined = Buffer.concat([
-      Buffer.from(fileKey, 'base64'),
-      Buffer.from(recipientPublicKey, 'base64')
-    ]);
-    return createHash('sha256').update(combined).digest('base64');
+    // HKDF-based key derivation for file sharing
+    // Input key material: the file's encryption key
+    // Salt: recipient's public key (ensures unique key per recipient)
+    // Info: sharing context
+    const ikm = Buffer.from(fileKey, 'base64');
+    const salt = Buffer.from(recipientPublicKey, 'base64');
+    const info = Buffer.from('spk-file-sharing-v1', 'utf-8');
+    const derivedKey = hkdfSync('sha256', ikm, salt, info, this.KEY_LENGTH);
+    return Buffer.from(derivedKey).toString('base64');
   }
 }
 

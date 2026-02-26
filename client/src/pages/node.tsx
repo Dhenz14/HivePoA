@@ -597,19 +597,3 @@ export default function NodeStatus() {
   );
 }
 
-function generateMockLog() {
-  const types = ["[INFO]", "[INFO]", "[INFO]", "[SUCCESS]", "[WARN]"];
-  const msgs = [
-    "Validating chunk QmX7...9jK",
-    "Peer 12D3...8kL requested block data",
-    "HBD Payment broadcasted: 0.500 HBD to @storage-node",
-    "Witness Rank Verified (Block #85,001,202)",
-    "Garbage collection started",
-    "DHT routing table updated",
-    "Connection latency: 45ms",
-    "New block parsed: #84,120,102"
-  ];
-  const type = types[Math.floor(Math.random() * types.length)];
-  const msg = msgs[Math.floor(Math.random() * msgs.length)];
-  return `${type} ${msg}`;
-}

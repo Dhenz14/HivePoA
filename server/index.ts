@@ -3,6 +3,7 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { ipfsManager } from "./services/ipfs-manager";
+import { validateConfig, printStartupReport } from "./services/config-validator";
 
 const app = express();
 const httpServer = createServer(app);
@@ -110,6 +111,10 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
+
+      // Print startup service status report
+      const configReport = validateConfig();
+      printStartupReport(configReport);
     },
   );
 })();

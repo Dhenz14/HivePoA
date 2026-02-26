@@ -2,6 +2,7 @@ import express, { Express, Request, Response } from 'express';
 import * as http from 'http';
 import * as crypto from 'crypto';
 import axios from 'axios';
+import { app as electronApp } from 'electron';
 import { KuboManager } from './kubo';
 import { ConfigStore } from './config';
 
@@ -195,7 +196,18 @@ export class ApiServer {
     this.app.post('/api/autostart', (req: Request, res: Response) => {
       const { enabled } = req.body;
       this.config.setConfig({ autoStart: enabled });
-      // TODO: Actually configure OS autostart
+
+      // Configure OS login item via Electron
+      try {
+        electronApp.setLoginItemSettings({
+          openAtLogin: !!enabled,
+          name: 'SPK Desktop Agent',
+        });
+        console.log(`[API] Autostart ${enabled ? 'enabled' : 'disabled'}`);
+      } catch (error) {
+        console.error('[API] Failed to configure autostart:', error);
+      }
+
       res.json({ success: true, enabled });
     });
   }

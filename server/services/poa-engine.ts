@@ -8,53 +8,58 @@ import { createHiveClient, HiveClient, MockHiveClient } from "./hive-client";
 // ============================================================
 // Configuration Constants (moved from magic numbers)
 // ============================================================
+const isProduction = process.env.NODE_ENV === "production";
+
+// Parse env var as integer with fallback
+function envInt(key: string, devDefault: number, prodDefault: number): number {
+  const val = process.env[key];
+  if (val) return parseInt(val, 10);
+  return isProduction ? prodDefault : devDefault;
+}
+
 export const POA_CONFIG = {
   // Reputation
   SUCCESS_REP_GAIN: 1,
   FAIL_REP_BASE_LOSS: 5,
-  FAIL_REP_MULTIPLIER: 1.5, // Exponential decay for consecutive fails
+  FAIL_REP_MULTIPLIER: 1.5,
   MAX_REP_LOSS: 20,
   BAN_THRESHOLD: 10,
   PROBATION_THRESHOLD: 30,
   CONSECUTIVE_FAIL_BAN: 3,
-  
+
   // Rewards
   BASE_REWARD_HBD: 0.001,
-  STREAK_BONUS_10: 1.1,   // 10% bonus for 10 consecutive
-  STREAK_BONUS_50: 1.25,  // 25% bonus for 50 consecutive
-  STREAK_BONUS_100: 1.5,  // 50% bonus for 100 consecutive
-  
+  STREAK_BONUS_10: 1.1,
+  STREAK_BONUS_50: 1.25,
+  STREAK_BONUS_100: 1.5,
+
   // Time-based reward multipliers (SPK Network style)
-  // Files not validated recently get bonus rewards
-  TIME_BONUS_1_HOUR: 1.0,    // Base reward
-  TIME_BONUS_1_DAY: 1.25,    // 25% bonus after 1 day
-  TIME_BONUS_1_WEEK: 1.5,    // 50% bonus after 1 week
-  TIME_BONUS_1_MONTH: 2.0,   // 100% bonus after 1 month
-  
-  // Cooldown - prevents re-challenging same node+file combo too quickly
+  TIME_BONUS_1_HOUR: 1.0,
+  TIME_BONUS_1_DAY: 1.25,
+  TIME_BONUS_1_WEEK: 1.5,
+  TIME_BONUS_1_MONTH: 2.0,
+
+  // Cooldown — environment-aware with env var overrides
   BAN_COOLDOWN_HOURS: 24,
-  NODE_FILE_COOLDOWN_MS: 60 * 1000,  // 1 minute cooldown for testing (production: 4 hours)
-  NODE_COOLDOWN_MS: 30 * 1000,       // 30 second cooldown for testing (production: 30 min)
-  
+  NODE_FILE_COOLDOWN_MS: envInt("POA_NODE_FILE_COOLDOWN_MS", 60_000, 14_400_000),     // dev: 1 min, prod: 4 hours
+  NODE_COOLDOWN_MS: envInt("POA_NODE_COOLDOWN_MS", 30_000, 1_800_000),                // dev: 30s, prod: 30 min
+
   // Trust-based cooldown multipliers
-  // High reputation nodes need less frequent validation
-  TRUST_TIER_NEW: 50,        // Reputation < 50 = new node, check more often
-  TRUST_TIER_ESTABLISHED: 75, // Reputation >= 75 = established, check less often
-  COOLDOWN_MULTIPLIER_NEW: 0.5,        // New nodes: half cooldown (more frequent)
-  COOLDOWN_MULTIPLIER_ESTABLISHED: 2,  // Established nodes: double cooldown (less frequent)
-  
+  TRUST_TIER_NEW: 50,
+  TRUST_TIER_ESTABLISHED: 75,
+  COOLDOWN_MULTIPLIER_NEW: 0.5,
+  COOLDOWN_MULTIPLIER_ESTABLISHED: 2,
+
   // Challenge batching
   CHALLENGES_PER_ROUND: 3,
-  
-  // Default challenge interval
-  // For production: 30-60 minutes. For demo: 10 minutes
-  // SPK uses monthly cycles with time-based rewards
-  DEFAULT_CHALLENGE_INTERVAL_MS: 30 * 1000, // 30 seconds for testing (production should be 30-60 min)
-  
+
+  // Challenge interval — env var override with smart defaults
+  DEFAULT_CHALLENGE_INTERVAL_MS: envInt("POA_CHALLENGE_INTERVAL_MS", 30_000, 1_800_000), // dev: 30s, prod: 30 min
+
   // Cache
-  BLOCK_CACHE_TTL_MS: 3600000, // 1 hour
+  BLOCK_CACHE_TTL_MS: 3600000,
   BLOCK_CACHE_MAX_SIZE: 1000,
-  
+
   // Timeouts
   CHALLENGE_TIMEOUT_MS: 2000,
 };
@@ -152,18 +157,24 @@ export class PoAEngine {
       POA_CONFIG.BLOCK_CACHE_TTL_MS
     );
     
-    // Simulate Hive block hash updates (in production, subscribe to blockchain)
+    // Fetch Hive block hashes every 3 seconds (matches Hive block time)
     this.updateHiveBlockHash();
-    setInterval(() => this.updateHiveBlockHash(), 3000); // Every 3s like Hive blocks
+    setInterval(() => this.updateHiveBlockHash(), 3000);
   }
 
-  private updateHiveBlockHash(): void {
-    // In production: fetch from dhive client
-    // For now: generate pseudo-random based on timestamp
-    this.currentHiveBlockHash = crypto
-      .createHash("sha256")
-      .update(`hive-block-${Math.floor(Date.now() / 3000)}`)
-      .digest("hex");
+  private async updateHiveBlockHash(): Promise<void> {
+    try {
+      const hash = await this.hiveClient.getLatestBlockHash();
+      if (hash) {
+        this.currentHiveBlockHash = hash;
+      }
+    } catch {
+      // Fallback to timestamp-based hash if Hive API is unreachable
+      this.currentHiveBlockHash = crypto
+        .createHash("sha256")
+        .update(`hive-block-${Math.floor(Date.now() / 3000)}`)
+        .digest("hex");
+    }
   }
 
   async start(validatorUsername?: string) {

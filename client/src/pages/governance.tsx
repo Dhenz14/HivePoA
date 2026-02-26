@@ -6,11 +6,22 @@ import { Progress } from "@/components/ui/progress";
 import { Search, Vote, Lock, Users, ShieldCheck, TrendingUp } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 
 export default function Governance() {
   const { toast } = useToast();
-  const [votingPower] = useState(4500); // Mock HBD Savings balance
+
+  // Fetch real wallet balance for voting power
+  const { data: walletData } = useQuery({
+    queryKey: ["wallet-dashboard"],
+    queryFn: async () => {
+      const res = await fetch("/api/wallet/dashboard");
+      if (!res.ok) return { balance: 0 };
+      return res.json();
+    },
+  });
+  const votingPower = walletData?.balance || 0;
 
   const validators = [
     { rank: 1, name: "hive-kings", votes: "1.2M HBD", status: "Active", uptime: "99.9%", selfStaked: "50k HBD" },

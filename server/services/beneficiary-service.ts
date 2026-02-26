@@ -6,6 +6,7 @@
  */
 
 import { storage } from "../storage";
+import { createHiveClient, HiveClient, MockHiveClient } from "./hive-client";
 import type { BeneficiaryAllocation, PayoutHistory, StorageNode } from "@shared/schema";
 
 export interface PayoutSplit {
@@ -214,8 +215,26 @@ export class BeneficiaryService {
         });
       }
 
-      // In production, this would broadcast to Hive blockchain
-      const txHash = `sim_tx_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+      // Broadcast payout to Hive blockchain (or simulate if no keys configured)
+      const hiveClient = createHiveClient();
+      let txHash: string;
+
+      if (hiveClient instanceof MockHiveClient) {
+        txHash = `sim_tx_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+        console.warn("[Beneficiary Service] Using mock Hive client — payout not broadcast to chain");
+      } else {
+        try {
+          const tx = await (hiveClient as HiveClient).transfer({
+            to: splits[0]?.recipientUsername || params.fromUsername,
+            amount: `${params.totalHbd} HBD`,
+            memo: `SPK PoA payout: ${splits.length} recipients`,
+          });
+          txHash = tx.id;
+        } catch (hiveError) {
+          console.error("[Beneficiary Service] Hive transfer failed, recording locally:", hiveError);
+          txHash = `failed_tx_${Date.now()}`;
+        }
+      }
 
       console.log(`[Beneficiary Service] Executed payout: ${params.totalHbd} HBD split into ${splits.length} parts`);
 

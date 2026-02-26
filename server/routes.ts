@@ -2027,32 +2027,62 @@ export async function registerRoutes(
   // ============================================================
   
   app.get("/api/analytics/performance", async (req, res) => {
-    const successRateTrend = Array.from({ length: 24 }, (_, i) => ({
-      hour: i + 1,
-      successRate: Number((92 + Math.random() * 7).toFixed(1)),
-      challengeCount: Math.floor(80 + Math.random() * 60),
-    }));
+    try {
+      const hourlyData = await storage.getChallengesLast24Hours();
+      const metrics = await storage.getPerformanceMetrics();
+      const nodeHealth = await storage.getNodeHealthSummary();
 
-    const totalChallenges24h = successRateTrend.reduce((sum, h) => sum + h.challengeCount, 0);
-    const avgSuccessRate = successRateTrend.reduce((sum, h) => sum + h.successRate, 0) / 24;
-    const failedChallenges = Math.floor(totalChallenges24h * (1 - avgSuccessRate / 100));
+      // Build 24-hour trend from real data, filling in empty hours with zeros
+      const hourMap = new Map(hourlyData.map(h => [h.hour, h]));
+      const successRateTrend = Array.from({ length: 24 }, (_, i) => {
+        const data = hourMap.get(i);
+        return {
+          hour: i + 1,
+          successRate: data && data.totalCount > 0
+            ? Number(((data.successCount / data.totalCount) * 100).toFixed(1))
+            : 0,
+          challengeCount: data?.totalCount || 0,
+        };
+      });
 
-    res.json({
-      proofsPerHour: Math.floor(100 + Math.random() * 50),
-      proofsTrend: Number((Math.random() * 20 - 5).toFixed(1)),
-      bandwidthPerHour: Math.floor((1 + Math.random() * 4) * 1024 * 1024 * 1024),
-      avgLatency: Math.floor(200 + Math.random() * 400),
-      minLatency: Math.floor(50 + Math.random() * 100),
-      maxLatency: Math.floor(1000 + Math.random() * 1200),
-      healthyNodes: 24,
-      atRiskNodes: Math.floor(Math.random() * 5),
-      totalNodes: 27,
-      yourRank: Math.floor(5 + Math.random() * 15),
-      successRateTrend,
-      totalChallenges24h,
-      successRate24h: Number(avgSuccessRate.toFixed(1)),
-      failedChallenges24h: failedChallenges,
-    });
+      const totalChallenges24h = metrics.totalChallenges;
+      const failedChallenges24h = totalChallenges24h - Math.round(totalChallenges24h * (metrics.successRate / 100));
+      const proofsPerHour = totalChallenges24h > 0 ? Math.round(totalChallenges24h / 24) : 0;
+
+      // Estimate bandwidth: ~1MB per challenge (3-5 IPFS blocks of ~256KB)
+      const bandwidthPerHour = proofsPerHour * 1024 * 1024;
+
+      res.json({
+        proofsPerHour,
+        proofsTrend: 0,
+        bandwidthPerHour,
+        avgLatency: metrics.avgLatency,
+        minLatency: metrics.minLatency,
+        maxLatency: metrics.maxLatency,
+        healthyNodes: nodeHealth.active,
+        atRiskNodes: nodeHealth.probation + nodeHealth.banned,
+        totalNodes: nodeHealth.total,
+        yourRank: 1,
+        successRateTrend,
+        totalChallenges24h,
+        successRate24h: Number(metrics.successRate.toFixed(1)),
+        failedChallenges24h,
+      });
+    } catch (error: any) {
+      console.error("[Analytics] Performance query error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Node logs: real PoA challenge logs from database
+  app.get("/api/node/logs", async (req, res) => {
+    try {
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+      const logs = await storage.getRecentNodeLogs(limit);
+      res.json(logs);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
   });
 
   // ============================================================
