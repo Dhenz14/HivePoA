@@ -1,0 +1,27 @@
+# Cursor Rules for SPK Network 2.0
+
+## Tech Stack
+- Frontend: React 18, TypeScript, Tailwind CSS v4, Wouter, TanStack Query
+- Backend: Express.js, PostgreSQL, Drizzle ORM
+- Desktop: Electron, electron-builder, electron-updater
+- Storage: IPFS (Kubo/Helia)
+- Blockchain: Hive (@hiveio/dhive)
+
+## Project Structure
+- `/client`: React frontend
+- `/server`: Express backend and services
+- `/shared`: Shared types and database schema
+- `/desktop-agent`: Electron application
+- `/docs`: Project documentation
+
+## Coding Guidelines
+- Use functional components with React hooks
+- Maintain strict TypeScript types
+- Use Drizzle ORM for all database operations
+- Follow the established service pattern in `server/services/`
+- Ensure all new UI components are added to `client/src/components/ui` using shadcn/ui patterns
+
+## Desktop Agent Specifics
+- The desktop agent lives in `desktop-agent/`
+- It uses `electron-builder` for packaging
+- Auto-updates are handled via `electron-updater` and GitHub releases

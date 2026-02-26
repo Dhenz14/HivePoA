@@ -5,3 +5,8 @@ server/public
 vite.config.ts.*
 *.tar.gz
 .ipfs-data
+.env
+*.log
+desktop-agent/dist
+desktop-agent/release
+out

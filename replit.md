@@ -1,4 +1,4 @@
-# SPK Network 2.0 - Decentralized Storage Validation System
+# SPK Network 2.0 (HivePoA) - Decentralized Storage Validation System
 
 ## Overview
 
@@ -101,3 +101,9 @@ A comprehensive set of API routes manages various functionalities including IPFS
 
 ### Build Tools
 -   Vite, esbuild, tsx
+
+## Claude Code & Cursor Setup
+This repository is optimized for use with Cursor and Claude Code.
+- `.cursorrules` provides architecture context and coding guidelines.
+- `README.md` provides setup instructions for the hybrid environment.
+- `.gitignore` prevents environment-specific files and secrets from being committed.
