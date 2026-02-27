@@ -6,7 +6,7 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Upload, File, Search, Copy, CheckCircle2, Clock, ShieldCheck, AlertCircle, Users, Coins, AlertTriangle, XCircle, Ban, Wifi, Network, Film, Cpu, Hash, Globe, X, Trash2, Pin, Settings, Download, Loader2 } from "lucide-react";
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -19,17 +19,21 @@ export default function Storage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   
-  // New State for "Oratr" simulation (Transcoding -> Hashing -> Seeding)
-  const [uploadStatus, setUploadStatus] = useState<'idle' | 'transcoding' | 'hashing' | 'broadcasting' | 'seeding' | 'complete'>('idle');
-  const [taskProgress, setTaskProgress] = useState(0);
-  const [seedPeers, setSeedPeers] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'pinning' | 'complete'>('idle');
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [fileSearch, setFileSearch] = useState("");
+  const [filePage, setFilePage] = useState(1);
+  const FILES_PER_PAGE = 20;
 
-  // Fetch files from API
-  const { data: files = [] } = useQuery({
-    queryKey: ["files"],
-    queryFn: api.getFiles,
+  // Fetch files from API with pagination
+  const { data: filesData, isLoading: filesLoading } = useQuery({
+    queryKey: ["files", filePage],
+    queryFn: () => api.getFilesPaginated(filePage, FILES_PER_PAGE),
     refetchInterval: 10000,
   });
+  const files = filesData?.data || [];
+  const totalPages = filesData?.totalPages || 1;
 
   // Fetch nodes to get our own reputation
   const { data: nodes = [] } = useQuery({
@@ -127,72 +131,69 @@ export default function Storage() {
   };
 
   const handleUpload = () => {
-    // Phase 1: Transcoding (Client Side)
-    setUploadStatus('transcoding');
-    setTaskProgress(0);
-    
-    let p = 0;
-    const interval = setInterval(() => {
-      p += 5;
-      setTaskProgress(p);
-      if (p >= 100) {
-        clearInterval(interval);
-        
-        // Phase 2: Hashing (IPFS)
-        setUploadStatus('hashing');
-        setTaskProgress(0);
-        let h = 0;
-        const hashInterval = setInterval(() => {
-           h += 10;
-           setTaskProgress(h);
-           if (h >= 100) {
-             clearInterval(hashInterval);
-             
-             // Phase 3: Hive Broadcast
-             setUploadStatus('broadcasting');
-             setTimeout(() => {
-                startSeeding();
-             }, 1500);
-           }
-        }, 150);
-      }
-    }, 100);
+    fileInputRef.current?.click();
   };
 
-  const startSeeding = () => {
-    // Phase 4: Swarm Discovery
-    setUploadStatus('seeding');
-    toast({
-      title: "Hive Transaction Broadcasted",
-      description: "custom_json: [\"spk_video_upload\", { ... }]",
-    });
+  const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-    // Simulate peers connecting
-    let peers = 0;
-    const seedInterval = setInterval(() => {
-      peers++;
-      setSeedPeers(peers);
-      if (peers >= 3) {
-        clearInterval(seedInterval);
-        setUploadStatus('complete');
-        toast({
-          title: "Swarm Replication Active",
-          description: "3 Storage Nodes are now hosting your content.",
-        });
-        // Add new file via API
-        createFileMutation.mutate({
-          name: "my_vlog_final.mp4",
-          cid: `QmNew${Date.now()}`,
-          size: "450 MB",
-          uploaderUsername: "user",
-          status: "syncing",
-          replicationCount: 3,
-          confidence: 0,
-          poaEnabled: true,
-        });
-        setTimeout(() => setUploadStatus('idle'), 3000);
+    setUploadStatus('uploading');
+    setUploadProgress(0);
+
+    try {
+      const buffer = await file.arrayBuffer();
+      setUploadProgress(30);
+      setUploadStatus('pinning');
+
+      const sessionToken = localStorage.getItem("spk_validator_session");
+      let authToken = "";
+      if (sessionToken) {
+        try {
+          const parsed = JSON.parse(sessionToken);
+          authToken = parsed.user?.sessionToken || "";
+        } catch { /* ignore */ }
       }
-    }, 1500);
+
+      const res = await fetch("/api/upload/simple", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-File-Name": file.name,
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: buffer,
+      });
+
+      setUploadProgress(90);
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Upload failed");
+      }
+
+      const result = await res.json();
+      setUploadProgress(100);
+      setUploadStatus('complete');
+
+      toast({
+        title: "File Uploaded to IPFS",
+        description: `${file.name} pinned with CID: ${result.cid?.substring(0, 16)}...`,
+      });
+
+      queryClient.invalidateQueries({ queryKey: ["files"] });
+      setTimeout(() => setUploadStatus('idle'), 3000);
+    } catch (error: any) {
+      toast({
+        title: "Upload Failed",
+        description: error.message || "Failed to upload file",
+        variant: "destructive",
+      });
+      setUploadStatus('idle');
+    }
+
+    // Reset the file input
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const togglePoa = (name: string) => {
@@ -222,12 +223,20 @@ export default function Storage() {
           <p className="text-muted-foreground mt-1">Manage your IPFS pins and content proofs</p>
         </div>
         <div className="flex items-center gap-4">
-          <Button 
-            onClick={handleUpload} 
-            disabled={uploadStatus !== 'idle'} 
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            aria-label="Select file to upload"
+            onChange={handleFileSelected}
+            accept="video/*,image/*,audio/*,.pdf,.txt,.json"
+          />
+          <Button
+            onClick={handleUpload}
+            disabled={uploadStatus !== 'idle'}
             className={cn(
               "transition-all duration-500 min-w-[200px]",
-              uploadStatus === 'seeding' ? "bg-green-500 hover:bg-green-600" : "bg-primary hover:bg-primary/90"
+              uploadStatus === 'complete' ? "bg-green-500 hover:bg-green-600" : "bg-primary hover:bg-primary/90"
             )}
           >
             {uploadStatus === 'idle' && (
@@ -236,35 +245,21 @@ export default function Storage() {
                 Upload New Content
               </>
             )}
-            
-            {uploadStatus === 'transcoding' && (
+
+            {uploadStatus === 'uploading' && (
               <>
-                 <Film className="w-4 h-4 mr-2 animate-pulse" />
-                 Transcoding... {taskProgress}%
+                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                 Uploading... {uploadProgress}%
               </>
             )}
 
-            {uploadStatus === 'hashing' && (
+            {uploadStatus === 'pinning' && (
               <>
                  <Cpu className="w-4 h-4 mr-2 animate-pulse" />
-                 IPFS Hashing... {taskProgress}%
+                 Pinning to IPFS...
               </>
             )}
 
-            {uploadStatus === 'broadcasting' && (
-              <>
-                 <Globe className="w-4 h-4 mr-2 animate-pulse" />
-                 Hive Broadcast...
-              </>
-            )}
-
-            {uploadStatus === 'seeding' && (
-              <>
-                 <Wifi className="w-4 h-4 mr-2 animate-pulse" />
-                 Seeding... ({seedPeers} Peers)
-              </>
-            )}
-            
             {uploadStatus === 'complete' && (
               <>
                  <CheckCircle2 className="w-4 h-4 mr-2" />
@@ -543,7 +538,12 @@ export default function Storage() {
           <CardTitle className="font-display text-lg">Pinned Content</CardTitle>
           <div className="relative w-64">
             <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input placeholder="Search CID or name..." className="pl-8 bg-background/50" />
+            <Input
+              placeholder="Search CID or name..."
+              className="pl-8 bg-background/50"
+              value={fileSearch}
+              onChange={(e) => setFileSearch(e.target.value.toLowerCase())}
+            />
           </div>
         </CardHeader>
         <CardContent>
@@ -561,7 +561,24 @@ export default function Storage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {files.map((file) => (
+              {filesLoading ? (
+                <TableRow>
+                  <TableCell colSpan={8} className="text-center py-12">
+                    <Loader2 className="w-6 h-6 animate-spin mx-auto text-muted-foreground" />
+                    <p className="text-sm text-muted-foreground mt-2">Loading pinned content...</p>
+                  </TableCell>
+                </TableRow>
+              ) : files.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={8} className="text-center py-12">
+                    <Upload className="w-12 h-12 mx-auto mb-3 opacity-20" />
+                    <p className="text-muted-foreground">No files pinned yet</p>
+                    <p className="text-sm text-muted-foreground mt-1">Upload content to start earning HBD</p>
+                  </TableCell>
+                </TableRow>
+              ) : files
+                .filter(f => !fileSearch || f.name.toLowerCase().includes(fileSearch) || f.cid.toLowerCase().includes(fileSearch))
+                .map((file) => (
                 <TableRow key={file.id} className="hover:bg-primary/5 border-border/50 group transition-colors">
                   <TableCell className="font-medium flex items-center gap-2">
                     <File className="w-4 h-4 text-primary" />
@@ -683,6 +700,31 @@ export default function Storage() {
               ))}
             </TableBody>
           </Table>
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between mt-4 pt-4 border-t border-border/50">
+              <p className="text-sm text-muted-foreground">
+                Page {filePage} of {totalPages} ({filesData?.total || 0} files)
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={filePage <= 1}
+                  onClick={() => setFilePage(p => Math.max(1, p - 1))}
+                >
+                  Previous
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={filePage >= totalPages}
+                  onClick={() => setFilePage(p => p + 1)}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

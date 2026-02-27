@@ -3,21 +3,23 @@ import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { Search, Globe, Shield, Activity, Signal, BarChart3, Users } from "lucide-react";
+import { Search, Globe, Shield, Activity, Signal, BarChart3, Users, Loader2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 
 export default function Validators() {
   const { toast } = useToast();
+  const [searchQuery, setSearchQuery] = useState("");
 
   // Fetch validators from API
-  const { data: validators = [] } = useQuery({
+  const { data: validators = [], isLoading } = useQuery({
     queryKey: ["validators"],
     queryFn: api.getValidators,
-    refetchInterval: 10000, // Refresh every 10 seconds
+    refetchInterval: 10000,
   });
 
   const handleConnect = (name: string) => {
@@ -45,7 +47,7 @@ export default function Validators() {
            </Badge>
            <Badge variant="outline" className="px-3 py-1 border-primary/30 bg-primary/10 text-primary flex gap-2">
              <Activity className="w-3 h-3" />
-             14 Active Validators
+             {validators.filter(v => v.status === "active" || v.status === "online").length || validators.length} Active Validators
            </Badge>
         </div>
       </div>
@@ -59,13 +61,32 @@ export default function Validators() {
               <div className="flex gap-2">
                 <div className="relative w-64">
                   <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input placeholder="Search witness..." className="pl-8" />
+                  <Input
+                    placeholder="Search witness..."
+                    className="pl-8"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value.toLowerCase())}
+                  />
                 </div>
               </div>
             </CardHeader>
             <CardContent>
+              {isLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+                  <span className="ml-2 text-muted-foreground">Loading validators...</span>
+                </div>
+              ) : validators.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  <Users className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                  <p>No validators found</p>
+                  <p className="text-sm mt-1">Validators will appear here when nodes register</p>
+                </div>
+              ) : (
               <div className="space-y-4">
-                {validators.map((val, index) => (
+                {validators
+                  .filter(v => !searchQuery || v.hiveUsername.toLowerCase().includes(searchQuery))
+                  .map((val, index) => (
                   <div key={val.id} className={cn(
                       "flex items-center justify-between p-4 rounded-lg bg-card border border-border/50 transition-all group",
                       val.hiveRank <= 50 ? "hover:border-primary/30" : "opacity-80 grayscale-[0.5] hover:grayscale-0 hover:opacity-100"
@@ -120,6 +141,7 @@ export default function Validators() {
                   </div>
                 ))}
               </div>
+              )}
             </CardContent>
           </Card>
         </div>

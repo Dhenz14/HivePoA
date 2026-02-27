@@ -549,6 +549,43 @@ export async function registerRoutes(
     res.json({ success: cancelled });
   });
 
+  // Simple single-file upload to IPFS (used by the Storage page upload button)
+  app.post("/api/upload/simple", requireAuth, async (req, res) => {
+    try {
+      const data = req.body as Buffer;
+      if (!data || data.length === 0) {
+        res.status(400).json({ error: "No file data received" });
+        return;
+      }
+
+      const fileName = (req.headers["x-file-name"] as string) || "untitled";
+      const fileSize = data.length;
+
+      const ipfs = getIPFSClient();
+      const cid = await ipfs.addWithPin(data);
+
+      // Register file in DB
+      const file = await storage.createFile({
+        name: fileName,
+        cid,
+        size: fileSize > 1024 * 1024
+          ? `${(fileSize / (1024 * 1024)).toFixed(1)} MB`
+          : `${(fileSize / 1024).toFixed(1)} KB`,
+        uploaderUsername: req.authenticatedUser || "anonymous",
+        status: "pinned",
+        replicationCount: 1,
+        confidence: 100,
+        poaEnabled: true,
+      });
+
+      logRoutes.info({ cid, fileName, size: fileSize, user: req.authenticatedUser }, "File uploaded to IPFS");
+      res.json({ success: true, file, cid });
+    } catch (error: any) {
+      logRoutes.error({ err: error }, "Simple upload failed");
+      res.status(500).json({ error: "Upload failed: " + error.message });
+    }
+  });
+
   // ============================================================
   // Storage Contracts API (Phase 1)
   // ============================================================
@@ -2388,6 +2425,62 @@ export async function registerRoutes(
       });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get personal wallet data for a Hive user (public — Hive balances are public)
+  app.get("/api/wallet/user/:username", async (req, res) => {
+    try {
+      const { username } = req.params;
+      if (!isValidHiveUsername(username)) {
+        res.status(400).json({ error: "Invalid Hive username" });
+        return;
+      }
+
+      const { createHiveClient } = await import("./services/hive-client");
+      const hiveClient = createHiveClient();
+
+      const [account, payoutHist, earnings] = await Promise.all([
+        hiveClient.getAccount(username),
+        storage.getPayoutHistory(username, 50),
+        beneficiaryService.getTotalEarnings(username),
+      ]);
+
+      if (!account) {
+        res.status(404).json({ error: "Hive account not found" });
+        return;
+      }
+
+      const hbdBalance = account.hbd_balance?.toString() || "0.000 HBD";
+
+      // Build unified transaction list from payout history
+      const transactions = payoutHist.map((p: any) => ({
+        id: p.id,
+        type: p.payoutType === "storage" || p.payoutType === "validation" ? "reward" : p.payoutType,
+        from: "hive.fund",
+        to: username,
+        amount: `+${parseFloat(p.hbdAmount).toFixed(3)} HBD`,
+        hbdAmount: p.hbdAmount,
+        date: p.createdAt,
+        txHash: p.txHash,
+        status: p.broadcastStatus || "confirmed",
+      }));
+
+      res.json({
+        username,
+        hbdBalance: parseFloat(hbdBalance.replace(" HBD", "")).toFixed(3),
+        totalEarned: earnings.total || "0.000",
+        earningsByType: {
+          storage: earnings.storage,
+          encoding: earnings.encoding,
+          beneficiary: earnings.beneficiary,
+          validation: earnings.validation,
+        },
+        transactions,
+      });
+    } catch (error: any) {
+      logRoutes.error({ err: error }, "Failed to fetch user wallet");
+      res.status(500).json({ error: "Failed to fetch wallet data" });
     }
   });
 

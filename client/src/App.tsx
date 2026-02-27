@@ -7,6 +7,7 @@ import { NodeConfigProvider } from "@/contexts/NodeConfigContext";
 import { ValidatorAuthProvider, useValidatorAuth } from "@/contexts/ValidatorAuthContext";
 import { AlertsProvider } from "@/components/AlertsProvider";
 import NotFound from "@/pages/not-found";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Layout } from "@/components/layout/Layout";
 import Dashboard from "@/pages/dashboard";
 import Storage from "@/pages/storage";
@@ -102,7 +103,9 @@ function App() {
               </div>
               
               <Toaster />
-              <Router />
+              <ErrorBoundary>
+                <Router />
+              </ErrorBoundary>
             </AlertsProvider>
           </TooltipProvider>
         </ValidatorAuthProvider>

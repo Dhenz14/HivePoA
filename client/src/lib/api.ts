@@ -122,6 +122,17 @@ export const api = {
     return res.json();
   },
 
+  async getFilesPaginated(page: number = 1, limit: number = 20): Promise<{
+    data: File[];
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+  }> {
+    const res = await fetch(`${API_BASE}/files?page=${page}&limit=${limit}`);
+    return res.json();
+  },
+
   async getFile(cid: string): Promise<File> {
     const res = await fetch(`${API_BASE}/files/${cid}`);
     return res.json();
@@ -257,6 +268,56 @@ export const api = {
     availableFiles: number;
   }> {
     const res = await fetch(`${API_BASE}/downloads/stats/${username}`);
+    return res.json();
+  },
+
+  // Wallet
+  async getWalletUser(username: string) {
+    const res = await fetch(`${API_BASE}/wallet/user/${username}`);
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || "Failed to fetch wallet");
+    }
+    return res.json();
+  },
+
+  async getWalletDashboard() {
+    const res = await fetch(`${API_BASE}/wallet/dashboard`);
+    if (!res.ok) throw new Error("Failed to fetch wallet dashboard");
+    return res.json();
+  },
+
+  // Earnings
+  async getEarnings(username: string) {
+    const res = await fetch(`${API_BASE}/earnings/${username}`);
+    return res.json();
+  },
+
+  async getEarningsDashboard(username: string) {
+    const res = await fetch(`${API_BASE}/earnings/dashboard/${username}`);
+    if (!res.ok) throw new Error("Failed to fetch earnings");
+    return res.json();
+  },
+
+  // Web of Trust
+  async getWotVouches() {
+    const res = await fetch(`${API_BASE}/wot`);
+    return res.json();
+  },
+
+  async getWotStatus(username: string) {
+    const res = await fetch(`${API_BASE}/wot/${username}`);
+    return res.json();
+  },
+
+  // Encoding
+  async getEncodingJobs(limit: number = 50) {
+    const res = await fetch(`${API_BASE}/encoding/jobs?limit=${limit}`);
+    return res.json();
+  },
+
+  async getEncodingAgents() {
+    const res = await fetch(`${API_BASE}/encoding/agents`);
     return res.json();
   },
 };
