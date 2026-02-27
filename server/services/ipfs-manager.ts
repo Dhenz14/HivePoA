@@ -1,6 +1,7 @@
 import { spawn, ChildProcess, execSync } from "child_process";
 import { existsSync, mkdirSync } from "fs";
 import path from "path";
+import { logIPFS } from "../logger";
 
 export interface IPFSManagerConfig {
   repoPath: string;
@@ -31,11 +32,11 @@ export class IPFSManager {
   }
 
   private log(message: string) {
-    console.log(`[IPFS Manager] ${message}`);
+    logIPFS.info(`[IPFS Manager] ${message}`);
   }
 
   private error(message: string) {
-    console.error(`[IPFS Manager] ERROR: ${message}`);
+    logIPFS.error(`[IPFS Manager] ERROR: ${message}`);
   }
 
   private async initializeRepo(): Promise<boolean> {
@@ -107,6 +108,21 @@ export class IPFSManager {
     }
 
     this.isStarting = true;
+
+    // Check if an external IPFS daemon is already running (e.g. user started Kubo separately)
+    try {
+      const apiUrl = `http://127.0.0.1:${this.config.apiPort}/api/v0/id`;
+      const response = await fetch(apiUrl, { method: "POST", signal: AbortSignal.timeout(3000) });
+      if (response.ok) {
+        this.log(`External IPFS daemon detected on port ${this.config.apiPort} — using existing daemon`);
+        this.isReady = true;
+        this.isStarting = false;
+        return true;
+      }
+    } catch {
+      // No existing daemon, proceed to start one
+    }
+
     this.log("Starting IPFS daemon...");
 
     const initialized = await this.initializeRepo();
@@ -136,7 +152,7 @@ export class IPFSManager {
       this.daemon.stderr?.on("data", (data) => {
         const output = data.toString();
         if (!output.includes("failed to sufficiently increase receive buffer")) {
-          console.log(`[IPFS] ${output.trim()}`);
+          logIPFS.info(`[IPFS] ${output.trim()}`);
         }
       });
 

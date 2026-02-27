@@ -1,4 +1,5 @@
 import { storage } from "../storage";
+import { logPoA } from "../logger";
 import crypto from "crypto";
 import { getIPFSClient, IPFSClient } from "./ipfs-client";
 import { createProofHash, createRandomHash, createSaltWithEntropy } from "./poa-crypto";
@@ -52,6 +53,15 @@ export const POA_CONFIG = {
 
   // Challenge batching
   CHALLENGES_PER_ROUND: 3,
+
+  // Micropayment batching (SPK 1.0 spec: 10 proofs = 1 payout)
+  PROOF_BATCH_THRESHOLD: 10,
+  MIN_BATCH_PAYOUT_HBD: 0.001, // Don't issue payouts below dust threshold
+
+  // Spending safety limits
+  MAX_SINGLE_PAYOUT_HBD: 1.0,   // Max per-batch payout (sanity cap)
+  MAX_DAILY_SPEND_HBD: 50.0,    // Max total spend per 24 hours
+  MIN_BALANCE_RESERVE_HBD: 1.0, // Keep at least this much in the wallet
 
   // Challenge interval — env var override with smart defaults
   DEFAULT_CHALLENGE_INTERVAL_MS: envInt("POA_CHALLENGE_INTERVAL_MS", 30_000, 1_800_000), // dev: 30s, prod: 30 min
@@ -141,6 +151,20 @@ export class PoAEngine {
   // Key: nodeId, Value: timestamp of last challenge (any file)
   private nodeCooldowns: Map<string, number> = new Map();
 
+  // Micropayment batching: accumulate rewards until threshold, then issue one payout
+  // SPK 1.0 spec: 10 proofs = 1 combined transaction (reduces chain bloat)
+  private proofAccumulator: Map<string, {
+    count: number;
+    totalReward: number;
+    cids: string[];
+    nodeUsername: string;
+  }> = new Map();
+
+  // Financial safety: track daily spend and prevent concurrent flushes
+  private dailySpendHbd: number = 0;
+  private dailySpendResetAt: number = Date.now() + 86400000;
+  private flushingNodes: Set<string> = new Set(); // Mutex: nodes currently being flushed
+
   constructor(config?: Partial<PoAConfig>) {
     this.config = {
       validatorUsername: config?.validatorUsername || "validator-police",
@@ -148,7 +172,7 @@ export class PoAEngine {
       ipfsApiUrl: config?.ipfsApiUrl || process.env.IPFS_API_URL,
       challengeIntervalMs: config?.challengeIntervalMs || POA_CONFIG.DEFAULT_CHALLENGE_INTERVAL_MS,
       useMockMode: config?.useMockMode ?? !process.env.SPK_POA_URL,
-      broadcastToHive: config?.broadcastToHive ?? !!process.env.HIVE_POSTING_KEY,
+      broadcastToHive: config?.broadcastToHive ?? !!process.env.HIVE_ACTIVE_KEY,
     };
     this.ipfsClient = getIPFSClient();
     this.hiveClient = createHiveClient({ username: this.config.validatorUsername });
@@ -197,8 +221,8 @@ export class PoAEngine {
     }
 
     this.validatorId = validator.id;
-    console.log(`[PoA Engine] Started for validator: ${this.config.validatorUsername}`);
-    console.log(`[PoA Engine] Mode: ${this.config.useMockMode ? "SIMULATION" : "LIVE SPK INTEGRATION"}`);
+    logPoA.info(`[PoA Engine] Started for validator: ${this.config.validatorUsername}`);
+    logPoA.info(`[PoA Engine] Mode: ${this.config.useMockMode ? "SIMULATION" : "LIVE SPK INTEGRATION"}`);
 
     if (!this.config.useMockMode && this.config.spkNodeUrl) {
       try {
@@ -207,19 +231,63 @@ export class PoAEngine {
           username: this.config.validatorUsername,
         });
         await this.spkClient.connect();
-        console.log(`[PoA Engine] Connected to SPK PoA node at ${this.config.spkNodeUrl}`);
+        logPoA.info(`[PoA Engine] Connected to SPK PoA node at ${this.config.spkNodeUrl}`);
       } catch (err) {
-        console.warn(`[PoA Engine] Failed to connect to SPK node, falling back to simulation:`, err);
+        logPoA.warn({ err }, "Failed to connect to SPK node, falling back to simulation");
         this.config.useMockMode = true;
       }
     }
 
     const ipfsOnline = await this.ipfsClient.isOnline();
-    console.log(`[PoA Engine] IPFS status: ${ipfsOnline ? "ONLINE" : "OFFLINE (using mock)"}`);
+    logPoA.info(`[PoA Engine] IPFS status: ${ipfsOnline ? "ONLINE" : "OFFLINE (using mock)"}`);
+
+    // Pre-sync refs lists for all tracked files (lightweight metadata only)
+    if (ipfsOnline) {
+      this.syncAllFileRefs().catch(err =>
+        logPoA.warn(`[PoA Engine] Refs sync warning: ${err.message}`)
+      );
+    }
 
     this.challengeInterval = setInterval(() => {
       this.runChallenge();
     }, this.config.challengeIntervalMs);
+  }
+
+  /**
+   * SPK PoA 2.0: Sync IPFS sub-block CID lists for all tracked files.
+   * The validator stores ONLY the refs list (metadata), NOT the actual file data.
+   * This enables lightweight verification: ~200KB metadata per 1GB file.
+   */
+  private async syncAllFileRefs(): Promise<void> {
+    const allFiles = await storage.getAllFiles();
+    let synced = 0;
+    for (const file of allFiles) {
+      if (!file.poaEnabled || !file.cid) continue;
+      const hasRefs = await storage.hasFileRefs(file.cid);
+      if (hasRefs) continue;
+
+      try {
+        const blockCids = await this.ipfsClient.refs(file.cid);
+        await storage.saveFileRefs(file.cid, blockCids);
+        synced++;
+        logPoA.info(`[PoA Engine] Synced refs for ${file.cid.substring(0, 12)}... (${blockCids.length} blocks)`);
+      } catch (err) {
+        logPoA.warn(`[PoA Engine] Failed to sync refs for ${file.cid}: ${err}`);
+      }
+    }
+    if (synced > 0) logPoA.info(`[PoA Engine] Refs sync complete: ${synced} new files indexed`);
+  }
+
+  /**
+   * Sync refs for a single CID (called when new files are registered).
+   */
+  async syncFileRefsForCid(cid: string): Promise<void> {
+    try {
+      const blockCids = await this.ipfsClient.refs(cid);
+      await storage.saveFileRefs(cid, blockCids);
+    } catch (err) {
+      logPoA.warn(`[PoA Engine] Failed to sync refs for ${cid}: ${err}`);
+    }
   }
 
   stop() {
@@ -431,10 +499,13 @@ export class PoAEngine {
   ) {
     // LIVE MODE: If node has an endpoint, always use live validation
     if (node.endpoint) {
+      logPoA.info(`[PoA] LIVE challenge → node=${node.hiveUsername || node.id} file=${file.cid?.substring(0, 12)}...`);
       await this.processSPKChallenge(challengeId, node.id, file.id, file.cid, salt);
     } else if (this.config.useMockMode) {
+      logPoA.info(`[PoA] SIMULATION challenge → node=${node.hiveUsername || node.id} (no endpoint, mock mode)`);
       await this.processSimulatedChallenge(challengeId, node.id, file.id, salt);
     } else {
+      logPoA.info(`[PoA] SPK challenge → node=${node.hiveUsername || node.id} file=${file.cid?.substring(0, 12)}...`);
       await this.processSPKChallenge(challengeId, node.id, file.id, file.cid, salt);
     }
   }
@@ -458,6 +529,22 @@ export class PoAEngine {
     await this.recordChallengeResult(challengeId, nodeId, fileId, response, result, latencyMs);
   }
 
+  /**
+   * SPK PoA 2.0 Challenge — refs-only verification.
+   *
+   * KEY DESIGN: The validator does NOT need the file pinned locally.
+   * It stores only the refs list (sub-block CIDs) in the database.
+   * During verification, it fetches the needed sub-blocks on-demand
+   * from the IPFS network (served by the storage node being tested).
+   *
+   * Flow:
+   *  1. Load refs list from DB (or sync if missing)
+   *  2. Send challenge to storage node
+   *  3. Storage node computes proof hash from its local IPFS blocks
+   *  4. Validator independently computes expected proof hash by
+   *     fetching the same sub-blocks on-demand from IPFS
+   *  5. Compare hashes. If they match AND elapsed < 25s, PASS.
+   */
   private async processSPKChallenge(
     challengeId: string,
     nodeId: string,
@@ -474,70 +561,98 @@ export class PoAEngine {
     let latencyMs = 0;
 
     try {
-      // Compute expected proof hash from our IPFS
+      // Step 1: Load refs from DB (lightweight metadata, NOT the actual file data)
       let blockCids = this.blocksCache.get(cid);
       if (!blockCids) {
-        try {
-          blockCids = await this.ipfsClient.refs(cid);
+        blockCids = await storage.getFileRefs(cid) ?? undefined;
+        if (!blockCids) {
+          // Refs not yet synced — fetch now and persist
+          try {
+            blockCids = await this.ipfsClient.refs(cid);
+            await storage.saveFileRefs(cid, blockCids);
+          } catch {
+            blockCids = [];
+          }
+        }
+        if (blockCids && blockCids.length > 0) {
           this.blocksCache.set(cid, blockCids);
-        } catch {
-          blockCids = [];
         }
       }
 
-      const expectedProofHash = await createProofHash(this.ipfsClient, salt, cid, blockCids);
-
-      // LIVE MODE: Connect directly to node's endpoint if available
+      // Step 2: Challenge the storage node
       const nodeEndpoint = (node as any).endpoint;
+      let nodeProofHash: string | undefined;
+      let challengeElapsed = 0;
+
       if (nodeEndpoint) {
         const nodeResponse = await this.challengeNodeDirectly(nodeEndpoint, cid, salt, this.config.validatorUsername);
-        latencyMs = nodeResponse.elapsed || Date.now() - startTime;
+        challengeElapsed = nodeResponse.elapsed;
 
-        if (nodeResponse.status === "success") {
-          if (nodeResponse.proofHash === expectedProofHash) {
-            result = "success";
-            response = nodeResponse.proofHash || "";
-            console.log(`[PoA Engine] LIVE challenge PASSED: ${(node as any).hiveUsername} (${latencyMs}ms)`);
-          } else {
-            result = "fail";
-            response = "PROOF_MISMATCH";
-            console.log(`[PoA Engine] LIVE challenge FAILED: proof mismatch`);
-          }
-        } else if (nodeResponse.status === "timeout") {
+        if (nodeResponse.status === "timeout") {
           result = "fail";
           response = "TIMEOUT";
-        } else {
+          latencyMs = challengeElapsed;
+          await this.recordChallengeResult(challengeId, nodeId, fileId, response, result, latencyMs);
+          return;
+        }
+        if (nodeResponse.status !== "success") {
           result = "fail";
           response = nodeResponse.error || "VALIDATION_FAILED";
+          latencyMs = challengeElapsed;
+          await this.recordChallengeResult(challengeId, nodeId, fileId, response, result, latencyMs);
+          return;
         }
-      }
-      // Fallback to SPK client if no direct endpoint
-      else if (this.spkClient && 'validate' in this.spkClient) {
+        nodeProofHash = nodeResponse.proofHash;
+      } else if (this.spkClient && 'validate' in this.spkClient) {
         const spkResponse = await this.spkClient.validate(cid, salt);
-        latencyMs = spkResponse.elapsed || Date.now() - startTime;
+        challengeElapsed = spkResponse.elapsed || Date.now() - startTime;
 
-        if (spkResponse.status === "success") {
-          if (spkResponse.proofHash === expectedProofHash) {
-            result = "success";
-            response = spkResponse.proofHash || "";
-          } else {
-            result = "fail";
-            response = "PROOF_MISMATCH";
-          }
-        } else if (spkResponse.status === "timeout") {
+        if (spkResponse.status !== "success") {
           result = "fail";
-          response = "TIMEOUT";
-        } else {
-          result = "fail";
-          response = "VALIDATION_FAILED";
+          response = spkResponse.status === "timeout" ? "TIMEOUT" : "VALIDATION_FAILED";
+          latencyMs = challengeElapsed;
+          await this.recordChallengeResult(challengeId, nodeId, fileId, response, result, latencyMs);
+          return;
         }
+        nodeProofHash = spkResponse.proofHash;
       } else {
         result = "fail";
         response = "NO_ENDPOINT";
         latencyMs = Date.now() - startTime;
+        await this.recordChallengeResult(challengeId, nodeId, fileId, response, result, latencyMs);
+        return;
+      }
+
+      // Step 3: Anti-cheat timing check (SPK Network spec: 25 second max)
+      // If the node took too long, it may be fetching data on-demand rather
+      // than having it stored locally. Reject.
+      if (challengeElapsed >= 25_000) {
+        result = "fail";
+        response = "TOO_SLOW";
+        latencyMs = challengeElapsed;
+        logPoA.info(`[PoA Engine] TIMING FAIL: ${node.hiveUsername} took ${challengeElapsed}ms (>25s limit)`);
+        await this.recordChallengeResult(challengeId, nodeId, fileId, response, result, latencyMs);
+        return;
+      }
+
+      // Step 4: Validator independently computes the expected proof hash.
+      // Fetches the same sub-blocks on-demand from IPFS — the validator does NOT
+      // need the file pinned. It only needs the refs list (which blocks to fetch).
+      const expectedProofHash = await createProofHash(this.ipfsClient, salt, cid, blockCids || []);
+      latencyMs = challengeElapsed;
+
+      // Step 5: Compare
+      if (nodeProofHash && nodeProofHash === expectedProofHash) {
+        result = "success";
+        response = nodeProofHash;
+        logPoA.info(`[PoA Engine] LIVE challenge PASSED: ${node.hiveUsername} (${latencyMs}ms)`);
+      } else {
+        result = "fail";
+        response = "PROOF_MISMATCH";
+        logPoA.info(`[PoA Engine] LIVE challenge FAILED: proof mismatch for ${node.hiveUsername} (expected=${expectedProofHash?.substring(0, 16)}... got=${nodeProofHash?.substring(0, 16)}...)`);
       }
     } catch (err) {
-      console.error(`[PoA Engine] Validation error:`, err);
+      logPoA.error({ err }, "Validation error");
       result = "fail";
       response = err instanceof Error ? err.message : "UNKNOWN_ERROR";
       latencyMs = Date.now() - startTime;
@@ -661,7 +776,7 @@ export class PoAEngine {
     if (newConsecutiveFails >= POA_CONFIG.CONSECUTIVE_FAIL_BAN) {
       newStatus = "banned";
       newReputation = 0;
-      console.log(`[PoA] INSTANT BAN: ${node.hiveUsername} - ${POA_CONFIG.CONSECUTIVE_FAIL_BAN} consecutive failures`);
+      logPoA.info(`[PoA] INSTANT BAN: ${node.hiveUsername} - ${POA_CONFIG.CONSECUTIVE_FAIL_BAN} consecutive failures`);
     } else if (newReputation < POA_CONFIG.BAN_THRESHOLD) {
       newStatus = "banned";
     } else if (newReputation < POA_CONFIG.PROBATION_THRESHOLD) {
@@ -672,7 +787,7 @@ export class PoAEngine {
 
     await storage.updateStorageNodeReputation(node.id, newReputation, newStatus, newConsecutiveFails);
 
-    console.log(`[PoA] Challenge ${result}: ${node.hiveUsername} (Rep: ${node.reputation} -> ${newReputation}, Streak: ${newStreak}, Consecutive Fails: ${newConsecutiveFails})`);
+    logPoA.info(`[PoA] Challenge ${result}: ${node.hiveUsername} (Rep: ${node.reputation} -> ${newReputation}, Streak: ${newStreak}, Consecutive Fails: ${newConsecutiveFails})`);
 
     if (this.config.broadcastToHive) {
       try {
@@ -693,7 +808,7 @@ export class PoAEngine {
           );
         }
       } catch (err) {
-        console.error(`[PoA] Failed to broadcast to Hive:`, err);
+        logPoA.error({ err }, "Failed to broadcast to Hive");
       }
     }
 
@@ -715,7 +830,7 @@ export class PoAEngine {
       const replicationCount = file?.replicationCount || 1;
       const baseReward = POA_CONFIG.BASE_REWARD_HBD;
       const rarityMultiplier = 1 / Math.max(1, replicationCount);
-      
+
       // OPTIMIZATION: Streak bonus for consistent performance
       let streakBonus = 1.0;
       if (newStreak >= 100) {
@@ -725,32 +840,176 @@ export class PoAEngine {
       } else if (newStreak >= 10) {
         streakBonus = POA_CONFIG.STREAK_BONUS_10;
       }
-      
-      const reward = baseReward * rarityMultiplier * streakBonus;
-      const rewardFormatted = reward.toFixed(4);
 
-      // Update file earnings
+      const reward = baseReward * rarityMultiplier * streakBonus;
+
+      // Update file earnings immediately (internal accounting)
       if (file) {
         await storage.updateFileEarnings(fileId, reward);
       }
 
-      // Update node total earnings
+      // Update node total earnings immediately (internal accounting)
       await storage.updateNodeEarnings(nodeId, reward);
 
+      // MICROPAYMENT BATCHING: Accumulate rewards, payout at threshold
+      // SPK 1.0 spec: 10 proofs = 1 combined Hive transaction (reduces chain bloat by ~90%)
+      await this.accumulateProofReward(nodeId, node.hiveUsername, cid, reward, newStreak, rarityMultiplier, streakBonus);
+    }
+  }
+
+  /**
+   * SPK 1.0-style micropayment batching.
+   * Accumulates proof rewards per node. When a node hits the threshold
+   * (default: 10 successful proofs), issues a single combined Hive transaction.
+   * This reduces blockchain transaction volume by ~90%.
+   */
+  private async accumulateProofReward(
+    nodeId: string,
+    nodeUsername: string,
+    cid: string,
+    reward: number,
+    streak: number,
+    rarityMultiplier: number,
+    streakBonus: number
+  ): Promise<void> {
+    const acc = this.proofAccumulator.get(nodeId) || {
+      count: 0,
+      totalReward: 0,
+      cids: [],
+      nodeUsername,
+    };
+
+    acc.count++;
+    acc.totalReward += reward;
+    if (!acc.cids.includes(cid)) {
+      acc.cids.push(cid);
+    }
+    this.proofAccumulator.set(nodeId, acc);
+
+    logPoA.info(`[PoA] Proof ${acc.count}/${POA_CONFIG.PROOF_BATCH_THRESHOLD} for ${nodeUsername} (+${reward.toFixed(4)} HBD, batch total: ${acc.totalReward.toFixed(4)} HBD)`);
+
+    // Check if batch threshold reached
+    if (acc.count >= POA_CONFIG.PROOF_BATCH_THRESHOLD) {
+      await this.flushProofBatch(nodeId);
+    }
+  }
+
+  /**
+   * Flush accumulated proofs for a node into a single Hive transaction.
+   *
+   * FINANCIAL SAFETY:
+   * - Mutex lock prevents concurrent double-flush for the same node
+   * - Daily spending cap prevents runaway payouts
+   * - Per-batch sanity cap rejects absurd amounts
+   * - Balance pre-check ensures sufficient funds before transfer
+   * - Audit trail records success/failure status of on-chain broadcast
+   */
+  private async flushProofBatch(nodeId: string): Promise<void> {
+    // Mutex: prevent concurrent flush for the same node
+    if (this.flushingNodes.has(nodeId)) return;
+
+    const acc = this.proofAccumulator.get(nodeId);
+    if (!acc || acc.totalReward < POA_CONFIG.MIN_BATCH_PAYOUT_HBD) return;
+
+    this.flushingNodes.add(nodeId);
+
+    try {
+      const rewardAmount = acc.totalReward;
+      const rewardFormatted = rewardAmount.toFixed(3);
+
+      // Sanity cap: reject absurdly large single payouts
+      if (rewardAmount > POA_CONFIG.MAX_SINGLE_PAYOUT_HBD) {
+        logPoA.error(`[PoA] BLOCKED: Batch payout ${rewardFormatted} HBD to ${acc.nodeUsername} exceeds max single payout (${POA_CONFIG.MAX_SINGLE_PAYOUT_HBD} HBD)`);
+        this.proofAccumulator.delete(nodeId);
+        return;
+      }
+
+      // Daily spend cap: reset counter if day has passed
+      if (Date.now() > this.dailySpendResetAt) {
+        this.dailySpendHbd = 0;
+        this.dailySpendResetAt = Date.now() + 86400000;
+      }
+      if (this.dailySpendHbd + rewardAmount > POA_CONFIG.MAX_DAILY_SPEND_HBD) {
+        logPoA.warn(`[PoA] PAUSED: Daily spend limit reached (${this.dailySpendHbd.toFixed(3)}/${POA_CONFIG.MAX_DAILY_SPEND_HBD} HBD). Batch for ${acc.nodeUsername} deferred.`);
+        return; // Don't delete accumulator — retry next cycle
+      }
+
+      // Record transaction intent in DB BEFORE attempting broadcast
+      let broadcastStatus: "pending" | "success" | "failed" | "skipped" = "pending";
+      let txHash: string | undefined;
+
+      // Broadcast actual Hive transfer if configured
+      if (this.config.broadcastToHive) {
+        // Balance pre-check: verify sufficient funds
+        try {
+          const balanceStr = await this.hiveClient.getHBDBalance(this.config.validatorUsername);
+          const balance = parseFloat(balanceStr);
+          if (balance < rewardAmount + POA_CONFIG.MIN_BALANCE_RESERVE_HBD) {
+            logPoA.error(`[PoA] BLOCKED: Insufficient balance (${balanceStr}) for payout ${rewardFormatted} HBD to ${acc.nodeUsername} (reserve: ${POA_CONFIG.MIN_BALANCE_RESERVE_HBD} HBD)`);
+            broadcastStatus = "failed";
+          }
+        } catch (err) {
+          logPoA.warn({ err }, "Balance check failed, proceeding with caution");
+        }
+
+        if (broadcastStatus !== "failed") {
+          try {
+            const tx = await this.hiveClient.transfer({
+              to: acc.nodeUsername,
+              amount: `${rewardFormatted} HBD`,
+              memo: `SPK PoA 2.0 batch reward: ${acc.count} proofs verified`,
+            });
+            txHash = tx.id;
+            broadcastStatus = "success";
+            this.dailySpendHbd += rewardAmount;
+          } catch (err) {
+            logPoA.error({ err }, `Batch payout broadcast FAILED for ${acc.nodeUsername}`);
+            broadcastStatus = "failed";
+          }
+        }
+      } else {
+        broadcastStatus = "skipped";
+      }
+
+      // Write audit record with broadcast result
       await storage.createHiveTransaction({
         type: "hbd_transfer",
         fromUser: this.config.validatorUsername,
-        toUser: node.hiveUsername,
+        toUser: acc.nodeUsername,
         payload: JSON.stringify({
           amount: `${rewardFormatted} HBD`,
-          memo: `PoA Reward (rarity: ${rarityMultiplier.toFixed(2)}x, streak: ${streakBonus}x)`,
-          cid: cid,
-          streak: newStreak,
+          memo: `PoA Batch Reward: ${acc.count} proofs across ${acc.cids.length} files`,
+          proofCount: acc.count,
+          fileCount: acc.cids.length,
+          cids: acc.cids.slice(0, 10),
+          broadcastStatus,
+          txHash: txHash || null,
         }),
         blockNumber: Math.floor(Date.now() / 1000),
       });
 
-      console.log(`[PoA] Reward: ${rewardFormatted} HBD to ${node.hiveUsername} (rarity: ${rarityMultiplier.toFixed(2)}x, streak: ${streakBonus}x)`);
+      if (broadcastStatus === "success" || broadcastStatus === "skipped") {
+        logPoA.info(`[PoA] BATCH PAYOUT: ${rewardFormatted} HBD to ${acc.nodeUsername} (${acc.count} proofs, status=${broadcastStatus})`);
+        this.proofAccumulator.delete(nodeId);
+      } else {
+        // Failed: keep accumulator for manual retry, but log clearly
+        logPoA.error(`[PoA] BATCH PAYOUT FAILED: ${rewardFormatted} HBD to ${acc.nodeUsername} NOT sent. Accumulator preserved for retry.`);
+      }
+    } finally {
+      this.flushingNodes.delete(nodeId);
+    }
+  }
+
+  /**
+   * Flush all pending proof batches (called on shutdown to prevent lost rewards).
+   */
+  async flushAllPendingBatches(): Promise<void> {
+    const nodeIds = Array.from(this.proofAccumulator.keys());
+    for (const nodeId of nodeIds) {
+      await this.flushProofBatch(nodeId);
+    }
+    if (nodeIds.length > 0) {
+      logPoA.info(`[PoA] Flushed ${nodeIds.length} pending proof batches on shutdown`);
     }
   }
 

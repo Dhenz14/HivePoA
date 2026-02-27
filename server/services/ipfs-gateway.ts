@@ -9,6 +9,7 @@ import type { Request, Response } from "express";
 import { cdnManager } from "./cdn-manager";
 import { blocklistService } from "./blocklist-service";
 import { storage } from "../storage";
+import { logIPFS } from "../logger";
 
 export interface GatewayRequest {
   cid: string;
@@ -66,15 +67,16 @@ export class IpfsGatewayService {
       request.requesterRegion
     );
 
-    if (recommendations.length > 0) {
-      const bestNode = recommendations[0].node;
-      const fullPath = request.path ? `${request.cid}/${request.path}` : request.cid;
-      const redirectUrl = `${bestNode.endpoint}/ipfs/${fullPath}`;
-
-      return {
-        success: true,
-        redirectUrl,
-      };
+    // Try recommended nodes, skipping any with invalid/unsafe endpoints
+    for (const rec of recommendations) {
+      try {
+        const url = new URL(`${rec.node.endpoint}/ipfs/${request.path ? `${request.cid}/${request.path}` : request.cid}`);
+        if (url.protocol === "http:" || url.protocol === "https:") {
+          return { success: true, redirectUrl: url.toString() };
+        }
+      } catch {
+        // Skip malformed endpoint URLs
+      }
     }
 
     // Fallback to public gateway
@@ -135,7 +137,7 @@ export class IpfsGatewayService {
 
         return res.status(500).json({ error: 'No response available' });
       } catch (error) {
-        console.error('[IPFS Gateway] Error:', error);
+        logIPFS.error({ err: error }, "IPFS Gateway error");
         return res.status(500).json({ error: 'Gateway error' });
       }
     };

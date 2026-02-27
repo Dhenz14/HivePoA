@@ -1,5 +1,6 @@
 import { Client, PrivateKey, Asset, TransferOperation, CustomJsonOperation, Signature, PublicKey, cryptoUtils } from "@hiveio/dhive";
 import crypto from "crypto";
+import { logHive } from "../logger";
 
 export interface HiveConfig {
   nodes: string[];
@@ -194,7 +195,7 @@ export class HiveClient {
       }
       return false;
     } catch (error) {
-      console.error("[Hive] Signature verification failed:", error);
+      logHive.error({ err: error }, "Signature verification failed");
       return false;
     }
   }
@@ -236,7 +237,7 @@ export class MockHiveClient {
   }
 
   async transfer(request: HBDTransferRequest): Promise<HiveTransaction> {
-    console.log(`[Mock Hive] Transfer: ${request.amount} from ${this.config.username} to ${request.to}`);
+    logHive.info(`[Mock Hive] Transfer: ${request.amount} from ${this.config.username} to ${request.to}`);
     this.transactionCounter++;
     return {
       id: `mock_tx_${this.transactionCounter}`,
@@ -246,7 +247,7 @@ export class MockHiveClient {
   }
 
   async broadcastCustomJson(request: CustomJsonRequest): Promise<HiveTransaction> {
-    console.log(`[Mock Hive] Custom JSON: ${request.id}`, request.json);
+    logHive.info({ customJsonId: request.id }, "Mock Custom JSON broadcast");
     this.transactionCounter++;
     return {
       id: `mock_tx_${this.transactionCounter}`,
@@ -336,6 +337,6 @@ export function createHiveClient(config?: Partial<HiveConfig>): HiveClient | Moc
     return new HiveClient({ nodes, username, postingKey, activeKey });
   }
 
-  console.log("[Hive] No keys configured, using mock client");
+  logHive.info("[Hive] No keys configured, using mock client");
   return new MockHiveClient({ nodes, username });
 }

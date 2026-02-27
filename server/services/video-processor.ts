@@ -2,6 +2,7 @@ import { spawn, execSync, ChildProcess } from "child_process";
 import { EventEmitter } from "events";
 import * as path from "path";
 import * as fs from "fs";
+import { logVideo } from "../logger";
 
 export type HardwareAccelType = "nvenc" | "vaapi" | "qsv" | "videotoolbox" | "none";
 
@@ -107,7 +108,7 @@ export class VideoProcessor extends EventEmitter {
         if (test()) {
           this.detectedHwAccel = type;
           this.emit("hwAccelDetected", type);
-          console.log(`[VideoProcessor] Hardware acceleration detected: ${type}`);
+          logVideo.info(`[VideoProcessor] Hardware acceleration detected: ${type}`);
           return type;
         }
       } catch (e) {
@@ -116,7 +117,7 @@ export class VideoProcessor extends EventEmitter {
     }
 
     this.detectedHwAccel = "none";
-    console.log("[VideoProcessor] No hardware acceleration available, using software encoding");
+    logVideo.info("[VideoProcessor] No hardware acceleration available, using software encoding");
     return "none";
   }
 
@@ -476,7 +477,7 @@ export class VideoProcessor extends EventEmitter {
 
       if (!result.success) {
         if (hwAccel !== "none" && i === 0) {
-          console.log(`[VideoProcessor] Hardware encoding failed, falling back to software`);
+          logVideo.info(`[VideoProcessor] Hardware encoding failed, falling back to software`);
           hwAccel = "none";
           const retryResult = await this.encodeQuality(
             config,

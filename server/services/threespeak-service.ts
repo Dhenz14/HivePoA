@@ -2,6 +2,7 @@
  * 3Speak Integration Service
  * Fetches videos from 3Speak platform for browsing and pinning
  */
+import { logThreeSpeak } from "../logger";
 
 export interface ThreeSpeakVideo {
   id: string;
@@ -33,13 +34,13 @@ class ThreeSpeakService {
     try {
       const response = await fetch(`${this.apiUrl}/feeds/trending?limit=${limit}&skip=${(page - 1) * limit}`);
       if (!response.ok) {
-        console.log("[3Speak] API returned non-ok, using fallback data");
+        logThreeSpeak.info("[3Speak] API returned non-ok, using fallback data");
         return this.getFallbackVideos();
       }
       const data = await response.json();
       return this.transformResponse(data, page);
     } catch (error) {
-      console.log("[3Speak] API error, using fallback data:", error);
+      logThreeSpeak.info("3Speak API error, using fallback data");
       return this.getFallbackVideos();
     }
   }
@@ -53,7 +54,7 @@ class ThreeSpeakService {
       const data = await response.json();
       return this.transformResponse(data, page);
     } catch (error) {
-      console.log("[3Speak] API error, using fallback data");
+      logThreeSpeak.info("[3Speak] API error, using fallback data");
       return this.getFallbackVideos();
     }
   }
@@ -67,7 +68,7 @@ class ThreeSpeakService {
       const data = await response.json();
       return this.transformResponse(data, 1);
     } catch (error) {
-      console.log("[3Speak] Search error");
+      logThreeSpeak.info("[3Speak] Search error");
       return { videos: [], total: 0, page: 1, hasMore: false };
     }
   }
@@ -81,7 +82,7 @@ class ThreeSpeakService {
       const data = await response.json();
       return this.transformVideo(data);
     } catch (error) {
-      console.log("[3Speak] Video details error");
+      logThreeSpeak.info("[3Speak] Video details error");
       return null;
     }
   }

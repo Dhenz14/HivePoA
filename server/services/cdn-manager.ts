@@ -8,6 +8,7 @@
 import { storage } from "../storage";
 import { healthScoreEncoder, latencyStats } from "./health-score";
 import { geoCorrection } from "./geo-correction";
+import { logCDN } from "../logger";
 import type { CdnNode, InsertCdnNode } from "@shared/schema";
 
 export interface CdnRecommendation {
@@ -28,7 +29,7 @@ export class CdnManager {
     // Recalculate health scores every minute
     this.healthCheckInterval = setInterval(() => this.recalculateHealthScores(), 60000);
     
-    console.log("[CDN Manager] Started health monitoring");
+    logCDN.info("[CDN Manager] Started health monitoring");
   }
 
   stop(): void {
@@ -40,13 +41,13 @@ export class CdnManager {
       clearInterval(this.healthCheckInterval);
       this.healthCheckInterval = null;
     }
-    console.log("[CDN Manager] Stopped health monitoring");
+    logCDN.info("[CDN Manager] Stopped health monitoring");
   }
 
   // Register a new CDN node
   async registerNode(data: InsertCdnNode): Promise<CdnNode> {
     const node = await storage.createCdnNode(data);
-    console.log(`[CDN Manager] Registered new CDN node: ${node.peerId} (${node.geoRegion})`);
+    logCDN.info(`[CDN Manager] Registered new CDN node: ${node.peerId} (${node.geoRegion})`);
     return node;
   }
 
@@ -54,7 +55,7 @@ export class CdnManager {
   async processHeartbeat(nodeId: string, metrics?: { latency?: number; requestCount?: number }): Promise<void> {
     const node = await storage.getCdnNode(nodeId);
     if (!node) {
-      console.warn(`[CDN Manager] Heartbeat from unknown node: ${nodeId}`);
+      logCDN.warn(`[CDN Manager] Heartbeat from unknown node: ${nodeId}`);
       return;
     }
 
@@ -77,7 +78,7 @@ export class CdnManager {
     // If node was degraded/offline, check if it should come back online
     if (node.status !== 'active') {
       await storage.updateCdnNodeStatus(nodeId, 'active');
-      console.log(`[CDN Manager] Node ${nodeId} is back online`);
+      logCDN.info(`[CDN Manager] Node ${nodeId} is back online`);
     }
   }
 
@@ -180,7 +181,7 @@ export class CdnManager {
       if (new Date(node.lastHeartbeat) < staleThreshold) {
         if (node.status === 'active') {
           await storage.updateCdnNodeStatus(node.id, 'degraded');
-          console.log(`[CDN Manager] Node ${node.peerId} marked as degraded (no heartbeat)`);
+          logCDN.info(`[CDN Manager] Node ${node.peerId} marked as degraded (no heartbeat)`);
         }
       }
     }
@@ -226,7 +227,7 @@ export class CdnManager {
       });
     }
 
-    console.log(`[CDN Manager] Recalculated health scores for ${nodes.length} nodes`);
+    logCDN.info(`[CDN Manager] Recalculated health scores for ${nodes.length} nodes`);
   }
 
   // Simulate CDN nodes for development
@@ -257,7 +258,7 @@ export class CdnManager {
       });
     }
 
-    console.log(`[CDN Manager] Seeded ${regions.length} simulated CDN nodes`);
+    logCDN.info(`[CDN Manager] Seeded ${regions.length} simulated CDN nodes`);
   }
 }
 

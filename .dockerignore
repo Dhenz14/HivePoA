@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.git/
+.env
+.env.local
+*.md
+desktop-agent/
+.claude/
+*.jsonl
+.DS_Store
+coverage/

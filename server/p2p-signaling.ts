@@ -1,5 +1,6 @@
 import { WebSocket, WebSocketServer } from 'ws';
 import { storage } from './storage';
+import { logP2P } from './logger';
 
 interface PeerInfo {
   ws: WebSocket;
@@ -50,13 +51,13 @@ export class P2PSignalingServer {
     wss.on('connection', (ws: WebSocket) => {
       ws.on('message', (data) => this.handleMessage(ws, data.toString()));
       ws.on('close', () => this.handleDisconnect(ws));
-      ws.on('error', (err) => console.error('[P2P Signaling] WebSocket error:', err));
+      ws.on('error', (err) => logP2P.error({ err }, 'P2P Signaling WebSocket error'));
     });
 
     this.heartbeatInterval = setInterval(() => this.cleanupStaleConnections(), 30000);
     this.statsInterval = setInterval(() => this.persistNetworkStats(), 60000);
 
-    console.log('[P2P Signaling] Server initialized');
+    logP2P.info('[P2P Signaling] Server initialized');
   }
 
   private async handleMessage(ws: WebSocket, rawData: string) {
@@ -164,7 +165,7 @@ export class P2PSignalingServer {
       }
     });
 
-    console.log(`[P2P] Peer ${message.peerId} joined room ${room.id} (${room.peers.size} peers)`);
+    logP2P.info(`[P2P] Peer ${message.peerId} joined room ${room.id} (${room.peers.size} peers)`);
   }
 
   private async handleLeave(ws: WebSocket) {
@@ -210,7 +211,7 @@ export class P2PSignalingServer {
     }
 
     this.peersBySocket.delete(ws);
-    console.log(`[P2P] Peer ${peer.peerId} left room ${peer.roomId}`);
+    logP2P.info(`[P2P] Peer ${peer.peerId} left room ${peer.roomId}`);
   }
 
   private handleWebRTCSignaling(ws: WebSocket, message: SignalingMessage) {
@@ -315,7 +316,7 @@ export class P2PSignalingServer {
 
     this.peersBySocket.forEach((peer, ws) => {
       if (now - peer.lastHeartbeat.getTime() > staleThreshold) {
-        console.log(`[P2P] Cleaning up stale peer ${peer.peerId}`);
+        logP2P.info(`[P2P] Cleaning up stale peer ${peer.peerId}`);
         ws.close();
       }
     });

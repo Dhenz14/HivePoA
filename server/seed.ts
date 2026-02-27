@@ -1,7 +1,22 @@
 import { storage } from "./storage";
+import { db } from "./db";
+import { sql } from "drizzle-orm";
+import { logSeed } from "./logger";
 
 export async function seedDatabase() {
-  console.log("[Seed] Starting database seed...");
+  // Only seed if database is empty (prevents duplicate seed on every restart)
+  try {
+    const result = await db.execute(sql`SELECT COUNT(*)::int AS count FROM validators`);
+    const count = (result.rows[0] as any)?.count ?? 0;
+    if (count > 0) {
+      logSeed.info(`[Seed] Database already has ${count} validators — skipping seed`);
+      return;
+    }
+  } catch {
+    // Table might not exist yet — proceed with seed
+  }
+
+  logSeed.info("[Seed] Empty database detected — seeding initial data...");
 
   // Create validators (Hive Witnesses)
   const validators = [
@@ -143,5 +158,5 @@ export async function seedDatabase() {
     }
   }
 
-  console.log("[Seed] Database seeded successfully");
+  logSeed.info("[Seed] Database seeded successfully");
 }

@@ -1,9 +1,15 @@
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { Shield, Activity, Clock, Skull, TrendingUp, TrendingDown, CheckCircle2, XCircle, Timer, Zap, Server } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Shield, Activity, Clock, Skull, TrendingUp, TrendingDown, CheckCircle2, XCircle, Timer, Zap, Server, Users, UserPlus, UserMinus, AlertTriangle } from "lucide-react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip } from "recharts";
 import { cn } from "@/lib/utils";
 import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
@@ -519,7 +525,199 @@ export default function ValidatorDashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Web of Trust Card */}
+      <WebOfTrustCard />
     </div>
+  );
+}
+
+function WebOfTrustCard() {
+  const { user } = useValidatorAuth();
+  const queryClient = useQueryClient();
+  const [vouchDialogOpen, setVouchDialogOpen] = useState(false);
+  const [vouchUsername, setVouchUsername] = useState("");
+  const [vouchError, setVouchError] = useState<string | null>(null);
+
+  // Fetch current vouch status
+  const { data: wotStatus } = useQuery({
+    queryKey: ["wot", user?.username],
+    queryFn: async () => {
+      if (!user?.username) return null;
+      const res = await fetch(`/api/wot/${user.username}`);
+      if (!res.ok) return null;
+      return res.json();
+    },
+    enabled: !!user?.username,
+    refetchInterval: 10000,
+  });
+
+  const vouchMutation = useMutation({
+    mutationFn: async (targetUsername: string) => {
+      const res = await fetch("/api/wot/vouch", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${user?.sessionToken}`,
+        },
+        body: JSON.stringify({ username: targetUsername }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to vouch");
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["wot"] });
+      setVouchDialogOpen(false);
+      setVouchUsername("");
+      setVouchError(null);
+    },
+    onError: (err: Error) => {
+      setVouchError(err.message);
+    },
+  });
+
+  const revokeMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/wot/vouch", {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${user?.sessionToken}`,
+        },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to revoke");
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["wot"] });
+    },
+  });
+
+  // Vouched users see read-only info
+  if (user?.isVouched) {
+    return (
+      <Card className="border-blue-500/30 bg-blue-500/5" data-testid="card-wot">
+        <CardHeader>
+          <CardTitle className="font-display flex items-center gap-2">
+            <Users className="w-5 h-5 text-blue-500" />
+            Web of Trust
+          </CardTitle>
+          <CardDescription>Your validator access via the Web of Trust</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center gap-4 p-4 bg-blue-500/10 rounded-lg border border-blue-500/20">
+            <Avatar>
+              <AvatarImage src={`https://images.hive.blog/u/${user.sponsor}/avatar`} />
+              <AvatarFallback>{user.sponsor?.substring(0, 2).toUpperCase()}</AvatarFallback>
+            </Avatar>
+            <div>
+              <p className="font-medium">Sponsored by @{user.sponsor}</p>
+              <p className="text-sm text-muted-foreground">
+                You are a vouched validator. Vouched validators cannot vouch for others.
+              </p>
+            </div>
+            <Badge className="ml-auto bg-blue-500/20 text-blue-500 border-blue-500/30">Vouched</Badge>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // Witnesses see vouch management
+  return (
+    <Card className="border-border/50 bg-card/50 backdrop-blur-sm" data-testid="card-wot">
+      <CardHeader>
+        <CardTitle className="font-display flex items-center gap-2">
+          <Users className="w-5 h-5 text-primary" />
+          Web of Trust
+        </CardTitle>
+        <CardDescription>
+          As a witness, you can vouch for one non-witness user to become a validator
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {wotStatus?.isVoucher ? (
+          // Has an active vouch — show the vouched user
+          <div className="flex items-center gap-4 p-4 bg-primary/5 rounded-lg border border-primary/20">
+            <Avatar>
+              <AvatarImage src={`https://images.hive.blog/u/${wotStatus.vouchedUser}/avatar`} />
+              <AvatarFallback>{wotStatus.vouchedUser?.substring(0, 2).toUpperCase()}</AvatarFallback>
+            </Avatar>
+            <div className="flex-1">
+              <p className="font-medium">@{wotStatus.vouchedUser}</p>
+              <p className="text-sm text-muted-foreground">Vouched by you</p>
+            </div>
+            <Badge className="bg-green-500/20 text-green-500 border-green-500/30">Active</Badge>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => revokeMutation.mutate()}
+              disabled={revokeMutation.isPending}
+            >
+              <UserMinus className="w-4 h-4 mr-1" />
+              {revokeMutation.isPending ? "Revoking..." : "Revoke"}
+            </Button>
+          </div>
+        ) : (
+          // No active vouch — show vouch button
+          <Dialog open={vouchDialogOpen} onOpenChange={(open) => {
+            setVouchDialogOpen(open);
+            if (!open) { setVouchUsername(""); setVouchError(null); }
+          }}>
+            <DialogTrigger asChild>
+              <Button variant="outline" className="w-full border-dashed border-2 h-16">
+                <UserPlus className="w-5 h-5 mr-2" />
+                Vouch for a User
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <Users className="w-5 h-5" />
+                  Vouch for a Validator
+                </DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4 pt-2">
+                <p className="text-sm text-muted-foreground">
+                  Enter the Hive username of the person you want to vouch for.
+                  They will gain full validator access through your sponsorship.
+                  You can only vouch for one user at a time.
+                </p>
+                <div className="space-y-2">
+                  <Input
+                    placeholder="hive-username"
+                    value={vouchUsername}
+                    onChange={(e) => {
+                      setVouchUsername(e.target.value.toLowerCase().replace("@", ""));
+                      setVouchError(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && vouchUsername.trim()) {
+                        vouchMutation.mutate(vouchUsername.trim());
+                      }
+                    }}
+                  />
+                </div>
+                {vouchError && (
+                  <Alert variant="destructive">
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertDescription>{vouchError}</AlertDescription>
+                  </Alert>
+                )}
+                <Button
+                  className="w-full"
+                  onClick={() => vouchMutation.mutate(vouchUsername.trim())}
+                  disabled={!vouchUsername.trim() || vouchMutation.isPending}
+                >
+                  {vouchMutation.isPending ? "Vouching..." : "Confirm Vouch"}
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

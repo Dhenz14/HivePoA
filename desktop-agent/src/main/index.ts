@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, dialog } from 'electron';
+import { app, BrowserWindow, Tray, Menu, nativeImage, dialog, ipcMain } from 'electron';
 import * as path from 'path';
 import { KuboManager } from './kubo';
 import { ApiServer } from './api';
@@ -20,8 +20,9 @@ function createWindow(): void {
     height: 600,
     show: false,
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
     },
     icon: path.join(__dirname, '../../assets/icon.png'),
   });
@@ -105,6 +106,19 @@ async function initialize(): Promise<void> {
     autoUpdater.checkForUpdates();
   }, 5000);
 }
+
+// IPC handlers for secure renderer ↔ main communication
+ipcMain.handle('get-status', async () => {
+  const peerId = await kuboManager?.getPeerId();
+  const stats = await kuboManager?.getStats();
+  return { running: kuboManager?.isRunning(), peerId, stats };
+});
+ipcMain.handle('get-config', () => configStore?.getConfig());
+ipcMain.handle('set-config', (_event, cfg) => {
+  configStore?.setConfig(cfg);
+  return configStore?.getConfig();
+});
+ipcMain.handle('get-earnings', () => configStore?.getEarnings());
 
 app.whenReady().then(async () => {
   createTray();

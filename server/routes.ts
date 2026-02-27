@@ -1,4 +1,4 @@
-import type { Express } from "express";
+import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { randomBytes } from "crypto";
 import { storage } from "./storage";
@@ -16,35 +16,191 @@ import { p2pSignaling } from "./p2p-signaling";
 import { WebSocketServer } from "ws";
 import { insertFileSchema, insertValidatorBlacklistSchema, insertEncodingJobSchema, insertEncoderNodeSchema } from "@shared/schema";
 import { z } from "zod";
+import crypto from "crypto";
 import { getIPFSClient } from "./services/ipfs-client";
+import { logRoutes, logWS, logEncoding, logWoT } from "./logger";
 import { createProofHash } from "./services/poa-crypto";
+
+// Extend Express Request to carry authenticated user
+declare global {
+  namespace Express {
+    interface Request {
+      authenticatedUser?: string;
+      authenticatedRole?: string;
+    }
+  }
+}
+
+/**
+ * Strong auth middleware: validates Bearer session token from Authorization header.
+ * Attaches `req.authenticatedUser` and `req.authenticatedRole` on success.
+ */
+async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith("Bearer ")) {
+    res.status(401).json({ error: "Authentication required — provide Authorization: Bearer <token>" });
+    return;
+  }
+  const token = authHeader.slice(7);
+  try {
+    const session = await storage.getSession(token);
+    if (!session || session.expiresAt.getTime() < Date.now()) {
+      if (session) await storage.deleteSession(token);
+      res.status(401).json({ error: "Invalid or expired session" });
+      return;
+    }
+    req.authenticatedUser = session.username;
+    req.authenticatedRole = session.role;
+    next();
+  } catch {
+    res.status(500).json({ error: "Authentication check failed" });
+  }
+}
+
+/**
+ * Agent API key auth middleware: validates ApiKey from Authorization header.
+ * Used by encoding agents that can't use Hive Keychain.
+ */
+async function requireAgentAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith("ApiKey ")) {
+    res.status(401).json({ error: "Agent authentication required — provide Authorization: ApiKey <key>" });
+    return;
+  }
+  const apiKey = authHeader.slice(7);
+  try {
+    const agent = await storage.getAgentByKey(apiKey);
+    if (!agent) {
+      res.status(401).json({ error: "Invalid API key" });
+      return;
+    }
+    req.authenticatedUser = agent.hiveUsername;
+    req.authenticatedRole = "agent";
+    next();
+  } catch {
+    res.status(500).json({ error: "Agent authentication check failed" });
+  }
+}
+
+/**
+ * Webhook HMAC verification middleware.
+ * Verifies X-Webhook-Signature header against ENCODING_WEBHOOK_SECRET.
+ */
+function requireWebhookSignature(req: Request, res: Response, next: NextFunction): void {
+  const secret = process.env.ENCODING_WEBHOOK_SECRET;
+  if (!secret) {
+    // No secret configured — skip verification (development mode)
+    return next();
+  }
+  const signature = req.headers["x-webhook-signature"] as string | undefined;
+  if (!signature) {
+    res.status(401).json({ error: "Missing X-Webhook-Signature header" });
+    return;
+  }
+  const rawBody = (req as any).rawBody;
+  if (!rawBody) {
+    res.status(400).json({ error: "Unable to verify signature — missing raw body" });
+    return;
+  }
+  const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+  const provided = signature.replace(/^sha256=/, "");
+  if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(provided.padEnd(expected.length)))) {
+    res.status(401).json({ error: "Invalid webhook signature" });
+    return;
+  }
+  next();
+}
+
+/** Validate Hive username format */
+function isValidHiveUsername(username: string): boolean {
+  return /^[a-z][a-z0-9.-]{2,15}$/.test(username);
+}
+
+/**
+ * Lightweight auth middleware (DEPRECATED — use requireAuth for mutations).
+ * Only checks for username presence. Use for analytics/soft-check endpoints.
+ */
+function requireHiveUser(req: Request, res: Response, next: NextFunction): void {
+  const headerUser = req.headers["x-hive-username"] as string | undefined;
+  const bodyUser = req.body?.username
+    || req.body?.fromUsername
+    || req.body?.addedBy
+    || req.body?.voterUsername
+    || req.body?.owner
+    || req.body?.scopeOwnerId;
+  if (headerUser || bodyUser) {
+    return next();
+  }
+  res.status(401).json({ error: "Authentication required — provide x-hive-username header or username in body" });
+}
+
+/** Parse pagination query params with safe defaults */
+function parsePagination(req: Request): { page: number; limit: number; offset: number } {
+  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 50));
+  return { page, limit, offset: (page - 1) * limit };
+}
+
+function paginatedResponse<T>(data: T[], total: number, page: number, limit: number) {
+  return { data, pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
+}
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
-  
+
   // WebSocket for real-time updates (using noServer mode for proper multi-path support)
   const wss = new WebSocketServer({ noServer: true });
-  
-  wss.on("connection", (ws) => {
-    console.log("[WebSocket] Client connected");
+  const WS_MAX_CONNECTIONS = 100;
+  const VALIDATE_MAX_CONNECTIONS = 50;
+  const WS_HEARTBEAT_INTERVAL = 30_000;
+  const WS_HEARTBEAT_TIMEOUT = 10_000;
+
+  // Heartbeat helper: pings clients, terminates unresponsive ones
+  function setupHeartbeat(wsServer: InstanceType<typeof WebSocketServer>, label: string) {
+    const interval = setInterval(() => {
+      wsServer.clients.forEach((ws: any) => {
+        if (ws.isAlive === false) {
+          logRoutes.info(`[${label}] Terminating stale connection`);
+          return ws.terminate();
+        }
+        ws.isAlive = false;
+        ws.ping();
+      });
+    }, WS_HEARTBEAT_INTERVAL);
+
+    wsServer.on("close", () => clearInterval(interval));
+  }
+
+  wss.on("connection", (ws: any) => {
+    if (wss.clients.size > WS_MAX_CONNECTIONS) {
+      ws.close(1013, "Max connections reached");
+      return;
+    }
+    ws.isAlive = true;
+    ws.on("pong", () => { ws.isAlive = true; });
 
     storage.getRecentTransactions(10).then((txs) => {
-      ws.send(JSON.stringify({ type: "transactions", data: txs }));
+      if (ws.readyState === ws.OPEN) {
+        ws.send(JSON.stringify({ type: "transactions", data: txs }));
+      }
     });
 
     const handleTransaction = (event: any) => {
-      ws.send(JSON.stringify({ type: "hive_event", data: event }));
+      if (ws.readyState === ws.OPEN) {
+        ws.send(JSON.stringify({ type: "hive_event", data: event }));
+      }
     };
 
     hiveSimulator.on("transaction", handleTransaction);
 
     ws.on("close", () => {
       hiveSimulator.off("transaction", handleTransaction);
-      console.log("[WebSocket] Client disconnected");
     });
   });
+
+  setupHeartbeat(wss, "WS");
 
   // P2P CDN WebSocket for peer signaling (using noServer mode)
   const p2pWss = new WebSocketServer({ noServer: true });
@@ -54,65 +210,91 @@ export async function registerRoutes(
   const validateWss = new WebSocketServer({ noServer: true });
   const poaIpfs = getIPFSClient();
   
-  validateWss.on("connection", (ws) => {
-    console.log("[PoA Validate] Storage node connected");
-    
-    ws.on("message", async (data) => {
+  validateWss.on("connection", (ws: any) => {
+    if (validateWss.clients.size > VALIDATE_MAX_CONNECTIONS) {
+      ws.close(1013, "Max connections reached");
+      return;
+    }
+    ws.isAlive = true;
+    ws.on("pong", () => { ws.isAlive = true; });
+
+    ws.on("message", async (data: Buffer) => {
       try {
         const message = JSON.parse(data.toString());
-        console.log(`[PoA Validate] Received challenge:`, message);
-        
+
+        // SPK PoA 2.0 Protocol: RequestProof — storage node computes proof hash
         if (message.type === "RequestProof") {
           const startTime = Date.now();
           const cid = message.CID;
           const salt = message.Hash;
           const user = message.User;
-          
+
           try {
-            // Fetch block CIDs from IPFS
             let blockCids: string[] = [];
             try {
               blockCids = await poaIpfs.refs(cid);
             } catch {
               blockCids = [];
             }
-            
-            // Compute proof hash
+
             const proofHash = await createProofHash(poaIpfs, salt, cid, blockCids);
             const elapsed = Date.now() - startTime;
-            
-            const response = {
-              Hash: salt,
-              CID: cid,
-              User: user,
-              Status: proofHash ? "Success" : "Fail",
-              proofHash: proofHash,
-              elapsed: elapsed,
-            };
-            
-            console.log(`[PoA Validate] Sending response (${elapsed}ms):`, response.Status);
-            ws.send(JSON.stringify(response));
-          } catch (err) {
-            console.error(`[PoA Validate] Error computing proof:`, err);
+
             ws.send(JSON.stringify({
               Hash: salt,
               CID: cid,
               User: user,
-              Status: "Fail",
+              Status: proofHash ? "Success" : "Fail",
+              proofHash,
+              elapsed,
+            }));
+            logRoutes.info(`[PoA Validate] Proof response (${elapsed}ms): ${proofHash ? "Success" : "Fail"}`);
+          } catch (err) {
+            ws.send(JSON.stringify({
+              Hash: salt, CID: cid, User: user, Status: "Fail",
               error: err instanceof Error ? err.message : "Unknown error",
               elapsed: Date.now() - startTime,
             }));
           }
         }
+
+        // SPK PoA 2.0 Protocol: RequestCIDS — validator asks node what it stores
+        else if (message.type === "RequestCIDS") {
+          try {
+            const ipfs = getIPFSClient();
+            const pins = await ipfs.pins();
+            // Send chunked response (matches SPK 1.0 protocol)
+            const CHUNK_SIZE = 50;
+            const totalParts = Math.ceil(pins.length / CHUNK_SIZE);
+            for (let i = 0; i < totalParts; i++) {
+              const chunk = pins.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+              ws.send(JSON.stringify({
+                type: "SendCIDS",
+                pins: JSON.stringify(chunk),
+                part: String(i + 1),
+                totalParts: String(totalParts),
+              }));
+            }
+            logRoutes.info(`[PoA Validate] Sent ${pins.length} CIDs in ${totalParts} parts`);
+          } catch (err) {
+            ws.send(JSON.stringify({ type: "SendCIDS", pins: "[]", part: "1", totalParts: "1" }));
+          }
+        }
+
+        // SPK PoA 2.0 Protocol: PingPongPing — liveness check
+        else if (message.type === "PingPongPing") {
+          ws.send(JSON.stringify({ type: "PingPongPong", Hash: message.Hash }));
+        }
+
       } catch (err) {
-        console.error(`[PoA Validate] Failed to parse message:`, err);
+        logRoutes.error({ err }, "Failed to parse PoA validate message");
       }
     });
-    
-    ws.on("close", () => {
-      console.log("[PoA Validate] Storage node disconnected");
-    });
+
+    ws.on("close", () => {});
   });
+
+  setupHeartbeat(validateWss, "Validate");
 
   // Handle WebSocket upgrades manually for multiple paths
   httpServer.on("upgrade", (request, socket, head) => {
@@ -179,7 +361,7 @@ export async function registerRoutes(
     });
   });
 
-  app.post("/api/ipfs/start", async (req, res) => {
+  app.post("/api/ipfs/start", requireAuth, async (req, res) => {
     const { ipfsManager } = await import("./services/ipfs-manager");
     
     if (ipfsManager.isRunning()) {
@@ -195,7 +377,7 @@ export async function registerRoutes(
     });
   });
 
-  app.post("/api/ipfs/stop", async (req, res) => {
+  app.post("/api/ipfs/stop", requireAuth, async (req, res) => {
     const { ipfsManager } = await import("./services/ipfs-manager");
     await ipfsManager.stop();
     res.json({
@@ -205,7 +387,7 @@ export async function registerRoutes(
     });
   });
 
-  app.post("/api/ipfs/restart", async (req, res) => {
+  app.post("/api/ipfs/restart", requireAuth, async (req, res) => {
     const { ipfsManager } = await import("./services/ipfs-manager");
     const restarted = await ipfsManager.restart();
     res.json({
@@ -215,7 +397,7 @@ export async function registerRoutes(
     });
   });
 
-  app.post("/api/ipfs/test-connection", async (req, res) => {
+  app.post("/api/ipfs/test-connection", requireAuth, async (req, res) => {
     try {
       const { ipfsManager } = await import("./services/ipfs-manager");
       const { getIPFSClient } = await import("./services/ipfs-client");
@@ -248,7 +430,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/ipfs/test", async (req, res) => {
+  app.post("/api/ipfs/test", requireAuth, async (req, res) => {
     try {
       const { ipfsManager } = await import("./services/ipfs-manager");
       const { getIPFSClient } = await import("./services/ipfs-client");
@@ -302,8 +484,12 @@ export async function registerRoutes(
 
   app.post("/api/cdn/heartbeat/:nodeId", async (req, res) => {
     try {
-      const { latency, requestCount } = req.body;
-      await cdnManager.processHeartbeat(req.params.nodeId, { latency, requestCount });
+      const schema = z.object({
+        latency: z.number().nonnegative().optional(),
+        requestCount: z.number().int().nonnegative().optional(),
+      });
+      const data = schema.parse(req.body);
+      await cdnManager.processHeartbeat(req.params.nodeId, { latency: data.latency, requestCount: data.requestCount });
       res.json({ success: true });
     } catch (error: any) {
       res.status(400).json({ error: error.message });
@@ -314,7 +500,7 @@ export async function registerRoutes(
   // Chunked Upload API (Phase 1)
   // ============================================================
   
-  app.post("/api/upload/init", async (req, res) => {
+  app.post("/api/upload/init", requireAuth, async (req, res) => {
     try {
       const schema = z.object({
         expectedCid: z.string(),
@@ -333,7 +519,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/upload/:sessionId/chunk/:chunkIndex", async (req, res) => {
+  app.post("/api/upload/:sessionId/chunk/:chunkIndex", requireAuth, async (req, res) => {
     try {
       const chunkIndex = parseInt(req.params.chunkIndex);
       const data = req.body as Buffer;
@@ -349,7 +535,7 @@ export async function registerRoutes(
     res.json(status);
   });
 
-  app.post("/api/upload/:sessionId/complete", async (req, res) => {
+  app.post("/api/upload/:sessionId/complete", requireAuth, async (req, res) => {
     try {
       const result = await uploadManager.completeUpload(req.params.sessionId);
       res.json(result);
@@ -358,7 +544,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/upload/:sessionId", async (req, res) => {
+  app.delete("/api/upload/:sessionId", requireAuth, async (req, res) => {
     const cancelled = await uploadManager.cancelUpload(req.params.sessionId);
     res.json({ success: cancelled });
   });
@@ -398,7 +584,7 @@ export async function registerRoutes(
     res.json(transcodingService.getPresets());
   });
 
-  app.post("/api/transcode/submit", async (req, res) => {
+  app.post("/api/transcode/submit", requireAuth, async (req, res) => {
     try {
       const schema = z.object({
         fileId: z.string(),
@@ -442,6 +628,38 @@ export async function registerRoutes(
   });
 
   // ============================================================
+  // Health Check (no auth required)
+  // ============================================================
+  app.get("/api/health", async (req, res) => {
+    const checks: Record<string, { status: string; detail?: string }> = {};
+
+    // Database connectivity
+    try {
+      const { pool } = await import("./db");
+      await pool.query("SELECT 1");
+      checks.database = { status: "ok" };
+    } catch (e: any) {
+      checks.database = { status: "error", detail: e.message };
+    }
+
+    // IPFS status
+    const { ipfsManager } = await import("./services/ipfs-manager");
+    const ipfsStatus = ipfsManager.getStatus();
+    checks.ipfs = { status: ipfsStatus.ready ? "ok" : "degraded", detail: ipfsStatus.ready ? `API at ${ipfsStatus.apiUrl}` : "not ready" };
+
+    // PoA engine status
+    const poaStatus = poaEngine.getStatus();
+    checks.poa = { status: poaStatus.running ? "ok" : "stopped", detail: `mode=${poaStatus.mode}` };
+
+    const allOk = Object.values(checks).every(c => c.status === "ok");
+    res.status(allOk ? 200 : 503).json({
+      status: allOk ? "healthy" : "degraded",
+      uptime: process.uptime(),
+      checks,
+    });
+  });
+
+  // ============================================================
   // Blocklist API (Phase 3)
   // ============================================================
   
@@ -451,7 +669,7 @@ export async function registerRoutes(
     res.json(entries);
   });
 
-  app.post("/api/blocklist", async (req, res) => {
+  app.post("/api/blocklist", requireAuth, async (req, res) => {
     try {
       const schema = z.object({
         scope: z.enum(['local', 'validator', 'platform']),
@@ -469,7 +687,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/blocklist/:id", async (req, res) => {
+  app.delete("/api/blocklist/:id", requireAuth, async (req, res) => {
     await blocklistService.removeFromBlocklist(req.params.id);
     res.json({ success: true });
   });
@@ -513,7 +731,7 @@ export async function registerRoutes(
     res.json(fileTags);
   });
 
-  app.post("/api/files/:fileId/tags", async (req, res) => {
+  app.post("/api/files/:fileId/tags", requireAuth, async (req, res) => {
     try {
       const schema = z.object({
         tagLabel: z.string(),
@@ -531,7 +749,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/tags/:fileTagId/vote", async (req, res) => {
+  app.post("/api/tags/:fileTagId/vote", requireAuth, async (req, res) => {
     try {
       const schema = z.object({
         voterUsername: z.string(),
@@ -584,7 +802,7 @@ export async function registerRoutes(
     res.json(keys);
   });
 
-  app.post("/api/encryption/keys", async (req, res) => {
+  app.post("/api/encryption/keys", requireAuth, async (req, res) => {
     try {
       const schema = z.object({
         username: z.string(),
@@ -607,7 +825,7 @@ export async function registerRoutes(
     res.json(settings);
   });
 
-  app.put("/api/settings/:username", async (req, res) => {
+  app.put("/api/settings/:username", requireAuth, async (req, res) => {
     try {
       const schema = z.object({
         autoPinEnabled: z.boolean().optional(),
@@ -672,7 +890,7 @@ export async function registerRoutes(
     res.json(result);
   });
 
-  app.post("/api/beneficiaries", async (req, res) => {
+  app.post("/api/beneficiaries", requireAuth, async (req, res) => {
     try {
       const schema = z.object({
         fromUsername: z.string(),
@@ -687,7 +905,7 @@ export async function registerRoutes(
     }
   });
 
-  app.put("/api/beneficiaries/:id", async (req, res) => {
+  app.put("/api/beneficiaries/:id", requireAuth, async (req, res) => {
     try {
       const schema = z.object({
         percentage: z.number().positive().max(100),
@@ -705,7 +923,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/beneficiaries/:id", async (req, res) => {
+  app.delete("/api/beneficiaries/:id", requireAuth, async (req, res) => {
     await beneficiaryService.removeBeneficiary(req.params.id);
     res.json({ success: true });
   });
@@ -721,7 +939,7 @@ export async function registerRoutes(
     res.json(earnings);
   });
 
-  app.post("/api/payouts/calculate", async (req, res) => {
+  app.post("/api/payouts/calculate", requireAuth, async (req, res) => {
     try {
       const schema = z.object({
         fromUsername: z.string(),
@@ -740,60 +958,63 @@ export async function registerRoutes(
   // Original Core APIs
   // ============================================================
   
-  // Files API
+  // Files API (supports ?page=1&limit=50 pagination)
   app.get("/api/files", async (req, res) => {
-    const files = await storage.getAllFiles();
-    res.json(files);
+    if (req.query.page) {
+      const { page, limit, offset } = parsePagination(req);
+      const result = await storage.getFilesPaginated(limit, offset);
+      res.json(paginatedResponse(result.data, result.total, page, limit));
+    } else {
+      const files = await storage.getAllFiles();
+      res.json(files);
+    }
   });
 
-  // Get file marketplace with rarity and ROI data (must be before :cid route)
+  // Get file marketplace with rarity and ROI data — optimized with LEFT JOIN
   app.get("/api/files/marketplace", async (req, res) => {
-    const files = await storage.getAllFiles();
-    const challenges = await storage.getRecentChallenges(500);
-    
-    const filesWithROI = files.map(file => {
-      const fileChallenges = challenges.filter(c => c.fileId === file.id);
-      const passedChallenges = fileChallenges.filter(c => c.result === "success").length;
-      
-      const replicationCount = file.replicationCount || 1;
+    const rows = await storage.getMarketplaceFiles();
+
+    const filesWithROI = rows.map((row: any) => {
+      const replicationCount = Number(row.replication_count) || 1;
       const rarityMultiplier = 1 / Math.max(1, replicationCount);
-      
-      const sizeBytes = parseInt(file.size) || 1000;
+      const sizeBytes = parseInt(row.size) || 1000;
+      const challengeCount = Number(row.challenge_count) || 0;
+      const successCount = Number(row.success_count) || 0;
       const rewardPerProof = 0.001 * rarityMultiplier;
-      const proofsPerDay = (passedChallenges / 7) || 1;
+      const proofsPerDay = (successCount / 7) || 1;
       const dailyEarnings = rewardPerProof * proofsPerDay;
       const roiScore = (dailyEarnings * 1000000) / sizeBytes;
-      
+
       return {
-        id: file.id,
-        name: file.name,
-        cid: file.cid,
-        size: file.size,
+        id: row.id,
+        name: row.name,
+        cid: row.cid,
+        size: row.size,
         sizeBytes,
-        status: file.status,
+        status: row.status,
         replicationCount,
         rarityMultiplier,
         isRare: replicationCount < 3,
-        earnedHbd: (file as any).earnedHbd || 0,
+        earnedHbd: Number(row.earned_hbd) || 0,
         rewardPerProof,
         dailyEarnings,
         roiScore,
-        challengeCount: fileChallenges.length,
-        successRate: fileChallenges.length > 0 
-          ? (passedChallenges / fileChallenges.length * 100).toFixed(1)
-          : "0.0",
+        challengeCount,
+        successRate: challengeCount > 0
+          ? (successCount / challengeCount * 100).toFixed(1) : "0.0",
       };
     });
-    
-    filesWithROI.sort((a, b) => b.roiScore - a.roiScore);
-    
+
+    filesWithROI.sort((a: any, b: any) => b.roiScore - a.roiScore);
+
     res.json({
       files: filesWithROI,
-      recommendations: filesWithROI.filter(f => f.isRare).slice(0, 10),
+      recommendations: filesWithROI.filter((f: any) => f.isRare).slice(0, 10),
       stats: {
-        totalFiles: files.length,
-        rareFiles: filesWithROI.filter(f => f.isRare).length,
-        avgRarityMultiplier: filesWithROI.reduce((sum, f) => sum + f.rarityMultiplier, 0) / files.length || 0,
+        totalFiles: rows.length,
+        rareFiles: filesWithROI.filter((f: any) => f.isRare).length,
+        avgRarityMultiplier: rows.length > 0
+          ? filesWithROI.reduce((sum: number, f: any) => sum + f.rarityMultiplier, 0) / rows.length : 0,
       },
     });
   });
@@ -806,7 +1027,7 @@ export async function registerRoutes(
     res.json(file);
   });
 
-  app.post("/api/files", async (req, res) => {
+  app.post("/api/files", requireAuth, async (req, res) => {
     try {
       const data = insertFileSchema.parse(req.body);
       const file = await storage.createFile(data);
@@ -823,13 +1044,16 @@ export async function registerRoutes(
         blockNumber: Math.floor(Date.now() / 1000),
       });
 
+      // SPK PoA 2.0: Sync refs list asynchronously (validator only needs metadata)
+      poaEngine.syncFileRefsForCid(data.cid).catch((err) => logRoutes.warn({ err }, "Refs sync failed for uploaded file"));
+
       res.json(file);
     } catch (error: any) {
       res.status(400).json({ error: error.message });
     }
   });
 
-  app.delete("/api/files/:id", async (req, res) => {
+  app.delete("/api/files/:id", requireAuth, async (req, res) => {
     try {
       const file = await storage.getFile(req.params.id);
       if (!file) {
@@ -864,6 +1088,10 @@ export async function registerRoutes(
     if (search) {
       const nodes = await storage.searchStorageNodes(search);
       res.json(nodes);
+    } else if (req.query.page) {
+      const { page, limit, offset } = parsePagination(req);
+      const result = await storage.getNodesPaginated(limit, offset);
+      res.json(paginatedResponse(result.data, result.total, page, limit));
     } else {
       const nodes = await storage.getAllStorageNodes();
       res.json(nodes);
@@ -902,7 +1130,7 @@ export async function registerRoutes(
     res.json(blacklist);
   });
 
-  app.post("/api/validators/:username/blacklist", async (req, res) => {
+  app.post("/api/validators/:username/blacklist", requireAuth, async (req, res) => {
     try {
       const validator = await storage.getValidatorByUsername(req.params.username);
       if (!validator) {
@@ -938,7 +1166,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/validators/:username/blacklist/:nodeId", async (req, res) => {
+  app.delete("/api/validators/:username/blacklist/:nodeId", requireAuth, async (req, res) => {
     const validator = await storage.getValidatorByUsername(req.params.username);
     if (!validator) {
       return res.status(404).json({ error: "Validator not found" });
@@ -950,79 +1178,34 @@ export async function registerRoutes(
 
   // PoA Challenges API
   app.get("/api/challenges", async (req, res) => {
-    const limit = parseInt(req.query.limit as string) || 50;
-    const challenges = await storage.getRecentChallenges(limit);
-    res.json(challenges);
+    if (req.query.page) {
+      const { page, limit, offset } = parsePagination(req);
+      const result = await storage.getChallengesPaginated(limit, offset);
+      res.json(paginatedResponse(result.data, result.total, page, limit));
+    } else {
+      const limit = parseInt(req.query.limit as string) || 50;
+      const challenges = await storage.getRecentChallenges(limit);
+      res.json(challenges);
+    }
   });
 
   // Hive Transactions API
   app.get("/api/transactions", async (req, res) => {
-    const limit = parseInt(req.query.limit as string) || 50;
-    const transactions = await storage.getRecentTransactions(limit);
-    res.json(transactions);
+    if (req.query.page) {
+      const { page, limit, offset } = parsePagination(req);
+      const result = await storage.getTransactionsPaginated(limit, offset);
+      res.json(paginatedResponse(result.data, result.total, page, limit));
+    } else {
+      const limit = parseInt(req.query.limit as string) || 50;
+      const transactions = await storage.getRecentTransactions(limit);
+      res.json(transactions);
+    }
   });
 
-  // Dashboard Stats API
+  // Dashboard Stats API — optimized with SQL aggregates
   app.get("/api/stats", async (req, res) => {
-    const [files, nodes, validators, challenges, transactions, cdnNodes, contracts, encoders] = await Promise.all([
-      storage.getAllFiles(),
-      storage.getAllStorageNodes(),
-      storage.getAllValidators(),
-      storage.getRecentChallenges(100),
-      storage.getRecentTransactions(24 * 60),
-      storage.getAllCdnNodes(),
-      storage.getAllStorageContracts(),
-      storage.getAllEncoderNodes(),
-    ]);
-
-    const totalProofs = challenges.filter(c => c.result === "success").length;
-    const failedProofs = challenges.filter(c => c.result === "fail").length;
-    const successRate = totalProofs + failedProofs > 0 
-      ? (totalProofs / (totalProofs + failedProofs) * 100).toFixed(1)
-      : "0.0";
-
-    const hbdTransfers = transactions.filter(t => t.type === "hbd_transfer");
-    const totalPayouts = hbdTransfers.length * 0.001;
-
-    res.json({
-      files: {
-        total: files.length,
-        pinned: files.filter(f => f.status === "pinned").length,
-        syncing: files.filter(f => f.status === "syncing").length,
-      },
-      nodes: {
-        total: nodes.length,
-        active: nodes.filter(n => n.status === "active").length,
-        probation: nodes.filter(n => n.status === "probation").length,
-        banned: nodes.filter(n => n.status === "banned").length,
-      },
-      validators: {
-        total: validators.length,
-        online: validators.filter(v => v.status === "online").length,
-      },
-      challenges: {
-        total: challenges.length,
-        success: totalProofs,
-        failed: failedProofs,
-        successRate,
-      },
-      rewards: {
-        totalHBD: totalPayouts.toFixed(3),
-        transactions: hbdTransfers.length,
-      },
-      cdn: {
-        total: cdnNodes.length,
-        active: cdnNodes.filter(n => n.status === "active").length,
-      },
-      contracts: {
-        total: contracts.length,
-        active: contracts.filter(c => c.status === "active").length,
-      },
-      encoders: {
-        total: encoders.length,
-        available: encoders.filter(e => e.availability === "available").length,
-      },
-    });
+    const stats = await storage.getStatsAggregated();
+    res.json(stats);
   });
 
   // ============================================================
@@ -1032,95 +1215,58 @@ export async function registerRoutes(
   // Get dashboard earnings data for a node (detailed stats)
   app.get("/api/earnings/dashboard/:username", async (req, res) => {
     const { username } = req.params;
-    const nodes = await storage.getAllStorageNodes();
-    
-    // Allow "demo_user" to use first available node for demo purposes
-    let node = nodes.find(n => n.hiveUsername === username);
-    if (!node && username === "demo_user" && nodes.length > 0) {
-      node = nodes[0];
-    }
-    
+    const node = await storage.getStorageNodeByUsername(username);
+
     if (!node) {
       res.status(404).json({ error: "Node not found" });
       return;
     }
 
-    const challenges = await storage.getRecentChallenges(1000);
-    const nodeChallenges = challenges.filter(c => c.nodeId === node.id);
-    const transactions = await storage.getRecentTransactions(24 * 60 * 7); // 7 days
-    const nodeTransactions = transactions.filter(t => t.toUser === node.hiveUsername && t.type === "hbd_transfer");
-    
-    // Calculate streaks - count consecutive successes from most recent
+    // Targeted queries instead of loading all rows
+    const [nodeChallenges, earningsWeek] = await Promise.all([
+      storage.getNodeChallenges(node.id, 200),
+      storage.getNodeEarnings(node.hiveUsername),
+    ]);
+
+    // Streaks from ordered node-specific challenges (already DESC by createdAt)
     let currentStreak = 0;
     let maxStreak = 0;
     let tempStreak = 0;
-    const sortedChallenges = [...nodeChallenges].sort((a, b) => 
-      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    );
-    
-    // Current streak = consecutive successes from most recent challenge
-    for (const c of sortedChallenges) {
+    for (const c of nodeChallenges) {
       if (c.result === "success") {
-        currentStreak++;
-      } else {
-        break; // Stop at first failure
-      }
-    }
-    
-    // Max streak = longest consecutive success run ever
-    for (const c of sortedChallenges) {
-      if (c.result === "success") {
+        if (tempStreak === currentStreak) currentStreak++;
         tempStreak++;
         if (tempStreak > maxStreak) maxStreak = tempStreak;
       } else {
+        if (currentStreak === tempStreak) { /* first failure ends current streak tracking */ }
         tempStreak = 0;
       }
     }
 
-    // Calculate streak bonus
+    // Streak bonus tiers
     let streakBonus = 1.0;
     let nextBonusTier = 10;
     let progressToNextTier = 0;
-    
     if (currentStreak >= 100) {
-      streakBonus = 1.5;
-      nextBonusTier = 100;
-      progressToNextTier = 100;
+      streakBonus = 1.5; nextBonusTier = 100; progressToNextTier = 100;
     } else if (currentStreak >= 50) {
-      streakBonus = 1.25;
-      nextBonusTier = 100;
-      progressToNextTier = ((currentStreak - 50) / 50) * 100;
+      streakBonus = 1.25; nextBonusTier = 100; progressToNextTier = ((currentStreak - 50) / 50) * 100;
     } else if (currentStreak >= 10) {
-      streakBonus = 1.1;
-      nextBonusTier = 50;
-      progressToNextTier = ((currentStreak - 10) / 40) * 100;
+      streakBonus = 1.1; nextBonusTier = 50; progressToNextTier = ((currentStreak - 10) / 40) * 100;
     } else {
-      nextBonusTier = 10;
       progressToNextTier = (currentStreak / 10) * 100;
     }
 
-    // Calculate earnings by time period
+    // Earnings from challenge count approximation
     const now = Date.now();
     const dayMs = 24 * 60 * 60 * 1000;
-    
-    const earningsToday = nodeTransactions
-      .filter(t => now - new Date(t.createdAt).getTime() < dayMs)
-      .reduce((sum, t) => {
-        const payload = JSON.parse(t.payload || "{}");
-        return sum + parseFloat(payload.amount?.replace(" HBD", "") || "0.001");
-      }, 0);
-    
-    const earningsWeek = nodeTransactions
-      .filter(t => now - new Date(t.createdAt).getTime() < 7 * dayMs)
-      .reduce((sum, t) => {
-        const payload = JSON.parse(t.payload || "{}");
-        return sum + parseFloat(payload.amount?.replace(" HBD", "") || "0.001");
-      }, 0);
-
-    // Project earnings based on current rate
+    const earningsToday = nodeChallenges
+      .filter(c => c.result === "success" && (now - new Date(c.createdAt).getTime()) < dayMs)
+      .length * 0.001;
     const hourlyRate = earningsToday / Math.max(1, (now % dayMs) / (60 * 60 * 1000));
-    const projectedDaily = hourlyRate * 24;
-    const projectedMonthly = projectedDaily * 30;
+
+    const passed = nodeChallenges.filter(c => c.result === "success").length;
+    const failed = nodeChallenges.filter(c => c.result === "fail").length;
 
     res.json({
       node: {
@@ -1128,8 +1274,8 @@ export async function registerRoutes(
         username: node.hiveUsername,
         reputation: node.reputation,
         status: node.status,
-        consecutiveFails: (node as any).consecutiveFails || 0,
-        totalEarnedHbd: (node as any).totalEarnedHbd || 0,
+        consecutiveFails: node.consecutiveFails || 0,
+        totalEarnedHbd: node.totalEarnedHbd || 0,
       },
       streak: {
         current: currentStreak,
@@ -1140,30 +1286,28 @@ export async function registerRoutes(
         progressToNextTier: Math.min(100, progressToNextTier),
       },
       risk: {
-        consecutiveFails: (node as any).consecutiveFails || 0,
+        consecutiveFails: node.consecutiveFails || 0,
         maxFails: 3,
         isBanned: node.status === "banned",
         isProbation: node.status === "probation",
-        banRisk: ((node as any).consecutiveFails || 0) >= 2 ? "high" : 
-                 ((node as any).consecutiveFails || 0) >= 1 ? "medium" : "low",
+        banRisk: (node.consecutiveFails || 0) >= 2 ? "high" :
+                 (node.consecutiveFails || 0) >= 1 ? "medium" : "low",
       },
       earnings: {
         today: earningsToday,
         week: earningsWeek,
-        total: (node as any).totalEarnedHbd || 0,
-        projectedDaily,
-        projectedMonthly,
+        total: node.totalEarnedHbd || 0,
+        projectedDaily: hourlyRate * 24,
+        projectedMonthly: hourlyRate * 24 * 30,
       },
       challenges: {
         total: nodeChallenges.length,
-        passed: nodeChallenges.filter(c => c.result === "success").length,
-        failed: nodeChallenges.filter(c => c.result === "fail").length,
-        successRate: nodeChallenges.length > 0 
-          ? (nodeChallenges.filter(c => c.result === "success").length / nodeChallenges.length * 100).toFixed(1)
-          : "0.0",
+        passed,
+        failed,
+        successRate: nodeChallenges.length > 0
+          ? (passed / nodeChallenges.length * 100).toFixed(1) : "0.0",
         avgLatency: nodeChallenges.length > 0
-          ? Math.round(nodeChallenges.reduce((sum, c) => sum + (c.latencyMs || 0), 0) / nodeChallenges.length)
-          : 0,
+          ? Math.round(nodeChallenges.reduce((sum, c) => sum + (c.latencyMs || 0), 0) / nodeChallenges.length) : 0,
       },
     });
   });
@@ -1265,40 +1409,54 @@ export async function registerRoutes(
   // Validator Operations Center API
   // ============================================================
 
-  // In-memory session store (in production, use Redis or DB)
-  const validatorSessions = new Map<string, { username: string; expiresAt: number }>();
   // One-time login challenges to prevent replay attacks
   const loginChallenges = new Map<string, { username: string; expiresAt: number }>();
-  
+
   function generateSessionToken(): string {
     return randomBytes(48).toString('base64url');
   }
 
-  function generateChallengeId(): string {
-    return randomBytes(16).toString('hex');
-  }
-  
-  // Middleware to validate session token and witness status
-  async function validateValidatorSession(token: string): Promise<{ valid: boolean; username?: string }> {
-    const session = validatorSessions.get(token);
-    if (!session || session.expiresAt < Date.now()) {
-      if (session) validatorSessions.delete(token);
+  // Validate session token — reads from DB (persistent sessions)
+  // Supports both direct witnesses and vouched validators (Web of Trust)
+  async function validateValidatorSession(token: string): Promise<{
+    valid: boolean;
+    username?: string;
+    isVouched?: boolean;
+    sponsor?: string;
+  }> {
+    const session = await storage.getSession(token);
+    if (!session || session.expiresAt.getTime() < Date.now()) {
+      if (session) await storage.deleteSession(token);
       return { valid: false };
     }
-    
-    // Re-verify witness status
+
     const { createHiveClient } = await import("./services/hive-client");
     const hiveClient = createHiveClient();
+
+    // Fast path: check if user is a direct witness
     const isTopWitness = await hiveClient.isTopWitness(session.username, 150);
-    
-    if (!isTopWitness) {
-      validatorSessions.delete(token);
-      return { valid: false };
+    if (isTopWitness) {
+      return { valid: true, username: session.username, isVouched: false };
     }
-    
-    return { valid: true, username: session.username };
+
+    // Fallback: check Web of Trust — is this user vouched by a witness?
+    const vouch = await storage.getVouchForUser(session.username);
+    if (vouch && vouch.active) {
+      // Verify the sponsor is still a top-150 witness (cascading revocation)
+      const sponsorStillWitness = await hiveClient.isTopWitness(vouch.sponsorUsername, 150);
+      if (sponsorStillWitness) {
+        return { valid: true, username: session.username, isVouched: true, sponsor: vouch.sponsorUsername };
+      }
+      // Sponsor dropped out — auto-revoke vouch
+      await storage.revokeVouch(vouch.sponsorUsername, "witness_dropped");
+      logWoT.warn({ sponsor: vouch.sponsorUsername, vouched: session.username }, "Auto-revoked vouch — sponsor lost witness status");
+    }
+
+    // Neither a witness nor validly vouched
+    await storage.deleteSession(token);
+    return { valid: false };
   }
-  
+
   // Extract session token from Authorization header
   function getSessionToken(req: any): string | null {
     const authHeader = req.headers.authorization;
@@ -1308,15 +1466,96 @@ export async function registerRoutes(
     return null;
   }
 
-  function cleanExpiredSessions() {
-    const now = Date.now();
-    const entries = Array.from(validatorSessions.entries());
-    for (const [token, session] of entries) {
-      if (session.expiresAt < now) {
-        validatorSessions.delete(token);
+  // ============================================================
+  // General Hive Authentication (any Hive account)
+  // ============================================================
+
+  app.post("/api/auth/login", async (req, res) => {
+    try {
+      const { username, signature, challenge } = req.body;
+
+      if (!username || !signature || !challenge) {
+        res.status(400).json({ error: "Missing username, signature, or challenge" });
+        return;
       }
+
+      if (!isValidHiveUsername(username)) {
+        res.status(400).json({ error: "Invalid Hive username format" });
+        return;
+      }
+
+      // Validate challenge format: SPK-Login-{timestamp}
+      const challengeMatch = challenge.match(/SPK-(?:Validator-)?Login-(\d+)/);
+      if (!challengeMatch) {
+        res.status(400).json({ error: "Invalid challenge format" });
+        return;
+      }
+
+      const challengeTime = parseInt(challengeMatch[1]);
+      if (Date.now() - challengeTime > 5 * 60 * 1000) {
+        res.status(400).json({ error: "Challenge expired" });
+        return;
+      }
+
+      const { createHiveClient } = await import("./services/hive-client");
+      const hiveClient = createHiveClient();
+
+      const account = await hiveClient.getAccount(username);
+      if (!account) {
+        res.status(404).json({ error: "Account not found on Hive blockchain" });
+        return;
+      }
+
+      const isValid = await hiveClient.verifySignature(username, challenge, signature);
+      if (!isValid) {
+        res.status(401).json({ error: "Invalid signature" });
+        return;
+      }
+
+      await storage.cleanExpiredSessions();
+      const sessionToken = generateSessionToken();
+      await storage.createSession(sessionToken, username, new Date(Date.now() + 24 * 60 * 60 * 1000), "user");
+
+      res.json({
+        success: true,
+        username,
+        sessionToken,
+        expiresIn: 86400,
+      });
+    } catch (error) {
+      logRoutes.error({ err: error }, "Auth login error");
+      res.status(500).json({ error: "Authentication failed" });
     }
-  }
+  });
+
+  app.post("/api/auth/logout", async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (authHeader?.startsWith("Bearer ")) {
+      const token = authHeader.slice(7);
+      await storage.deleteSession(token).catch((err) => logRoutes.warn({ err }, "Session delete failed during logout"));
+    }
+    res.json({ success: true });
+  });
+
+  app.get("/api/auth/me", requireAuth, async (req, res) => {
+    res.json({ username: req.authenticatedUser, role: req.authenticatedRole });
+  });
+
+  // Register agent API key (requires Hive auth first)
+  app.post("/api/auth/agent-key", requireAuth, async (req, res) => {
+    try {
+      const { label } = req.body;
+      const apiKey = randomBytes(32).toString("hex");
+      await storage.createAgentKey(apiKey, req.authenticatedUser!, label || "Default Agent");
+      res.json({ apiKey, message: "Store this key securely — it cannot be retrieved again" });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to create agent key" });
+    }
+  });
+
+  // ============================================================
+  // Validator Authentication (witnesses only — extends general auth)
+  // ============================================================
 
   // Validator Authentication
   app.post("/api/validator/login", async (req, res) => {
@@ -1360,29 +1599,49 @@ export async function registerRoutes(
       const isTopWitness = await hiveClient.isTopWitness(username, 150);
       const witnessRank = await hiveClient.getWitnessRank(username);
 
-      // Only generate session token for witnesses
+      // Check Web of Trust if not a direct witness
+      let isVouched = false;
+      let vouchSponsor: string | undefined;
+      if (!isTopWitness) {
+        const vouch = await storage.getVouchForUser(username);
+        if (vouch && vouch.active) {
+          // Verify sponsor is still a witness (cascading check)
+          const sponsorValid = await hiveClient.isTopWitness(vouch.sponsorUsername, 150);
+          if (sponsorValid) {
+            isVouched = true;
+            vouchSponsor = vouch.sponsorUsername;
+          } else {
+            // Auto-revoke if sponsor dropped out
+            await storage.revokeVouch(vouch.sponsorUsername, "witness_dropped");
+            logWoT.warn({ sponsor: vouch.sponsorUsername, vouched: username }, "Auto-revoked vouch at login — sponsor lost witness status");
+          }
+        }
+      }
+
+      // Generate session token for witnesses OR vouched validators
       let sessionToken: string | undefined;
-      if (isTopWitness) {
-        cleanExpiredSessions();
+      if (isTopWitness || isVouched) {
+        await storage.cleanExpiredSessions();
         sessionToken = generateSessionToken();
-        validatorSessions.set(sessionToken, {
-          username,
-          expiresAt: Date.now() + 24 * 60 * 60 * 1000, // 24 hours
-        });
+        await storage.createSession(sessionToken, username, new Date(Date.now() + 24 * 60 * 60 * 1000), "validator");
       }
 
       res.json({
         success: true,
         username,
         isTopWitness,
-        witnessRank,
+        isVouched,
+        vouchSponsor,
+        witnessRank: isTopWitness ? witnessRank : null,
         sessionToken,
-        message: isTopWitness 
-          ? `Welcome, Witness #${witnessRank}!` 
-          : "You are not in the top 150 witnesses",
+        message: isTopWitness
+          ? `Welcome, Witness #${witnessRank}!`
+          : isVouched
+            ? `Welcome, Vouched Validator! Sponsored by @${vouchSponsor}`
+            : "You are not in the top 150 witnesses and have no active vouch",
       });
     } catch (error) {
-      console.error("[Validator Login] Error:", error);
+      logRoutes.error({ err: error }, "Validator login error");
       res.status(500).json({ error: "Authentication failed" });
     }
   });
@@ -1397,32 +1656,40 @@ export async function registerRoutes(
         return;
       }
 
-      const session = validatorSessions.get(sessionToken);
-      if (!session || session.username !== username || session.expiresAt < Date.now()) {
-        validatorSessions.delete(sessionToken);
+      const session = await storage.getSession(sessionToken);
+      if (!session || session.username !== username || session.expiresAt.getTime() < Date.now()) {
+        await storage.deleteSession(sessionToken);
         res.status(401).json({ valid: false, error: "Invalid or expired session" });
         return;
       }
 
-      // Re-verify witness status (could have changed)
+      // Re-verify witness or vouch status (could have changed)
       const { createHiveClient } = await import("./services/hive-client");
       const hiveClient = createHiveClient();
-      
-      const isTopWitness = await hiveClient.isTopWitness(username, 150);
-      const witnessRank = await hiveClient.getWitnessRank(username);
 
-      if (!isTopWitness) {
-        validatorSessions.delete(sessionToken);
-        res.status(401).json({ valid: false, error: "No longer a top 150 witness" });
+      const isTopWitness = await hiveClient.isTopWitness(username, 150);
+      const witnessRank = isTopWitness ? await hiveClient.getWitnessRank(username) : null;
+
+      if (isTopWitness) {
+        res.json({ valid: true, username, isTopWitness: true, isVouched: false, witnessRank });
         return;
       }
 
-      res.json({
-        valid: true,
-        username,
-        isTopWitness,
-        witnessRank,
-      });
+      // Fallback: check Web of Trust
+      const vouch = await storage.getVouchForUser(username);
+      if (vouch && vouch.active) {
+        const sponsorValid = await hiveClient.isTopWitness(vouch.sponsorUsername, 150);
+        if (sponsorValid) {
+          res.json({ valid: true, username, isTopWitness: false, isVouched: true, vouchSponsor: vouch.sponsorUsername });
+          return;
+        }
+        // Auto-revoke
+        await storage.revokeVouch(vouch.sponsorUsername, "witness_dropped");
+        logWoT.warn({ sponsor: vouch.sponsorUsername, vouched: username }, "Auto-revoked vouch during session validation");
+      }
+
+      await storage.deleteSession(sessionToken);
+      res.status(401).json({ valid: false, error: "No longer a top 150 witness and no active vouch" });
     } catch (error) {
       res.status(500).json({ valid: false, error: "Validation failed" });
     }
@@ -1442,11 +1709,27 @@ export async function registerRoutes(
       }
 
       const isTopWitness = await hiveClient.isTopWitness(username, 150);
-      const witnessRank = await hiveClient.getWitnessRank(username);
+      const witnessRank = isTopWitness ? await hiveClient.getWitnessRank(username) : null;
+
+      // Check Web of Trust status
+      let isVouched = false;
+      let vouchSponsor: string | null = null;
+      if (!isTopWitness) {
+        const vouch = await storage.getVouchForUser(username);
+        if (vouch && vouch.active) {
+          const sponsorValid = await hiveClient.isTopWitness(vouch.sponsorUsername, 150);
+          if (sponsorValid) {
+            isVouched = true;
+            vouchSponsor = vouch.sponsorUsername;
+          }
+        }
+      }
 
       res.json({
         username,
         isTopWitness,
+        isVouched,
+        vouchSponsor,
         witnessRank,
         accountExists: true,
       });
@@ -1459,29 +1742,24 @@ export async function registerRoutes(
   app.get("/api/validator/dashboard/:username", async (req, res) => {
     const { username } = req.params;
     
-    // Validate session token
+    // Validate session token — always required
     const sessionToken = getSessionToken(req);
-    if (sessionToken) {
-      const validation = await validateValidatorSession(sessionToken);
-      if (!validation.valid) {
-        res.status(401).json({ error: "Invalid or expired session" });
-        return;
-      }
-      // Verify user is accessing their own dashboard
-      if (validation.username !== username && username !== "demo_user") {
-        res.status(403).json({ error: "Access denied" });
-        return;
-      }
+    if (!sessionToken) {
+      res.status(401).json({ error: "Authentication required" });
+      return;
     }
-    // Note: Allow unauthenticated access for demo_user for testing purposes
-    
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid) {
+      res.status(401).json({ error: "Invalid or expired session" });
+      return;
+    }
+    if (validation.username !== username) {
+      res.status(403).json({ error: "Access denied" });
+      return;
+    }
+
     const validators = await storage.getAllValidators();
-    let validator = validators.find(v => v.hiveUsername === username);
-    
-    // Allow demo_user to use first validator
-    if (!validator && username === "demo_user" && validators.length > 0) {
-      validator = validators[0];
-    }
+    const validator = validators.find(v => v.hiveUsername === username);
     
     if (!validator) {
       res.status(404).json({ error: "Validator not found" });
@@ -1939,12 +2217,18 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/threespeak/pin", async (req, res) => {
-    const { ipfs, title, author } = req.body;
-    if (!ipfs) {
-      res.status(400).json({ error: "Missing IPFS CID" });
+  app.post("/api/threespeak/pin", requireAuth, async (req, res) => {
+    const pinSchema = z.object({
+      ipfs: z.string().min(1, "Missing IPFS CID"),
+      title: z.string().optional(),
+      author: z.string().optional(),
+    });
+    const parsed = pinSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.errors[0]?.message || "Invalid request" });
       return;
     }
+    const { ipfs, title, author } = parsed.data;
 
     try {
       const { pinManager } = await import("./services/pin-manager");
@@ -1986,16 +2270,16 @@ export async function registerRoutes(
                 confidence: 100,
                 poaEnabled: true,
               });
-              console.log(`[Pin] Saved pinned video: ${title} (${ipfs})`);
+              logRoutes.info(`[Pin] Saved pinned video: ${title} (${ipfs})`);
             } else {
-              console.log(`[Pin] Video already exists: ${ipfs}`);
+              logRoutes.info(`[Pin] Video already exists: ${ipfs}`);
             }
           } catch (err) {
-            console.error(`[Pin] Failed to save pinned video:`, err);
+            logRoutes.error({ err }, "Failed to save pinned video");
           }
         })
         .catch((err) => {
-          console.error(`[Pin] Pin failed for ${ipfs}:`, err.message);
+          logRoutes.error({ err }, `Pin failed for ${ipfs}`);
         });
     } catch (error: any) {
       res.status(500).json({ success: false, error: error.message });
@@ -2069,7 +2353,7 @@ export async function registerRoutes(
         failedChallenges24h,
       });
     } catch (error: any) {
-      console.error("[Analytics] Performance query error:", error);
+      logRoutes.error({ err: error }, "Analytics performance query error");
       res.status(500).json({ error: error.message });
     }
   });
@@ -2119,7 +2403,7 @@ export async function registerRoutes(
   });
 
   // Add a wallet deposit (requires validator auth - for manual entry/testing)
-  app.post("/api/wallet/deposits", async (req, res) => {
+  app.post("/api/wallet/deposits", requireAuth, async (req, res) => {
     const sessionToken = getSessionToken(req);
     if (!sessionToken) {
       res.status(401).json({ error: "Authentication required" });
@@ -2132,17 +2416,23 @@ export async function registerRoutes(
     }
 
     try {
-      const { fromUsername, hbdAmount, memo, txHash, purpose } = req.body;
-      if (!fromUsername || !hbdAmount || !txHash) {
-        res.status(400).json({ error: "fromUsername, hbdAmount, and txHash are required" });
-        return;
-      }
+      const depositSchema = z.object({
+        fromUsername: z.string().min(1).regex(/^[a-z][a-z0-9.-]{2,15}$/, "Invalid Hive username"),
+        hbdAmount: z.string().min(1).refine((v) => {
+          const n = parseFloat(v);
+          return !isNaN(n) && n > 0 && n <= 10000;
+        }, "hbdAmount must be a positive number up to 10,000"),
+        memo: z.string().nullable().optional(),
+        txHash: z.string().min(1),
+        purpose: z.string().optional().default("storage"),
+      });
+      const data = depositSchema.parse(req.body);
       const deposit = await storage.createWalletDeposit({
-        fromUsername,
-        hbdAmount,
-        memo: memo || null,
-        txHash,
-        purpose: purpose || "storage",
+        fromUsername: data.fromUsername,
+        hbdAmount: data.hbdAmount,
+        memo: data.memo || null,
+        txHash: data.txHash,
+        purpose: data.purpose,
         processed: false,
       });
       res.json(deposit);
@@ -2208,7 +2498,31 @@ export async function registerRoutes(
 
       const startDate = new Date(periodStart);
       const endDate = new Date(periodEnd);
-      
+
+      if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+        res.status(400).json({ error: "Invalid date format for periodStart or periodEnd" });
+        return;
+      }
+      if (endDate <= startDate) {
+        res.status(400).json({ error: "periodEnd must be after periodStart" });
+        return;
+      }
+
+      // Prevent overlapping reports (double-pay protection)
+      const overlapping = await storage.getOverlappingPayoutReports(startDate, endDate);
+      if (overlapping.length > 0) {
+        res.status(409).json({
+          error: "A payout report already exists for an overlapping period",
+          existingReports: overlapping.map(r => ({
+            id: r.id,
+            periodStart: r.periodStart,
+            periodEnd: r.periodEnd,
+            status: r.status,
+          })),
+        });
+        return;
+      }
+
       const poaData = await storage.getPoaDataForPayout(startDate, endDate);
       const totalHbd = poaData.reduce((sum, p) => sum + parseFloat(p.totalHbd), 0).toFixed(3);
 
@@ -2476,7 +2790,7 @@ export async function registerRoutes(
   // ============================================================
 
   const { encodingService } = await import("./services/encoding-service");
-  encodingService.initializeProfiles().catch(console.error);
+  encodingService.initializeProfiles().catch((err) => logEncoding.error({ err }, "Encoding profile init failed"));
 
   const encodingJobSubmitSchema = z.object({
     owner: z.string().min(1, "Owner is required"),
@@ -2541,7 +2855,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/encoding/jobs", async (req, res) => {
+  app.post("/api/encoding/jobs", requireAuth, async (req, res) => {
     try {
       const validated = encodingJobSubmitSchema.safeParse(req.body);
       if (!validated.success) {
@@ -2556,7 +2870,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/encoding/jobs/:id/progress", async (req, res) => {
+  app.patch("/api/encoding/jobs/:id/progress", requireAgentAuth, async (req, res) => {
     try {
       const { progress, status } = req.body;
       await encodingService.updateJobProgress(req.params.id, progress, status);
@@ -2566,7 +2880,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/encoding/jobs/:id/complete", async (req, res) => {
+  app.post("/api/encoding/jobs/:id/complete", requireAgentAuth, async (req, res) => {
     try {
       const { outputCid, qualitiesEncoded, processingTimeSec, outputSizeBytes } = req.body;
       await encodingService.completeJob(req.params.id, {
@@ -2581,7 +2895,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/encoding/jobs/:id/fail", async (req, res) => {
+  app.post("/api/encoding/jobs/:id/fail", requireAgentAuth, async (req, res) => {
     try {
       const { errorMessage } = req.body;
       await encodingService.failJob(req.params.id, errorMessage || "Unknown error");
@@ -2591,7 +2905,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/encoding/webhook", async (req, res) => {
+  app.post("/api/encoding/webhook", requireWebhookSignature, async (req, res) => {
     try {
       const { job_id, status, manifest_cid, error, progress, processing_time_seconds, qualities_encoded } = req.body;
       
@@ -2648,40 +2962,56 @@ export async function registerRoutes(
   });
 
   // Create custom price offer
-  app.post("/api/encoding/offers", async (req, res) => {
+  app.post("/api/encoding/offers", requireAuth, async (req, res) => {
     try {
-      const { inputCid, qualitiesRequested, videoDurationSec, offeredHbd, owner, permlink, expiresInHours } = req.body;
-      
+      const offerSchema = z.object({
+        inputCid: z.string().min(1, "inputCid is required"),
+        qualitiesRequested: z.array(z.string()).min(1, "At least one quality required"),
+        videoDurationSec: z.number().int().positive(),
+        offeredHbd: z.string().refine((v) => {
+          const n = parseFloat(v);
+          return !isNaN(n) && n > 0 && n <= 100;
+        }, "offeredHbd must be a positive number up to 100 HBD"),
+        owner: z.string().min(1).regex(/^[a-z][a-z0-9.-]{2,15}$/, "Invalid Hive username"),
+        permlink: z.string().optional(),
+        expiresInHours: z.number().positive().max(168).optional(), // max 7 days
+      });
+      const data = offerSchema.parse(req.body);
+
       // Get current lowest market price for comparison
       const encoders = await storage.getMarketplaceEncoders("all", "price");
       const lowestEncoder = encoders[0];
       const marketPrice = lowestEncoder?.priceAllQualities || "0.03";
-      
+
       // Create the job first (in waiting_offer state)
       const job = await storage.createEncodingJob({
-        inputCid,
-        owner,
-        permlink: permlink || `offer-${Date.now()}`,
+        inputCid: data.inputCid,
+        owner: data.owner,
+        permlink: data.permlink || `offer-${Date.now()}`,
         status: "waiting_offer", // Custom status for offer-based jobs
         priority: 0,
         encodingMode: "community",
       });
-      
+
       // Create the offer
-      const expiresAt = new Date(Date.now() + (expiresInHours || 24) * 60 * 60 * 1000);
+      const expiresAt = new Date(Date.now() + (data.expiresInHours || 24) * 60 * 60 * 1000);
       const offer = await storage.createEncodingJobOffer({
         jobId: job.id,
-        owner,
-        inputCid,
-        qualitiesRequested: qualitiesRequested.join(","),
-        videoDurationSec,
-        offeredHbd,
+        owner: data.owner,
+        inputCid: data.inputCid,
+        qualitiesRequested: data.qualitiesRequested.join(","),
+        videoDurationSec: data.videoDurationSec,
+        offeredHbd: data.offeredHbd,
         marketPriceHbd: marketPrice,
         expiresAt,
       });
-      
+
       res.json({ job, offer });
     } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({ error: "Validation failed", details: error.errors });
+        return;
+      }
       res.status(500).json({ error: error.message });
     }
   });
@@ -2698,7 +3028,7 @@ export async function registerRoutes(
   });
 
   // Accept an offer (encoder picks up a custom price job)
-  app.post("/api/encoding/offers/:id/accept", async (req, res) => {
+  app.post("/api/encoding/offers/:id/accept", requireAgentAuth, async (req, res) => {
     try {
       const { encoderId } = req.body;
       const offer = await storage.acceptEncodingJobOffer(req.params.id, encoderId);
@@ -2731,7 +3061,7 @@ export async function registerRoutes(
   });
 
   // Cancel an offer
-  app.delete("/api/encoding/offers/:id", async (req, res) => {
+  app.delete("/api/encoding/offers/:id", requireAuth, async (req, res) => {
     try {
       const { username } = req.query;
       if (!username || typeof username !== "string") {
@@ -2747,7 +3077,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/encoding/encoders/register", async (req, res) => {
+  app.post("/api/encoding/encoders/register", requireAuth, async (req, res) => {
     try {
       const validated = encoderRegisterSchema.safeParse(req.body);
       if (!validated.success) {
@@ -2762,7 +3092,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/encoding/encoders/heartbeat", async (req, res) => {
+  app.post("/api/encoding/encoders/heartbeat", requireAgentAuth, async (req, res) => {
     try {
       const { peerId, jobsInProgress } = req.body;
       await encodingService.heartbeatEncoder(peerId, jobsInProgress || 0);
@@ -2781,7 +3111,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/encoding/settings/:username", async (req, res) => {
+  app.patch("/api/encoding/settings/:username", requireAuth, async (req, res) => {
     try {
       const settings = await encodingService.updateUserSettings(req.params.username, req.body);
       res.json(settings);
@@ -2815,7 +3145,7 @@ export async function registerRoutes(
     hiveUser: z.string().optional(),
   });
 
-  app.post("/api/encoding/agent/claim", async (req, res) => {
+  app.post("/api/encoding/agent/claim", requireAgentAuth, async (req, res) => {
     try {
       const validated = agentClaimSchema.safeParse(req.body);
       if (!validated.success) {
@@ -2852,7 +3182,7 @@ export async function registerRoutes(
     signature: z.string().min(1),
   });
 
-  app.post("/api/encoding/agent/progress", async (req, res) => {
+  app.post("/api/encoding/agent/progress", requireAgentAuth, async (req, res) => {
     try {
       const validated = agentProgressSchema.safeParse(req.body);
       if (!validated.success) {
@@ -2876,7 +3206,7 @@ export async function registerRoutes(
     signature: z.string().min(1),
   });
 
-  app.post("/api/encoding/agent/complete", async (req, res) => {
+  app.post("/api/encoding/agent/complete", requireAgentAuth, async (req, res) => {
     try {
       const validated = agentCompleteSchema.safeParse(req.body);
       if (!validated.success) {
@@ -2898,7 +3228,7 @@ export async function registerRoutes(
     signature: z.string().min(1),
   });
 
-  app.post("/api/encoding/agent/fail", async (req, res) => {
+  app.post("/api/encoding/agent/fail", requireAgentAuth, async (req, res) => {
     try {
       const validated = agentFailSchema.safeParse(req.body);
       if (!validated.success) {
@@ -2913,7 +3243,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/encoding/agent/renew-lease", async (req, res) => {
+  app.post("/api/encoding/agent/renew-lease", requireAgentAuth, async (req, res) => {
     try {
       const { jobId } = req.body;
       if (!jobId) {
@@ -2933,6 +3263,187 @@ export async function registerRoutes(
       res.json(stats);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ============================================================
+  // Web of Trust — Witness Vouching System
+  // ============================================================
+
+  // GET /api/wot — List all active vouches (public)
+  app.get("/api/wot", async (_req, res) => {
+    try {
+      const vouches = await storage.getAllActiveVouches();
+      res.json(vouches);
+    } catch (error) {
+      logWoT.error({ err: error }, "Failed to get active vouches");
+      res.status(500).json({ error: "Failed to get vouches" });
+    }
+  });
+
+  // GET /api/wot/:username — Check vouch status for a user (public)
+  app.get("/api/wot/:username", async (req, res) => {
+    try {
+      const { username } = req.params;
+
+      // Check if user is a sponsor
+      const asVoucher = await storage.getActiveVouch(username);
+      // Check if user is vouched
+      const asVouched = await storage.getVouchForUser(username);
+
+      res.json({
+        username,
+        isVoucher: !!asVoucher,
+        vouchedUser: asVoucher?.vouchedUsername || null,
+        isVouched: !!(asVouched && asVouched.active),
+        vouchSponsor: asVouched?.active ? asVouched.sponsorUsername : null,
+      });
+    } catch (error) {
+      logWoT.error({ err: error }, "Failed to check vouch status");
+      res.status(500).json({ error: "Failed to check vouch status" });
+    }
+  });
+
+  // POST /api/wot/vouch — Vouch for a non-witness user (witness-only)
+  app.post("/api/wot/vouch", async (req, res) => {
+    const sessionToken = getSessionToken(req);
+    if (!sessionToken) {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid || !validation.username) {
+      res.status(401).json({ error: "Invalid or expired session" });
+      return;
+    }
+
+    // Rule 5: Vouched validators cannot vouch for others
+    if (validation.isVouched) {
+      res.status(403).json({ error: "Vouched validators cannot vouch for others — only direct witnesses can vouch" });
+      return;
+    }
+
+    try {
+      const { username: targetUsername } = req.body;
+
+      if (!targetUsername || typeof targetUsername !== "string") {
+        res.status(400).json({ error: "Missing target username" });
+        return;
+      }
+
+      if (!isValidHiveUsername(targetUsername)) {
+        res.status(400).json({ error: "Invalid Hive username format" });
+        return;
+      }
+
+      // Cannot self-vouch
+      if (targetUsername === validation.username) {
+        res.status(400).json({ error: "Cannot vouch for yourself" });
+        return;
+      }
+
+      // Check if sponsor already has an active vouch
+      const existingVouch = await storage.getActiveVouch(validation.username);
+      if (existingVouch) {
+        res.status(409).json({
+          error: `You already have an active vouch for @${existingVouch.vouchedUsername}. Revoke it first to vouch for someone else.`,
+        });
+        return;
+      }
+
+      // Check if target is already vouched by someone else
+      const targetVouch = await storage.getVouchForUser(targetUsername);
+      if (targetVouch && targetVouch.active) {
+        res.status(409).json({
+          error: `@${targetUsername} is already vouched by @${targetVouch.sponsorUsername}`,
+        });
+        return;
+      }
+
+      // Check if target is already a top-150 witness (no need to vouch)
+      const { createHiveClient } = await import("./services/hive-client");
+      const hiveClient = createHiveClient();
+
+      const targetAccount = await hiveClient.getAccount(targetUsername);
+      if (!targetAccount) {
+        res.status(404).json({ error: `Hive account @${targetUsername} not found` });
+        return;
+      }
+
+      const targetIsWitness = await hiveClient.isTopWitness(targetUsername, 150);
+      if (targetIsWitness) {
+        res.status(400).json({ error: `@${targetUsername} is already a top-150 witness — no vouch needed` });
+        return;
+      }
+
+      // Get sponsor's witness rank for audit trail
+      const sponsorRank = await hiveClient.getWitnessRank(validation.username);
+
+      const vouch = await storage.createVouch({
+        sponsorUsername: validation.username,
+        vouchedUsername: targetUsername,
+        sponsorRankAtVouch: sponsorRank || 0,
+        active: true,
+      });
+
+      logWoT.info({
+        sponsor: validation.username,
+        vouched: targetUsername,
+        sponsorRank,
+      }, "New vouch created");
+
+      res.json({
+        success: true,
+        vouch,
+        message: `@${validation.username} has vouched for @${targetUsername}`,
+      });
+    } catch (error: any) {
+      // Handle UNIQUE constraint violations
+      if (error.code === "23505") {
+        res.status(409).json({ error: "Vouch conflict — duplicate sponsor or target" });
+        return;
+      }
+      logWoT.error({ err: error }, "Failed to create vouch");
+      res.status(500).json({ error: "Failed to create vouch" });
+    }
+  });
+
+  // DELETE /api/wot/vouch — Revoke your vouch (witness-only)
+  app.delete("/api/wot/vouch", async (req, res) => {
+    const sessionToken = getSessionToken(req);
+    if (!sessionToken) {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid || !validation.username) {
+      res.status(401).json({ error: "Invalid or expired session" });
+      return;
+    }
+
+    try {
+      const existingVouch = await storage.getActiveVouch(validation.username);
+      if (!existingVouch) {
+        res.status(404).json({ error: "No active vouch to revoke" });
+        return;
+      }
+
+      await storage.revokeVouch(validation.username, "manual");
+
+      logWoT.info({
+        sponsor: validation.username,
+        revoked: existingVouch.vouchedUsername,
+      }, "Vouch manually revoked");
+
+      res.json({
+        success: true,
+        message: `Vouch for @${existingVouch.vouchedUsername} has been revoked`,
+      });
+    } catch (error) {
+      logWoT.error({ err: error }, "Failed to revoke vouch");
+      res.status(500).json({ error: "Failed to revoke vouch" });
     }
   });
 

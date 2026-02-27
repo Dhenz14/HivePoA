@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { logPoA } from "../logger";
 import { IPFSClient } from "./ipfs-client";
 
 export function hashFile(fileContents: Buffer): string {
@@ -61,10 +62,10 @@ export async function createProofHash(
   cid: string,
   blockCids: string[]
 ): Promise<string> {
-  console.log(`[PoA Crypto] Proof CID: ${cid}`);
+  logPoA.info(`[PoA Crypto] Proof CID: ${cid}`);
   
   const length = blockCids.length;
-  console.log(`[PoA Crypto] Block count: ${length}`);
+  logPoA.info(`[PoA Crypto] Block count: ${length}`);
   
   if (length === 0) {
     const fileBuffer = await ipfs.cat(cid);
@@ -88,7 +89,7 @@ export async function createProofHash(
   }
   
   // OPTIMIZATION: Parallel block fetching with Promise.all
-  console.log(`[PoA Crypto] Fetching ${blocksToFetch.length} blocks in parallel: [${blocksToFetch.join(', ')}]`);
+  logPoA.info(`[PoA Crypto] Fetching ${blocksToFetch.length} blocks in parallel: [${blocksToFetch.join(', ')}]`);
   
   try {
     const blockPromises = blocksToFetch.map(async (blockIndex) => {
@@ -109,14 +110,14 @@ export async function createProofHash(
       proofHashes.push(blockHash);
     }
     
-    console.log(`[PoA Crypto] Processed ${proofHashes.length} blocks in parallel`);
+    logPoA.info(`[PoA Crypto] Processed ${proofHashes.length} blocks in parallel`);
     
     const finalHash = hashString(proofHashes.join(''));
-    console.log(`[PoA Crypto] Proof Hash: ${finalHash}`);
+    logPoA.info(`[PoA Crypto] Proof Hash: ${finalHash}`);
     return finalHash;
     
   } catch (err) {
-    console.error(`[PoA Crypto] Failed to fetch blocks: ${err}`);
+    logPoA.error(`[PoA Crypto] Failed to fetch blocks: ${err}`);
     return "";
   }
 }

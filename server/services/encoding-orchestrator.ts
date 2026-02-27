@@ -2,6 +2,7 @@ import { db } from "../db";
 import { encodingJobs, userEncodingSettings, type EncodingJob, type InsertEncodingJob } from "@shared/schema";
 import { eq, desc } from "drizzle-orm";
 import { jobScheduler } from "./job-scheduler";
+import { logEncoding } from "../logger";
 import crypto from "crypto";
 
 interface JobSubmission {
@@ -259,7 +260,7 @@ export class EncodingOrchestrator {
           .where(eq(encodingJobs.id, jobId));
       }
     } catch (error) {
-      console.warn(`[EncodingOrchestrator] Webhook delivery failed for job ${jobId}:`, error);
+      logEncoding.warn({ err: error }, `Webhook delivery failed for job ${jobId}`);
     }
   }
 

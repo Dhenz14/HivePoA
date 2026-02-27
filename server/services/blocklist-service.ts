@@ -9,6 +9,7 @@
  */
 
 import { storage } from "../storage";
+import { logBlocklist } from "../logger";
 import type { BlocklistEntry, InsertBlocklistEntry, Tag, FileTag, InsertFileTag } from "@shared/schema";
 
 export type BlocklistScope = 'local' | 'validator' | 'platform';
@@ -82,14 +83,14 @@ export class BlocklistService {
       expiresAt: params.expiresAt,
     });
 
-    console.log(`[Blocklist Service] Added ${params.targetType}:${params.targetValue} to ${params.scope} blocklist`);
+    logBlocklist.info(`[Blocklist Service] Added ${params.targetType}:${params.targetValue} to ${params.scope} blocklist`);
     return entry;
   }
 
   // Remove from blocklist
   async removeFromBlocklist(entryId: string): Promise<void> {
     await storage.deactivateBlocklistEntry(entryId);
-    console.log(`[Blocklist Service] Deactivated blocklist entry ${entryId}`);
+    logBlocklist.info(`[Blocklist Service] Deactivated blocklist entry ${entryId}`);
   }
 
   // Get blocklist for a scope
@@ -152,7 +153,7 @@ export class BlocklistService {
       await storage.createTag(tag);
     }
 
-    console.log("[Blocklist Service] Seeded default content tags");
+    logBlocklist.info("[Blocklist Service] Seeded default content tags");
   }
 
   // Add tag to file
@@ -187,7 +188,7 @@ export class BlocklistService {
       confidence: 0.5,
     });
 
-    console.log(`[Blocklist Service] Added tag '${params.tagLabel}' to file ${params.fileId}`);
+    logBlocklist.info(`[Blocklist Service] Added tag '${params.tagLabel}' to file ${params.fileId}`);
     return fileTag;
   }
 
@@ -218,7 +219,7 @@ export class BlocklistService {
     // For now, just increment
     // In production, this would recalculate weighted confidence
 
-    console.log(`[Blocklist Service] Vote recorded: ${params.voteType} on tag ${params.fileTagId}`);
+    logBlocklist.info(`[Blocklist Service] Vote recorded: ${params.voteType} on tag ${params.fileTagId}`);
   }
 
   // Seed sample platform blocklists
@@ -236,7 +237,7 @@ export class BlocklistService {
       await storage.createPlatformBlocklist(platform);
     }
 
-    console.log("[Blocklist Service] Seeded sample platform blocklists");
+    logBlocklist.info("[Blocklist Service] Seeded sample platform blocklists");
   }
 }
 

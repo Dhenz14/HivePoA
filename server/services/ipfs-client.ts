@@ -6,6 +6,7 @@ export interface IPFSClient {
   add(content: Buffer | string): Promise<string>;
   addWithPin(content: Buffer | string): Promise<string>;
   pin(cid: string): Promise<void>;
+  pins(): Promise<string[]>;
   objectStat(cid: string): Promise<{ CumulativeSize: number }>;
   isOnline(): Promise<boolean>;
 }
@@ -104,6 +105,18 @@ export class IPFSHttpClient implements IPFSClient {
     }
   }
 
+  async pins(): Promise<string[]> {
+    const response = await fetch(`${this.baseUrl}/pin/ls?type=recursive`, {
+      method: "POST",
+    });
+    if (!response.ok) {
+      throw new Error(`IPFS pin/ls failed: ${response.statusText}`);
+    }
+    const result = await response.json();
+    // IPFS returns { Keys: { "Qm...": { Type: "recursive" }, ... } }
+    return Object.keys(result.Keys || {});
+  }
+
   async objectStat(cid: string): Promise<{ CumulativeSize: number }> {
     const response = await fetch(`${this.baseUrl}/object/stat?arg=${cid}`, {
       method: "POST",
@@ -161,6 +174,11 @@ export class MockIPFSClient implements IPFSClient {
 
   async pin(cid: string): Promise<void> {
     // No-op for mock
+  }
+
+  async pins(): Promise<string[]> {
+    // Return all root CIDs that have refs (simulates pinned content)
+    return Array.from(this.refs_map.keys());
   }
 
   async objectStat(cid: string): Promise<{ CumulativeSize: number }> {

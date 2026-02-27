@@ -3,6 +3,7 @@
  * Validates environment configuration at startup and reports service modes.
  * Provides clear visibility into which services are real vs. simulated.
  */
+import { logConfig } from "../logger";
 
 export interface ServiceStatus {
   name: string;
@@ -128,10 +129,10 @@ export function printStartupReport(report: ConfigReport): void {
   const isProduction = process.env.NODE_ENV === "production";
   const divider = "=".repeat(62);
 
-  console.log("");
-  console.log(divider);
-  console.log("  HivePoA (SPK Network 2.0) — Service Status Report");
-  console.log(divider);
+  logConfig.info("");
+  logConfig.info(divider);
+  logConfig.info("  HivePoA (SPK Network 2.0) — Service Status Report");
+  logConfig.info(divider);
 
   const modeLabel = (mode: string) => {
     switch (mode) {
@@ -151,26 +152,26 @@ export function printStartupReport(report: ConfigReport): void {
   for (const service of report.services) {
     const label = modeLabel(service.mode);
     const pad = " ".repeat(Math.max(0, 22 - service.name.length));
-    console.log(`  ${label} ${service.name}${pad} ${service.reason}`);
+    logConfig.info(`  ${label} ${service.name}${pad} ${service.reason}`);
   }
 
-  console.log(divider);
+  logConfig.info(divider);
 
   if (report.missingCritical.length > 0) {
-    console.error("");
-    console.error("  CRITICAL: Missing required environment variables:");
+    logConfig.error("");
+    logConfig.error("  CRITICAL: Missing required environment variables:");
     for (const v of report.missingCritical) {
-      console.error(`    - ${v}`);
+      logConfig.error(`    - ${v}`);
     }
-    console.error("");
+    logConfig.error("");
   }
 
   if (report.hasMockServices) {
-    console.warn("");
-    console.warn(
+    logConfig.warn("");
+    logConfig.warn(
       "  WARNING: Some services are running in mock/simulation mode."
     );
-    console.warn("  To enable full production functionality, set:");
+    logConfig.warn("  To enable full production functionality, set:");
 
     const allNeeded: string[] = [];
     for (const service of report.services) {
@@ -184,21 +185,21 @@ export function printStartupReport(report: ConfigReport): void {
     }
 
     for (let i = 0; i < allNeeded.length; i++) {
-      console.warn(`    - ${allNeeded[i]}`);
+      logConfig.warn(`    - ${allNeeded[i]}`);
     }
 
-    console.warn("");
-    console.warn("  See .env.example for configuration details.");
-    console.warn("");
+    logConfig.warn("");
+    logConfig.warn("  See .env.example for configuration details.");
+    logConfig.warn("");
   } else {
-    console.log("");
-    console.log("  All services running in LIVE mode.");
-    console.log("");
+    logConfig.info("");
+    logConfig.info("  All services running in LIVE mode.");
+    logConfig.info("");
   }
 
-  console.log(
+  logConfig.info(
     `  Environment: ${isProduction ? "PRODUCTION" : "DEVELOPMENT"}`
   );
-  console.log(divider);
-  console.log("");
+  logConfig.info(divider);
+  logConfig.info("");
 }

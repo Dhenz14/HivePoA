@@ -131,7 +131,7 @@ export class HLSProcessor {
         try {
           const stats = fs.statSync(segmentPath);
           size = stats.size;
-        } catch (e) {}
+        } catch { /* segment may not exist yet */ }
 
         segments.push({
           index,

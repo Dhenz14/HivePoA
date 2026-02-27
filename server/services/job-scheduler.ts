@@ -2,6 +2,7 @@ import { db } from "../db";
 import { encodingJobs, encodingJobEvents, encoderNodes, type EncodingJob } from "@shared/schema";
 import { eq, and, sql, lte, isNull, or, desc, asc } from "drizzle-orm";
 import crypto from "crypto";
+import { logScheduler } from "../logger";
 
 const LEASE_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 const RETRY_BACKOFF_BASE_MS = 30 * 1000; // 30 seconds
@@ -25,7 +26,7 @@ export class JobScheduler {
 
   start(): void {
     this.cleanupInterval = setInterval(() => this.cleanupExpiredLeases(), 60000);
-    console.log("[JobScheduler] Started with lease cleanup every 60s");
+    logScheduler.info("[JobScheduler] Started with lease cleanup every 60s");
   }
 
   stop(): void {
@@ -322,12 +323,12 @@ export class JobScheduler {
       ));
 
     for (const job of expiredJobs) {
-      console.log(`[JobScheduler] Releasing expired lease for job ${job.id}`);
+      logScheduler.info(`[JobScheduler] Releasing expired lease for job ${job.id}`);
       await this.releaseJob(job.id, "Lease expired");
     }
 
     if (expiredJobs.length > 0) {
-      console.log(`[JobScheduler] Cleaned up ${expiredJobs.length} expired leases`);
+      logScheduler.info(`[JobScheduler] Cleaned up ${expiredJobs.length} expired leases`);
     }
   }
 

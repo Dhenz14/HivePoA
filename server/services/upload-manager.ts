@@ -7,6 +7,7 @@
 
 import { storage } from "../storage";
 import { createHash, randomBytes } from "crypto";
+import { logUpload } from "../logger";
 import type { File, FileChunk, StorageContract, InsertStorageContract } from "@shared/schema";
 
 export interface UploadSession {
@@ -122,7 +123,7 @@ export class UploadManager {
     this.sessions.set(sessionId, session);
     this.chunkData.set(sessionId, new Map());
 
-    console.log(`[Upload Manager] Initialized upload session ${sessionId} for ${params.fileName}`);
+    logUpload.info(`[Upload Manager] Initialized upload session ${sessionId} for ${params.fileName}`);
     return session;
   }
 
@@ -157,7 +158,7 @@ export class UploadManager {
       await storage.updateFileChunkStatus(chunk.id, 'uploaded', checksum);
     }
 
-    console.log(`[Upload Manager] Chunk ${chunkIndex + 1}/${session.totalChunks} uploaded for session ${sessionId}`);
+    logUpload.info(`[Upload Manager] Chunk ${chunkIndex + 1}/${session.totalChunks} uploaded for session ${sessionId}`);
 
     return { success: true, chunkIndex, checksum };
   }
@@ -267,7 +268,7 @@ export class UploadManager {
       this.sessions.delete(sessionId);
       this.chunkData.delete(sessionId);
 
-      console.log(`[Upload Manager] Upload completed for ${session.fileName} (CID: ${actualCid})`);
+      logUpload.info(`[Upload Manager] Upload completed for ${session.fileName} (CID: ${actualCid})`);
 
       return { 
         success: true, 
@@ -287,7 +288,7 @@ export class UploadManager {
       const cid = await client.addWithPin(data);
       return cid;
     } catch (e) {
-      console.error("[Upload Manager] IPFS add failed:", e);
+      logUpload.error({ err: e }, "IPFS add failed");
       const hash = createHash('sha256').update(data).digest('hex');
       return `Qm${hash.substring(0, 44)}`;
     }
@@ -318,7 +319,7 @@ export class UploadManager {
     this.sessions.delete(sessionId);
     this.chunkData.delete(sessionId);
 
-    console.log(`[Upload Manager] Upload cancelled for session ${sessionId}`);
+    logUpload.info(`[Upload Manager] Upload cancelled for session ${sessionId}`);
     return true;
   }
 
@@ -334,7 +335,7 @@ export class UploadManager {
     expiredSessions.forEach(sessionId => {
       this.sessions.delete(sessionId);
       this.chunkData.delete(sessionId);
-      console.log(`[Upload Manager] Cleaned up expired session ${sessionId}`);
+      logUpload.info(`[Upload Manager] Cleaned up expired session ${sessionId}`);
     });
   }
 

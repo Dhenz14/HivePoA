@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { Search, Globe, Shield, Activity, Signal, BarChart3 } from "lucide-react";
+import { Search, Globe, Shield, Activity, Signal, BarChart3, Users } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -151,6 +151,8 @@ export default function Validators() {
             </CardContent>
           </Card>
 
+          <WebOfTrustSidebar />
+
            <Card className="border-border/50">
             <CardHeader>
               <CardTitle className="text-sm font-medium">Network Metrics</CardTitle>
@@ -168,5 +170,62 @@ export default function Validators() {
         </div>
       </div>
     </div>
+  );
+}
+
+interface WotVouch {
+  id: string;
+  sponsorUsername: string;
+  vouchedUsername: string;
+  createdAt: string;
+}
+
+function WebOfTrustSidebar() {
+  const { data: vouches = [] } = useQuery<WotVouch[]>({
+    queryKey: ["wot"],
+    queryFn: async () => {
+      const res = await fetch("/api/wot");
+      if (!res.ok) return [];
+      return res.json();
+    },
+    refetchInterval: 30000,
+  });
+
+  return (
+    <Card className="border-blue-500/20 bg-blue-500/5">
+      <CardHeader>
+        <CardTitle className="text-lg flex items-center gap-2">
+          <Users className="w-5 h-5 text-blue-500" />
+          Web of Trust
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm text-muted-foreground">
+        <p>
+          Witnesses can vouch for one trusted non-witness user, granting them
+          full validator access through the Web of Trust.
+        </p>
+        {vouches.length > 0 ? (
+          <div className="space-y-3">
+            {vouches.map((v) => (
+              <div key={v.id} className="flex items-center gap-2 p-2 bg-background/50 rounded-lg border border-border/30">
+                <Avatar className="w-6 h-6">
+                  <AvatarImage src={`https://images.hive.blog/u/${v.sponsorUsername}/avatar`} />
+                  <AvatarFallback className="text-[10px]">{v.sponsorUsername.substring(0, 2).toUpperCase()}</AvatarFallback>
+                </Avatar>
+                <span className="text-foreground font-medium text-xs">@{v.sponsorUsername}</span>
+                <span className="text-muted-foreground text-xs">vouched</span>
+                <Avatar className="w-6 h-6">
+                  <AvatarImage src={`https://images.hive.blog/u/${v.vouchedUsername}/avatar`} />
+                  <AvatarFallback className="text-[10px]">{v.vouchedUsername.substring(0, 2).toUpperCase()}</AvatarFallback>
+                </Avatar>
+                <span className="text-foreground font-medium text-xs">@{v.vouchedUsername}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="italic text-xs">No active vouches yet</p>
+        )}
+      </CardContent>
+    </Card>
   );
 }

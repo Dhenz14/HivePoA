@@ -1,4 +1,5 @@
 import { storage } from "../storage";
+import { logHive } from "../logger";
 import { EventEmitter } from "events";
 
 export interface HiveEvent {
@@ -16,7 +17,7 @@ class HiveSimulator extends EventEmitter {
   start() {
     if (this.interval) return;
 
-    console.log("[Hive Simulator] Starting blockchain event stream...");
+    logHive.info("[Hive Simulator] Starting blockchain event stream...");
     
     // Simulate new blocks every 3 seconds
     this.interval = setInterval(() => {

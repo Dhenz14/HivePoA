@@ -22,7 +22,9 @@ export default function ValidatorLogin() {
     checked: boolean;
     isWitness: boolean;
     rank: number | null;
-  }>({ checked: false, isWitness: false, rank: null });
+    isVouched: boolean;
+    vouchSponsor: string | null;
+  }>({ checked: false, isWitness: false, rank: null, isVouched: false, vouchSponsor: null });
 
   if (isAuthenticated && user) {
     return (
@@ -34,7 +36,9 @@ export default function ValidatorLogin() {
             </div>
             <CardTitle className="text-2xl">Logged In as Validator</CardTitle>
             <CardDescription>
-              @{user.username} (Witness #{user.witnessRank})
+              @{user.username} {user.isVouched
+                ? `(Vouched by @${user.sponsor})`
+                : `(Witness #${user.witnessRank})`}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -66,7 +70,7 @@ export default function ValidatorLogin() {
 
       if (!response.ok) {
         setError(data.error || "Account not found");
-        setWitnessStatus({ checked: true, isWitness: false, rank: null });
+        setWitnessStatus({ checked: true, isWitness: false, rank: null, isVouched: false, vouchSponsor: null });
         return;
       }
 
@@ -74,10 +78,12 @@ export default function ValidatorLogin() {
         checked: true,
         isWitness: data.isTopWitness,
         rank: data.witnessRank,
+        isVouched: data.isVouched || false,
+        vouchSponsor: data.vouchSponsor || null,
       });
 
-      if (!data.isTopWitness) {
-        setError(`@${username} is not in the top 150 witnesses. Only witnesses can access validator features.`);
+      if (!data.isTopWitness && !data.isVouched) {
+        setError(`@${username} is not in the top 150 witnesses and has no active vouch.`);
       }
     } catch (err) {
       setError("Failed to check witness status");
@@ -136,7 +142,7 @@ export default function ValidatorLogin() {
           <CardTitle className="text-2xl">Validator Login</CardTitle>
           <CardDescription>
             Sign in with Hive Keychain to access validator features.
-            Only top 150 witnesses can validate.
+            Top 150 witnesses and vouched users can validate.
           </CardDescription>
         </CardHeader>
         
@@ -183,7 +189,7 @@ export default function ValidatorLogin() {
                     value={username}
                     onChange={(e) => {
                       setUsername(e.target.value.toLowerCase().replace("@", ""));
-                      setWitnessStatus({ checked: false, isWitness: false, rank: null });
+                      setWitnessStatus({ checked: false, isWitness: false, rank: null, isVouched: false, vouchSponsor: null });
                       setError(null);
                     }}
                     onKeyDown={(e) => e.key === "Enter" && checkWitnessStatus()}
@@ -202,9 +208,11 @@ export default function ValidatorLogin() {
 
               {witnessStatus.checked && (
                 <div className={`p-4 rounded-lg border ${
-                  witnessStatus.isWitness 
-                    ? "bg-green-500/10 border-green-500/30" 
-                    : "bg-yellow-500/10 border-yellow-500/30"
+                  witnessStatus.isWitness
+                    ? "bg-green-500/10 border-green-500/30"
+                    : witnessStatus.isVouched
+                      ? "bg-blue-500/10 border-blue-500/30"
+                      : "bg-yellow-500/10 border-yellow-500/30"
                 }`}>
                   {witnessStatus.isWitness ? (
                     <div className="flex items-center gap-3">
@@ -217,13 +225,24 @@ export default function ValidatorLogin() {
                       </div>
                       <Badge className="ml-auto">Witness</Badge>
                     </div>
+                  ) : witnessStatus.isVouched ? (
+                    <div className="flex items-center gap-3">
+                      <CheckCircle2 className="h-5 w-5 text-blue-500" />
+                      <div>
+                        <p className="font-medium">@{username} is a Vouched Validator</p>
+                        <p className="text-sm text-muted-foreground">
+                          Sponsored by @{witnessStatus.vouchSponsor} via Web of Trust
+                        </p>
+                      </div>
+                      <Badge className="ml-auto bg-blue-500/20 text-blue-500 border-blue-500/30">Vouched</Badge>
+                    </div>
                   ) : (
                     <div className="flex items-center gap-3">
                       <AlertTriangle className="h-5 w-5 text-yellow-500" />
                       <div>
                         <p className="font-medium">Not a Top 150 Witness</p>
                         <p className="text-sm text-muted-foreground">
-                          Only witnesses can access validator features
+                          Only witnesses or vouched users can access validator features
                         </p>
                       </div>
                     </div>
@@ -242,7 +261,7 @@ export default function ValidatorLogin() {
                 className="w-full"
                 size="lg"
                 onClick={handleLogin}
-                disabled={isLoading || !witnessStatus.isWitness}
+                disabled={isLoading || (!witnessStatus.isWitness && !witnessStatus.isVouched)}
                 data-testid="button-login"
               >
                 {isLoading ? (
@@ -267,10 +286,10 @@ export default function ValidatorLogin() {
       </Card>
 
       <div className="mt-6 text-center text-sm text-muted-foreground">
-        <p>Why witness-only access?</p>
+        <p>Who can validate?</p>
         <p className="mt-1">
-          Validators police the network and distribute HBD rewards. 
-          Using Hive's elected witnesses ensures accountability.
+          Top 150 Hive witnesses and users vouched through the Web of Trust.
+          Witnesses can vouch for one trusted non-witness validator each.
         </p>
       </div>
     </div>

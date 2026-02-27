@@ -2,8 +2,10 @@ import { createContext, useContext, useState, useEffect, useCallback, type React
 
 interface ValidatorUser {
   username: string;
-  witnessRank: number;
+  witnessRank: number | null;
   isTopWitness: boolean;
+  isVouched: boolean;
+  sponsor?: string;
   sessionToken: string;
 }
 
@@ -30,11 +32,13 @@ async function validateSession(username: string, sessionToken: string): Promise<
     if (!response.ok) return null;
     
     const data = await response.json();
-    if (data.valid && data.isTopWitness) {
+    if (data.valid && (data.isTopWitness || data.isVouched)) {
       return {
         username: data.username,
-        witnessRank: data.witnessRank,
+        witnessRank: data.witnessRank ?? null,
         isTopWitness: data.isTopWitness,
+        isVouched: data.isVouched || false,
+        sponsor: data.vouchSponsor,
         sessionToken,
       };
     }
@@ -88,8 +92,8 @@ export function ValidatorAuthProvider({ children }: { children: ReactNode }) {
         return { success: false, error: data.error || "Login failed" };
       }
 
-      if (!data.isTopWitness) {
-        return { success: false, error: `Not in top 150 witnesses (rank: ${data.witnessRank || "N/A"})` };
+      if (!data.isTopWitness && !data.isVouched) {
+        return { success: false, error: `Not in top 150 witnesses and no active vouch` };
       }
 
       if (!data.sessionToken) {
@@ -98,8 +102,10 @@ export function ValidatorAuthProvider({ children }: { children: ReactNode }) {
 
       const validatorUser: ValidatorUser = {
         username: data.username,
-        witnessRank: data.witnessRank,
+        witnessRank: data.witnessRank ?? null,
         isTopWitness: data.isTopWitness,
+        isVouched: data.isVouched || false,
+        sponsor: data.vouchSponsor,
         sessionToken: data.sessionToken,
       };
 

@@ -136,7 +136,8 @@ export class LatencyStatistics {
   getNodesWithData(minMeasurements = 10): string[] {
     const nodes: string[] = [];
     
-    for (const [node, measurements] of this.measurements.entries()) {
+    const entries = Array.from(this.measurements.entries());
+    for (const [node, measurements] of entries) {
       if (measurements.length >= minMeasurements) {
         nodes.push(node);
       }
@@ -149,7 +150,8 @@ export class LatencyStatistics {
   getGlobalStatistics(): { mean: number; stdDev: number } | null {
     const allMeasurements: number[] = [];
     
-    for (const measurements of this.measurements.values()) {
+    const allValues = Array.from(this.measurements.values());
+    for (const measurements of allValues) {
       allMeasurements.push(...measurements);
     }
     

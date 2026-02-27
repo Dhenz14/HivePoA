@@ -2,6 +2,7 @@
  * Pin Manager Service
  * Handles IPFS pinning with progress tracking
  */
+import { logPin } from "../logger";
 
 export interface PinJob {
   id: string;
@@ -134,10 +135,10 @@ class PinManager {
           const stat = await statResponse.json();
           this.updateJob(job.id, { totalBytes: stat.CumulativeSize || 0 });
         } else {
-          console.log(`[Pin] Stat failed for ${cid}: ${statResponse.statusText}, continuing with pin`);
+          logPin.info(`[Pin] Stat failed for ${cid}: ${statResponse.statusText}, continuing with pin`);
         }
       } catch (statError: any) {
-        console.log(`[Pin] Stat error for ${cid}: ${statError.message}, continuing with pin`);
+        logPin.info(`[Pin] Stat error for ${cid}: ${statError.message}, continuing with pin`);
       }
 
       this.updateJob(job.id, { status: "pinning" });
@@ -151,8 +152,8 @@ class PinManager {
         try {
           const errBody = await pinResponse.json();
           if (errBody.Message) errorDetail = errBody.Message;
-        } catch {}
-        console.log(`[Pin] Pin failed for ${cid}: ${errorDetail}`);
+        } catch { /* error body parse is best-effort */ }
+        logPin.info(`[Pin] Pin failed for ${cid}: ${errorDetail}`);
         throw new Error(`Pin failed: ${errorDetail}`);
       }
 
@@ -182,6 +183,7 @@ class PinManager {
                 });
               }
             } catch {
+              // Ignore malformed ndjson line from IPFS pin progress stream
             }
           }
         }

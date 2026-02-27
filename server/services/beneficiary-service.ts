@@ -7,6 +7,7 @@
 
 import { storage } from "../storage";
 import { createHiveClient, HiveClient, MockHiveClient } from "./hive-client";
+import { logBeneficiary } from "../logger";
 import type { BeneficiaryAllocation, PayoutHistory, StorageNode } from "@shared/schema";
 
 export interface PayoutSplit {
@@ -78,7 +79,7 @@ export class BeneficiaryService {
       active: true,
     });
 
-    console.log(`[Beneficiary Service] Added allocation: ${params.fromUsername} -> ${node.hiveUsername} (${params.percentage}%)`);
+    logBeneficiary.info(`[Beneficiary Service] Added allocation: ${params.fromUsername} -> ${node.hiveUsername} (${params.percentage}%)`);
     return allocation;
   }
 
@@ -111,13 +112,13 @@ export class BeneficiaryService {
     }
 
     await storage.updateBeneficiaryAllocation(params.allocationId, params.percentage);
-    console.log(`[Beneficiary Service] Updated allocation ${params.allocationId} to ${params.percentage}%`);
+    logBeneficiary.info(`[Beneficiary Service] Updated allocation ${params.allocationId} to ${params.percentage}%`);
   }
 
   // Remove beneficiary
   async removeBeneficiary(allocationId: string): Promise<void> {
     await storage.deactivateBeneficiaryAllocation(allocationId);
-    console.log(`[Beneficiary Service] Removed allocation ${allocationId}`);
+    logBeneficiary.info(`[Beneficiary Service] Removed allocation ${allocationId}`);
   }
 
   // Get all beneficiaries for a user
@@ -190,13 +191,22 @@ export class BeneficiaryService {
     return splits;
   }
 
-  // Execute payout with beneficiary splits
+  // Execute payout with beneficiary splits — sends individual transfers to EACH recipient
   async executePayout(params: {
     fromUsername: string;
     totalHbd: string;
     payoutType: 'storage' | 'encoding' | 'beneficiary' | 'validation';
     contractId?: string;
   }): Promise<PayoutResult> {
+    // Validate total amount
+    const totalAmount = parseFloat(params.totalHbd);
+    if (isNaN(totalAmount) || totalAmount <= 0) {
+      return { success: false, splits: [], totalHbd: params.totalHbd, error: "Invalid payout amount" };
+    }
+    if (totalAmount > 1000) {
+      return { success: false, splits: [], totalHbd: params.totalHbd, error: "Payout exceeds 1000 HBD safety cap" };
+    }
+
     try {
       const splits = await this.calculateSplits({
         fromUsername: params.fromUsername,
@@ -204,48 +214,107 @@ export class BeneficiaryService {
         payoutType: params.payoutType,
       });
 
-      // Record each payout
+      const hiveClient = createHiveClient();
+      const isMock = hiveClient instanceof MockHiveClient;
+
+      if (isMock) {
+        logBeneficiary.warn("[Beneficiary Service] Using mock Hive client — payouts not broadcast to chain");
+      }
+
+      let successCount = 0;
+      let failCount = 0;
+
+      // Send individual transfer to EACH recipient
       for (const split of splits) {
+        const splitAmount = parseFloat(split.hbdAmount);
+
+        // Skip dust amounts
+        if (splitAmount < 0.001) {
+          logBeneficiary.info({ recipient: split.recipientUsername, amount: split.hbdAmount }, "Skipping dust amount");
+          continue;
+        }
+
+        let txHash: string;
+        let broadcastStatus: string;
+
+        if (isMock) {
+          txHash = `sim_tx_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+          broadcastStatus = "simulated";
+        } else {
+          // Balance check before each transfer
+          try {
+            const balanceStr = await (hiveClient as HiveClient).getHBDBalance(params.fromUsername);
+            const balance = parseFloat(balanceStr);
+            if (balance < splitAmount + 0.5) {
+              logBeneficiary.error({
+                recipient: split.recipientUsername,
+                amount: split.hbdAmount,
+                balance,
+              }, "Insufficient balance for transfer — aborting remaining splits");
+              txHash = `skipped_low_balance_${Date.now()}`;
+              broadcastStatus = "skipped";
+              failCount++;
+              await storage.createPayoutHistory({
+                contractId: params.contractId,
+                recipientUsername: split.recipientUsername,
+                recipientNodeId: split.recipientNodeId,
+                hbdAmount: split.hbdAmount,
+                payoutType: split.payoutType,
+                txHash,
+                broadcastStatus,
+              });
+              break; // Stop all remaining transfers
+            }
+          } catch (balErr) {
+            logBeneficiary.error({ err: balErr }, "Balance check failed — aborting payout");
+            break;
+          }
+
+          try {
+            const tx = await (hiveClient as HiveClient).transfer({
+              to: split.recipientUsername,
+              amount: `${split.hbdAmount} HBD`,
+              memo: `SPK PoA ${split.payoutType} payout`,
+            });
+            txHash = tx.id;
+            broadcastStatus = "success";
+            successCount++;
+          } catch (hiveError) {
+            logBeneficiary.error({ err: hiveError, recipient: split.recipientUsername }, "Transfer failed");
+            txHash = `failed_tx_${Date.now()}`;
+            broadcastStatus = "failed";
+            failCount++;
+          }
+        }
+
+        // Record each individual payout with its own txHash
         await storage.createPayoutHistory({
           contractId: params.contractId,
           recipientUsername: split.recipientUsername,
           recipientNodeId: split.recipientNodeId,
           hbdAmount: split.hbdAmount,
           payoutType: split.payoutType,
+          txHash,
+          broadcastStatus,
         });
       }
 
-      // Broadcast payout to Hive blockchain (or simulate if no keys configured)
-      const hiveClient = createHiveClient();
-      let txHash: string;
-
-      if (hiveClient instanceof MockHiveClient) {
-        txHash = `sim_tx_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-        console.warn("[Beneficiary Service] Using mock Hive client — payout not broadcast to chain");
-      } else {
-        try {
-          const tx = await (hiveClient as HiveClient).transfer({
-            to: splits[0]?.recipientUsername || params.fromUsername,
-            amount: `${params.totalHbd} HBD`,
-            memo: `SPK PoA payout: ${splits.length} recipients`,
-          });
-          txHash = tx.id;
-        } catch (hiveError) {
-          console.error("[Beneficiary Service] Hive transfer failed, recording locally:", hiveError);
-          txHash = `failed_tx_${Date.now()}`;
-        }
-      }
-
-      console.log(`[Beneficiary Service] Executed payout: ${params.totalHbd} HBD split into ${splits.length} parts`);
+      logBeneficiary.info({
+        total: params.totalHbd,
+        splitCount: splits.length,
+        successCount,
+        failCount,
+      }, "Beneficiary payout completed");
 
       return {
-        success: true,
+        success: failCount === 0,
         splits,
         totalHbd: params.totalHbd,
-        txHash,
+        txHash: successCount > 0 ? `batch_${splits.length}_transfers` : undefined,
+        error: failCount > 0 ? `${failCount}/${splits.length} transfers failed` : undefined,
       };
     } catch (error) {
-      console.error("[Beneficiary Service] Payout error:", error);
+      logBeneficiary.error({ err: error }, "Payout error");
       return {
         success: false,
         splits: [],

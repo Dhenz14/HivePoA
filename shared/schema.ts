@@ -475,6 +475,7 @@ export const payoutHistory = pgTable("payout_history", {
   hbdAmount: text("hbd_amount").notNull(),
   payoutType: text("payout_type").notNull(), // storage, encoding, beneficiary, validation
   txHash: text("tx_hash"), // Hive transaction hash
+  broadcastStatus: text("broadcast_status"), // success, failed, simulated, skipped
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -518,6 +519,58 @@ export const payoutLineItems = pgTable("payout_line_items", {
   successRate: real("success_rate").notNull(),
   paid: boolean("paid").notNull().default(false),
   txHash: text("tx_hash"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ============================================================
+// Validator Sessions (persistent, survives server restarts)
+// ============================================================
+
+export const userSessions = pgTable("user_sessions", {
+  token: varchar("token").primaryKey(),
+  username: text("username").notNull(),
+  role: text("role").notNull().default("user"), // "user" | "validator" | "agent"
+  expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Agent API Keys — desktop/server encoding agents authenticate with API keys
+export const agentKeys = pgTable("agent_keys", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  apiKey: varchar("api_key").notNull().unique(),
+  hiveUsername: text("hive_username").notNull(),
+  label: text("label"), // e.g. "My Desktop Agent"
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  lastUsedAt: timestamp("last_used_at"),
+});
+
+// ============================================================
+// File Refs — IPFS Merkle DAG block CID lists (SPK PoA 2.0)
+// Validators store only this metadata, NOT the actual file data.
+// This enables lightweight verification: the validator fetches
+// random sub-blocks on-demand during proof verification.
+// ============================================================
+
+export const fileRefs = pgTable("file_refs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  cid: text("cid").notNull().unique(),
+  blockCids: text("block_cids").notNull(), // JSON array of sub-block CIDs
+  blockCount: integer("block_count").notNull(),
+  syncedAt: timestamp("synced_at").notNull().defaultNow(),
+});
+
+// ============================================================
+// PHASE 7: Web of Trust — Witness-Vouched Validators
+// ============================================================
+
+export const webOfTrust = pgTable("web_of_trust", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  sponsorUsername: text("sponsor_username").notNull().unique(), // Witness who vouches (max 1 per witness)
+  vouchedUsername: text("vouched_username").notNull().unique(), // Non-witness being vouched (max 1 sponsor)
+  sponsorRankAtVouch: integer("sponsor_rank_at_vouch").notNull(),
+  active: boolean("active").notNull().default(true),
+  revokedAt: timestamp("revoked_at"),
+  revokeReason: text("revoke_reason"), // "manual" | "witness_dropped"
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -775,6 +828,13 @@ export const insertP2pNetworkStatsSchema = createInsertSchema(p2pNetworkStats).o
   timestamp: true,
 });
 
+// Phase 7: Web of Trust
+export const insertWebOfTrustSchema = createInsertSchema(webOfTrust).omit({
+  id: true,
+  createdAt: true,
+  revokedAt: true,
+});
+
 // ============================================================
 // Types
 // ============================================================
@@ -895,3 +955,7 @@ export type InsertP2pRoom = z.infer<typeof insertP2pRoomSchema>;
 
 export type P2pNetworkStats = typeof p2pNetworkStats.$inferSelect;
 export type InsertP2pNetworkStats = z.infer<typeof insertP2pNetworkStatsSchema>;
+
+// Phase 7: Web of Trust Types
+export type WebOfTrust = typeof webOfTrust.$inferSelect;
+export type InsertWebOfTrust = z.infer<typeof insertWebOfTrustSchema>;

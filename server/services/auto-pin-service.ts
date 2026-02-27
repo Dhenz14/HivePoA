@@ -7,6 +7,7 @@
 
 import { storage } from "../storage";
 import { getIPFSClient } from "./ipfs-client";
+import { logAutoPin } from "../logger";
 import type { ViewEvent, UserNodeSettings, File } from "@shared/schema";
 
 export interface AutoPinResult {
@@ -23,7 +24,7 @@ export class AutoPinService {
   // Start the auto-pin worker
   start(): void {
     this.processingInterval = setInterval(() => this.processViewEvents(), 10000); // Every 10 seconds
-    console.log("[Auto-Pin Service] Started auto-pin processor");
+    logAutoPin.info("[Auto-Pin Service] Started auto-pin processor");
   }
 
   stop(): void {
@@ -31,7 +32,7 @@ export class AutoPinService {
       clearInterval(this.processingInterval);
       this.processingInterval = null;
     }
-    console.log("[Auto-Pin Service] Stopped auto-pin processor");
+    logAutoPin.info("[Auto-Pin Service] Stopped auto-pin processor");
   }
 
   // Process pending view events for auto-pinning
@@ -46,7 +47,7 @@ export class AutoPinService {
         await this.processViewEvent(event);
       }
     } catch (error) {
-      console.error("[Auto-Pin Service] Processing error:", error);
+      logAutoPin.error({ err: error }, "Processing error");
     } finally {
       this.isProcessing = false;
     }
@@ -96,7 +97,7 @@ export class AutoPinService {
       await this.pinFile(file, event.viewerUsername);
       await storage.markViewEventAutoPinTriggered(event.id);
 
-      console.log(`[Auto-Pin Service] Pinned ${file.cid} for user ${event.viewerUsername}`);
+      logAutoPin.info(`[Auto-Pin Service] Pinned ${file.cid} for user ${event.viewerUsername}`);
 
       return {
         pinned: true,
@@ -105,7 +106,7 @@ export class AutoPinService {
         fileCid: file.cid,
       };
     } catch (error) {
-      console.error(`[Auto-Pin Service] Error processing event ${event.id}:`, error);
+      logAutoPin.error({ err: error }, `Error processing event ${event.id}`);
       return { pinned: false, reason: String(error) };
     }
   }
@@ -116,13 +117,13 @@ export class AutoPinService {
     try {
       const online = await ipfsClient.isOnline();
       if (!online) {
-        console.warn(`[Auto-Pin Service] IPFS offline — skipping pin for ${file.cid}`);
+        logAutoPin.warn(`[Auto-Pin Service] IPFS offline — skipping pin for ${file.cid}`);
         return;
       }
       await ipfsClient.pin(file.cid);
-      console.log(`[Auto-Pin Service] Pinned ${file.cid} for ${username} via IPFS`);
+      logAutoPin.info(`[Auto-Pin Service] Pinned ${file.cid} for ${username} via IPFS`);
     } catch (error) {
-      console.error(`[Auto-Pin Service] Failed to pin ${file.cid}:`, error);
+      logAutoPin.error({ err: error }, `Failed to pin ${file.cid}`);
     }
   }
 
@@ -211,7 +212,7 @@ export class AutoPinService {
         downloadLastReset: now,
       });
       settings = { ...settings, downloadedToday: 0, downloadLastReset: now };
-      console.log(`[Auto-Pin Service] Reset daily download counter for ${username}`);
+      logAutoPin.info(`[Auto-Pin Service] Reset daily download counter for ${username}`);
     }
 
     // Get available files that this node doesn't have yet
@@ -232,7 +233,7 @@ export class AutoPinService {
       downloadInProgress: true,
     });
     
-    console.log(`[Auto-Pin Service] Starting network download for ${username}: ${filesToDownload.length} files`);
+    logAutoPin.info(`[Auto-Pin Service] Starting network download for ${username}: ${filesToDownload.length} files`);
 
     // Simulate async download process
     setTimeout(async () => {
@@ -246,9 +247,9 @@ export class AutoPinService {
           downloadedToday: updatedDownloadedToday,
           downloadInProgress: false,
         });
-        console.log(`[Auto-Pin Service] Completed network download for ${username}: ${filesToDownload.length} files (total today: ${updatedDownloadedToday})`);
+        logAutoPin.info(`[Auto-Pin Service] Completed network download for ${username}: ${filesToDownload.length} files (total today: ${updatedDownloadedToday})`);
       } catch (error) {
-        console.error(`[Auto-Pin Service] Download error for ${username}:`, error);
+        logAutoPin.error({ err: error }, `Download error for ${username}`);
         const currentSettings = await this.getUserSettings(username);
         await storage.createOrUpdateUserNodeSettings({
           ...currentSettings,

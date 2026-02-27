@@ -74,8 +74,13 @@ export function Sidebar() {
               Validator
             </span>
             {isAuthenticated && user && (
-              <span className="text-xs text-primary font-medium">
+              <span className="text-xs text-primary font-medium flex items-center gap-1">
                 @{user.username}
+                {user.isVouched && (
+                  <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/20 text-blue-500 border border-blue-500/30 font-semibold">
+                    VOUCHED
+                  </span>
+                )}
               </span>
             )}
           </div>

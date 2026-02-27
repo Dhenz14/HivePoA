@@ -38,6 +38,11 @@ import {
   p2pContributions,
   p2pRooms,
   p2pNetworkStats,
+  // User Sessions & Agent Keys
+  userSessions,
+  agentKeys,
+  // File Refs (PoA 2.0)
+  fileRefs,
   type StorageNode,
   type InsertStorageNode,
   type File,
@@ -107,6 +112,10 @@ import {
   encodingJobOffers,
   type EncodingJobOffer,
   type InsertEncodingJobOffer,
+  // Phase 7: Web of Trust
+  webOfTrust,
+  type WebOfTrust,
+  type InsertWebOfTrust,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, sql, ilike, or, notInArray, gte, lte, lt } from "drizzle-orm";
@@ -283,6 +292,7 @@ export interface IStorage {
   getPayoutReports(limit: number): Promise<PayoutReport[]>;
   getPayoutReportsByValidator(validatorUsername: string): Promise<PayoutReport[]>;
   updatePayoutReportStatus(id: string, status: string, executedTxHash?: string): Promise<void>;
+  getOverlappingPayoutReports(periodStart: Date, periodEnd: Date): Promise<PayoutReport[]>;
 
   // Phase 5: Payout Line Items
   createPayoutLineItem(item: InsertPayoutLineItem): Promise<PayoutLineItem>;
@@ -317,6 +327,14 @@ export interface IStorage {
   createP2pNetworkStats(stats: InsertP2pNetworkStats): Promise<P2pNetworkStats>;
   getP2pNetworkStats(limit: number): Promise<P2pNetworkStats[]>;
   getCurrentP2pNetworkStats(): Promise<{ activePeers: number; activeRooms: number; totalBytesShared: number; avgP2pRatio: number }>;
+
+  // Phase 7: Web of Trust
+  getActiveVouch(sponsorUsername: string): Promise<WebOfTrust | undefined>;
+  getVouchForUser(vouchedUsername: string): Promise<WebOfTrust | undefined>;
+  getAllActiveVouches(): Promise<WebOfTrust[]>;
+  createVouch(vouch: InsertWebOfTrust): Promise<WebOfTrust>;
+  revokeVouch(sponsorUsername: string, reason: string): Promise<void>;
+  isVouchedValidator(username: string): Promise<boolean>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -383,24 +401,18 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteFile(id: string): Promise<boolean> {
-    // Get contracts associated with this file
-    const contracts = await db.select({ id: storageContracts.id })
-      .from(storageContracts)
-      .where(eq(storageContracts.fileId, id));
-    
-    // Delete contract events for each contract
-    for (const contract of contracts) {
-      await db.delete(contractEvents).where(eq(contractEvents.contractId, contract.id));
-    }
-    
-    // Delete related records (cascade)
-    await db.delete(fileChunks).where(eq(fileChunks.fileId, id));
-    await db.delete(fileTags).where(eq(fileTags.fileId, id));
-    await db.delete(transcodeJobs).where(eq(transcodeJobs.fileId, id));
-    await db.delete(viewEvents).where(eq(viewEvents.fileId, id));
-    await db.delete(storageContracts).where(eq(storageContracts.fileId, id));
-    
-    // Now delete the file
+    // Delete contract events via subquery (fixes N+1)
+    await db.execute(sql`DELETE FROM contract_events WHERE contract_id IN (SELECT id FROM storage_contracts WHERE file_id = ${id})`);
+
+    // Parallel cascade deletes for independent tables
+    await Promise.all([
+      db.delete(fileChunks).where(eq(fileChunks.fileId, id)),
+      db.delete(fileTags).where(eq(fileTags.fileId, id)),
+      db.delete(transcodeJobs).where(eq(transcodeJobs.fileId, id)),
+      db.delete(viewEvents).where(eq(viewEvents.fileId, id)),
+      db.delete(storageContracts).where(eq(storageContracts.fileId, id)),
+    ]);
+
     const result = await db.delete(files).where(eq(files.id, id)).returning();
     return result.length > 0;
   }
@@ -1212,6 +1224,16 @@ export class DatabaseStorage implements IStorage {
       .where(eq(payoutReports.id, id));
   }
 
+  async getOverlappingPayoutReports(periodStart: Date, periodEnd: Date): Promise<PayoutReport[]> {
+    // Find any non-rejected reports whose period overlaps [periodStart, periodEnd]
+    return await db.select().from(payoutReports)
+      .where(and(
+        lt(payoutReports.periodStart, periodEnd),
+        gte(payoutReports.periodEnd, periodStart),
+        sql`${payoutReports.status} != 'rejected'`,
+      ));
+  }
+
   // ============================================================
   // Phase 5: Payout Line Items
   // ============================================================
@@ -1541,6 +1563,215 @@ export class DatabaseStorage implements IStorage {
         : `PoA challenge failed for ${c.hiveUsername} (${c.latencyMs}ms)`,
       source: "poa-engine",
     }));
+  }
+
+  // ============================================================
+  // Optimized aggregate methods (Phase 2 performance)
+  // ============================================================
+
+  async getStatsAggregated(): Promise<{
+    files: { total: number; pinned: number; syncing: number };
+    nodes: { total: number; active: number; probation: number; banned: number };
+    validators: { total: number; online: number };
+    challenges: { total: number; success: number; failed: number; successRate: string };
+    rewards: { totalHBD: string; transactions: number };
+    cdn: { total: number; active: number };
+    contracts: { total: number; active: number };
+    encoders: { total: number; available: number };
+  }> {
+    const [fileStats, nodeStats, validatorStats, challengeStats, rewardStats, cdnStats, contractStats, encoderStats] = await Promise.all([
+      db.execute(sql`SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE status = 'pinned') as pinned, COUNT(*) FILTER (WHERE status = 'syncing') as syncing FROM files`),
+      db.execute(sql`SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE status = 'active') as active, COUNT(*) FILTER (WHERE status = 'probation') as probation, COUNT(*) FILTER (WHERE status = 'banned') as banned FROM storage_nodes`),
+      db.execute(sql`SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE status = 'online') as online FROM validators`),
+      db.execute(sql`SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE result = 'success') as success, COUNT(*) FILTER (WHERE result = 'fail') as failed FROM poa_challenges WHERE created_at > NOW() - INTERVAL '7 days'`),
+      db.execute(sql`SELECT COUNT(*) as total FROM hive_transactions WHERE type = 'hbd_transfer' AND created_at > NOW() - INTERVAL '24 hours'`),
+      db.execute(sql`SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE status = 'active') as active FROM cdn_nodes`),
+      db.execute(sql`SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE status = 'active') as active FROM storage_contracts`),
+      db.execute(sql`SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE availability = 'available') as available FROM encoder_nodes`),
+    ]);
+
+    const f = fileStats.rows[0] as any;
+    const n = nodeStats.rows[0] as any;
+    const v = validatorStats.rows[0] as any;
+    const c = challengeStats.rows[0] as any;
+    const r = rewardStats.rows[0] as any;
+    const cd = cdnStats.rows[0] as any;
+    const co = contractStats.rows[0] as any;
+    const en = encoderStats.rows[0] as any;
+
+    const success = Number(c.success) || 0;
+    const failed = Number(c.failed) || 0;
+    const successRate = success + failed > 0 ? (success / (success + failed) * 100).toFixed(1) : "0.0";
+    const hbdTxCount = Number(r.total) || 0;
+
+    return {
+      files: { total: Number(f.total), pinned: Number(f.pinned), syncing: Number(f.syncing) },
+      nodes: { total: Number(n.total), active: Number(n.active), probation: Number(n.probation), banned: Number(n.banned) },
+      validators: { total: Number(v.total), online: Number(v.online) },
+      challenges: { total: Number(c.total), success, failed, successRate },
+      rewards: { totalHBD: (hbdTxCount * 0.001).toFixed(3), transactions: hbdTxCount },
+      cdn: { total: Number(cd.total), active: Number(cd.active) },
+      contracts: { total: Number(co.total), active: Number(co.active) },
+      encoders: { total: Number(en.total), available: Number(en.available) },
+    };
+  }
+
+  async getStorageNodeByUsername(username: string): Promise<StorageNode | undefined> {
+    const [node] = await db.select().from(storageNodes).where(eq(storageNodes.hiveUsername, username)).limit(1);
+    return node;
+  }
+
+  async getNodeChallenges(nodeId: string, limit: number): Promise<PoaChallenge[]> {
+    return db.select().from(poaChallenges).where(eq(poaChallenges.nodeId, nodeId)).orderBy(desc(poaChallenges.createdAt)).limit(limit);
+  }
+
+  async getNodeEarnings(nodeUsername: string): Promise<number> {
+    const result = await db.execute(sql`SELECT COUNT(*) as cnt FROM hive_transactions WHERE to_user = ${nodeUsername} AND type = 'hbd_transfer' AND created_at > NOW() - INTERVAL '7 days'`);
+    return (Number((result.rows[0] as any).cnt) || 0) * 0.001;
+  }
+
+  async getMarketplaceFiles(): Promise<any[]> {
+    const result = await db.execute(sql`
+      SELECT
+        f.id, f.name, f.cid, f.size, f.status, f.replication_count, f.earned_hbd,
+        COUNT(pc.id) as challenge_count,
+        COUNT(pc.id) FILTER (WHERE pc.result = 'success') as success_count
+      FROM files f
+      LEFT JOIN poa_challenges pc ON pc.file_id = f.id AND pc.created_at > NOW() - INTERVAL '7 days'
+      GROUP BY f.id
+      ORDER BY f.created_at DESC
+    `);
+    return result.rows as any[];
+  }
+
+  // Paginated queries
+  async getFilesPaginated(limit: number, offset: number): Promise<{ data: File[]; total: number }> {
+    const [data, countResult] = await Promise.all([
+      db.select().from(files).orderBy(desc(files.createdAt)).limit(limit).offset(offset),
+      db.execute(sql`SELECT COUNT(*) as total FROM files`),
+    ]);
+    return { data, total: Number((countResult.rows[0] as any).total) };
+  }
+
+  async getNodesPaginated(limit: number, offset: number): Promise<{ data: StorageNode[]; total: number }> {
+    const [data, countResult] = await Promise.all([
+      db.select().from(storageNodes).orderBy(desc(storageNodes.reputation)).limit(limit).offset(offset),
+      db.execute(sql`SELECT COUNT(*) as total FROM storage_nodes`),
+    ]);
+    return { data, total: Number((countResult.rows[0] as any).total) };
+  }
+
+  async getChallengesPaginated(limit: number, offset: number): Promise<{ data: PoaChallenge[]; total: number }> {
+    const [data, countResult] = await Promise.all([
+      db.select().from(poaChallenges).orderBy(desc(poaChallenges.createdAt)).limit(limit).offset(offset),
+      db.execute(sql`SELECT COUNT(*) as total FROM poa_challenges`),
+    ]);
+    return { data, total: Number((countResult.rows[0] as any).total) };
+  }
+
+  async getTransactionsPaginated(limit: number, offset: number): Promise<{ data: HiveTransaction[]; total: number }> {
+    const [data, countResult] = await Promise.all([
+      db.select().from(hiveTransactions).orderBy(desc(hiveTransactions.createdAt)).limit(limit).offset(offset),
+      db.execute(sql`SELECT COUNT(*) as total FROM hive_transactions`),
+    ]);
+    return { data, total: Number((countResult.rows[0] as any).total) };
+  }
+
+  // User session CRUD (persistent, replaces in-memory Map)
+  async createSession(token: string, username: string, expiresAt: Date, role: string = "user"): Promise<void> {
+    await db.insert(userSessions).values({ token, username, expiresAt, role });
+  }
+
+  async getSession(token: string): Promise<{ username: string; expiresAt: Date; role: string } | undefined> {
+    const [row] = await db.select().from(userSessions).where(eq(userSessions.token, token)).limit(1);
+    if (!row) return undefined;
+    return { username: row.username, expiresAt: row.expiresAt, role: row.role };
+  }
+
+  async deleteSession(token: string): Promise<void> {
+    await db.delete(userSessions).where(eq(userSessions.token, token));
+  }
+
+  async cleanExpiredSessions(): Promise<void> {
+    await db.delete(userSessions).where(lt(userSessions.expiresAt, new Date()));
+  }
+
+  // Agent API Key CRUD
+  async createAgentKey(apiKey: string, hiveUsername: string, label?: string): Promise<void> {
+    await db.insert(agentKeys).values({ apiKey, hiveUsername, label });
+  }
+
+  async getAgentByKey(apiKey: string): Promise<{ hiveUsername: string; id: string } | undefined> {
+    const [row] = await db.select().from(agentKeys).where(eq(agentKeys.apiKey, apiKey)).limit(1);
+    if (!row) return undefined;
+    // Update last used timestamp
+    await db.update(agentKeys).set({ lastUsedAt: new Date() }).where(eq(agentKeys.id, row.id));
+    return { hiveUsername: row.hiveUsername, id: row.id };
+  }
+
+  async deleteAgentKey(id: string): Promise<void> {
+    await db.delete(agentKeys).where(eq(agentKeys.id, id));
+  }
+
+  // File Refs — IPFS sub-block CID lists for lightweight PoA verification
+  async getFileRefs(cid: string): Promise<string[] | null> {
+    const [row] = await db.select().from(fileRefs).where(eq(fileRefs.cid, cid)).limit(1);
+    if (!row) return null;
+    try { return JSON.parse(row.blockCids); } catch { return null; }
+  }
+
+  async saveFileRefs(cid: string, blockCids: string[]): Promise<void> {
+    const json = JSON.stringify(blockCids);
+    // Upsert: insert or update if CID already exists
+    await db.execute(sql`
+      INSERT INTO file_refs (id, cid, block_cids, block_count, synced_at)
+      VALUES (gen_random_uuid(), ${cid}, ${json}, ${blockCids.length}, NOW())
+      ON CONFLICT (cid) DO UPDATE SET block_cids = ${json}, block_count = ${blockCids.length}, synced_at = NOW()
+    `);
+  }
+
+  async hasFileRefs(cid: string): Promise<boolean> {
+    const result = await db.execute(sql`SELECT 1 FROM file_refs WHERE cid = ${cid} LIMIT 1`);
+    return result.rows.length > 0;
+  }
+
+  // ============================================================
+  // Phase 7: Web of Trust
+  // ============================================================
+  async getActiveVouch(sponsorUsername: string): Promise<WebOfTrust | undefined> {
+    const [row] = await db.select().from(webOfTrust)
+      .where(and(eq(webOfTrust.sponsorUsername, sponsorUsername), eq(webOfTrust.active, true)))
+      .limit(1);
+    return row || undefined;
+  }
+
+  async getVouchForUser(vouchedUsername: string): Promise<WebOfTrust | undefined> {
+    const [row] = await db.select().from(webOfTrust)
+      .where(and(eq(webOfTrust.vouchedUsername, vouchedUsername), eq(webOfTrust.active, true)))
+      .limit(1);
+    return row || undefined;
+  }
+
+  async getAllActiveVouches(): Promise<WebOfTrust[]> {
+    return await db.select().from(webOfTrust)
+      .where(eq(webOfTrust.active, true))
+      .orderBy(desc(webOfTrust.createdAt));
+  }
+
+  async createVouch(vouch: InsertWebOfTrust): Promise<WebOfTrust> {
+    const [created] = await db.insert(webOfTrust).values(vouch).returning();
+    return created;
+  }
+
+  async revokeVouch(sponsorUsername: string, reason: string): Promise<void> {
+    await db.update(webOfTrust)
+      .set({ active: false, revokedAt: new Date(), revokeReason: reason })
+      .where(and(eq(webOfTrust.sponsorUsername, sponsorUsername), eq(webOfTrust.active, true)));
+  }
+
+  async isVouchedValidator(username: string): Promise<boolean> {
+    const vouch = await this.getVouchForUser(username);
+    return !!vouch;
   }
 }
 

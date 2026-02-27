@@ -1,4 +1,5 @@
 import WebSocket from "ws";
+import { logSPK } from "../logger";
 import { createRandomHash } from "./poa-crypto";
 
 export interface SPKNodeConfig {
@@ -56,7 +57,7 @@ export class SPKPoAClient {
       this.ws = new WebSocket(`${wsUrl}/validate`);
 
       this.ws.on("open", () => {
-        console.log(`[SPK PoA] Connected to ${this.config.url}`);
+        logSPK.info(`[SPK PoA] Connected to ${this.config.url}`);
         this.connected = true;
         resolve();
       });
@@ -66,19 +67,19 @@ export class SPKPoAClient {
           const message = JSON.parse(data.toString());
           this.handleMessage(message);
         } catch (err) {
-          console.error("[SPK PoA] Failed to parse message:", err);
+          logSPK.error({ err }, "Failed to parse SPK PoA message");
         }
       });
 
       this.ws.on("error", (err) => {
-        console.error("[SPK PoA] WebSocket error:", err);
+        logSPK.error({ err }, "SPK PoA WebSocket error");
         if (!this.connected) {
           reject(err);
         }
       });
 
       this.ws.on("close", () => {
-        console.log("[SPK PoA] Disconnected");
+        logSPK.info("[SPK PoA] Disconnected");
         this.connected = false;
         this.cleanupPendingValidations();
       });
@@ -146,7 +147,7 @@ export class SPKPoAClient {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pendingValidations.delete(validationHash);
-        console.log(`[SPK PoA] Challenge timeout after ${timeoutMs}ms for CID: ${cid}`);
+        logSPK.info(`[SPK PoA] Challenge timeout after ${timeoutMs}ms for CID: ${cid}`);
         resolve({
           status: "timeout",
           name: this.config.username,
@@ -157,7 +158,7 @@ export class SPKPoAClient {
       this.pendingValidations.set(validationHash, { resolve, reject, timeout });
       
       this.ws!.send(JSON.stringify(request));
-      console.log(`[SPK PoA] Sent validation request for CID: ${cid} (timeout: ${timeoutMs}ms)`);
+      logSPK.info(`[SPK PoA] Sent validation request for CID: ${cid} (timeout: ${timeoutMs}ms)`);
     });
   }
 
@@ -169,7 +170,7 @@ export class SPKPoAClient {
       }
       return await response.json();
     } catch (err) {
-      console.error("[SPK PoA] Failed to get stats:", err);
+      logSPK.error({ err }, "Failed to get SPK PoA stats");
       return null;
     }
   }
@@ -188,11 +189,11 @@ export class MockSPKPoAClient {
   }
 
   async connect(): Promise<void> {
-    console.log(`[Mock SPK PoA] Simulating connection to ${this.config.url}`);
+    logSPK.info(`[Mock SPK PoA] Simulating connection to ${this.config.url}`);
   }
 
   disconnect(): void {
-    console.log("[Mock SPK PoA] Disconnected");
+    logSPK.info("[Mock SPK PoA] Disconnected");
   }
 
   async validate(cid: string, salt?: string): Promise<ValidationResponse> {

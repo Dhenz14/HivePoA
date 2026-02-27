@@ -12,6 +12,7 @@ import {
   type InsertUserEncodingSettings
 } from "@shared/schema";
 import { eq, desc, and, sql, isNull, or, lte } from "drizzle-orm";
+import { logEncoding } from "../logger";
 
 export interface EncodingJobRequest {
   owner: string;
@@ -90,7 +91,7 @@ export class EncodingService {
       for (const profile of DEFAULT_PROFILES) {
         await db.insert(encodingProfiles).values(profile).onConflictDoNothing();
       }
-      console.log("[EncodingService] Initialized default encoding profiles");
+      logEncoding.info("[EncodingService] Initialized default encoding profiles");
     }
   }
 
@@ -121,7 +122,7 @@ export class EncodingService {
       }
     }
 
-    console.log(`[EncodingService] Job ${job.id} submitted for ${request.owner}/${request.permlink}`);
+    logEncoding.info(`[EncodingService] Job ${job.id} submitted for ${request.owner}/${request.permlink}`);
     return job;
   }
 
@@ -303,7 +304,7 @@ export class EncodingService {
         };
       }
     } catch (error) {
-      console.log(`[EncodingService] Desktop agent not available at ${endpoint}`);
+      logEncoding.info(`[EncodingService] Desktop agent not available at ${endpoint}`);
     }
     
     return { available: false };
@@ -334,7 +335,7 @@ export class EncodingService {
         return true;
       }
     } catch (error) {
-      console.error(`[EncodingService] Failed to dispatch to desktop agent: ${error}`);
+      logEncoding.error(`[EncodingService] Failed to dispatch to desktop agent: ${error}`);
     }
     return false;
   }
@@ -368,7 +369,7 @@ export class EncodingService {
         webhookDelivered: true,
       }).where(eq(encodingJobs.id, job.id));
     } catch (error) {
-      console.error(`[EncodingService] Webhook delivery failed for job ${job.id}: ${error}`);
+      logEncoding.error(`[EncodingService] Webhook delivery failed for job ${job.id}: ${error}`);
     }
   }
 

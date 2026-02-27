@@ -12,6 +12,7 @@ import { getIPFSClient } from "./ipfs-client";
 import { execSync } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
+import { logTranscode } from "../logger";
 import type { TranscodeJob, EncoderNode, InsertTranscodeJob } from "@shared/schema";
 
 export interface TranscodePreset {
@@ -41,12 +42,12 @@ export class TranscodingService {
   start(): void {
     this.ffmpegAvailable = this.checkFfmpeg();
     if (this.ffmpegAvailable) {
-      console.log("[Transcoding Service] FFmpeg detected — real encoding enabled");
+      logTranscode.info("[Transcoding Service] FFmpeg detected — real encoding enabled");
     } else {
-      console.warn("[Transcoding Service] FFmpeg not found — using simulated encoding");
+      logTranscode.warn("[Transcoding Service] FFmpeg not found — using simulated encoding");
     }
     this.processingInterval = setInterval(() => this.processQueue(), 5000);
-    console.log("[Transcoding Service] Started job processor");
+    logTranscode.info("[Transcoding Service] Started job processor");
   }
 
   private checkFfmpeg(): boolean {
@@ -64,7 +65,7 @@ export class TranscodingService {
       clearInterval(this.processingInterval);
       this.processingInterval = null;
     }
-    console.log("[Transcoding Service] Stopped job processor");
+    logTranscode.info("[Transcoding Service] Stopped job processor");
   }
 
   // Submit a new transcode job
@@ -87,7 +88,7 @@ export class TranscodingService {
       progress: 0,
     });
 
-    console.log(`[Transcoding Service] Job ${job.id} queued for ${params.preset}`);
+    logTranscode.info(`[Transcoding Service] Job ${job.id} queued for ${params.preset}`);
     return job;
   }
 
@@ -103,7 +104,7 @@ export class TranscodingService {
         await this.processJob(job);
       }
     } catch (error) {
-      console.error("[Transcoding Service] Queue processing error:", error);
+      logTranscode.error({ err: error }, "Queue processing error");
     } finally {
       this.isProcessing = false;
     }
@@ -121,7 +122,7 @@ export class TranscodingService {
         await storage.assignTranscodeJob(job.id, encoder.id);
         await storage.updateEncoderNodeAvailability(encoder.id, 'busy');
         
-        console.log(`[Transcoding Service] Job ${job.id} assigned to encoder ${encoder.hiveUsername}`);
+        logTranscode.info(`[Transcoding Service] Job ${job.id} assigned to encoder ${encoder.hiveUsername}`);
         
         // Simulate encoding process
         await this.simulateEncoding(job, encoder);
@@ -131,7 +132,7 @@ export class TranscodingService {
         await this.simulateEncoding(job, null);
       }
     } catch (error) {
-      console.error(`[Transcoding Service] Job ${job.id} failed:`, error);
+      logTranscode.error({ err: error }, `Job ${job.id} failed`);
       await storage.updateTranscodeJobStatus(job.id, 'failed', 0, undefined, String(error));
     }
   }
@@ -159,7 +160,7 @@ export class TranscodingService {
       const data = await ipfsClient.cat(job.inputCid);
       fs.writeFileSync(inputPath, data);
     } catch (error) {
-      console.error(`[Transcoding Service] Failed to fetch input from IPFS: ${error}`);
+      logTranscode.error(`[Transcoding Service] Failed to fetch input from IPFS: ${error}`);
       await storage.updateTranscodeJobStatus(job.id, 'failed', 0, undefined, `IPFS fetch failed: ${error}`);
       if (encoder) await storage.updateEncoderNodeAvailability(encoder.id, 'available');
       return;
@@ -167,7 +168,7 @@ export class TranscodingService {
 
     // Wire up progress events
     const progressHandler = async (progress: { percent: number; stage: string }) => {
-      await storage.updateTranscodeJobStatus(job.id, 'processing', progress.percent).catch(() => {});
+      await storage.updateTranscodeJobStatus(job.id, 'processing', progress.percent).catch((err) => logTranscode.warn({ err }, "Progress update failed"));
     };
     videoProcessor.on("progress", progressHandler);
 
@@ -186,14 +187,14 @@ export class TranscodingService {
           const masterPlaylist = fs.readFileSync(result.outputPaths.masterPlaylist);
           outputCid = await ipfsClient.addWithPin(masterPlaylist);
         } catch {
-          console.warn(`[Transcoding Service] Failed to upload to IPFS, keeping local reference`);
+          logTranscode.warn(`[Transcoding Service] Failed to upload to IPFS, keeping local reference`);
         }
 
         await storage.updateTranscodeJobStatus(job.id, 'completed', 100, outputCid);
-        console.log(`[Transcoding Service] Job ${job.id} completed with FFmpeg (${result.processingTimeSec.toFixed(1)}s, ${result.hardwareAccelUsed})`);
+        logTranscode.info(`[Transcoding Service] Job ${job.id} completed with FFmpeg (${result.processingTimeSec.toFixed(1)}s, ${result.hardwareAccelUsed})`);
       } else {
         await storage.updateTranscodeJobStatus(job.id, 'failed', 0, undefined, result.error);
-        console.error(`[Transcoding Service] Job ${job.id} FFmpeg failed: ${result.error}`);
+        logTranscode.error(`[Transcoding Service] Job ${job.id} FFmpeg failed: ${result.error}`);
       }
     } catch (error) {
       videoProcessor.off("progress", progressHandler);
@@ -201,7 +202,7 @@ export class TranscodingService {
     }
 
     // Clean up temp files
-    try { fs.rmSync(inputPath, { force: true }); } catch {}
+    try { fs.rmSync(inputPath, { force: true }); } catch (err) { logTranscode.warn({ err }, "Temp file cleanup failed"); }
 
     if (encoder) {
       await storage.updateEncoderNodeAvailability(encoder.id, 'available');
@@ -224,7 +225,7 @@ export class TranscodingService {
       await storage.updateEncoderNodeAvailability(encoder.id, 'available');
     }
 
-    console.log(`[Transcoding Service] Job ${job.id} completed (simulated) with output ${outputCid}`);
+    logTranscode.info(`[Transcoding Service] Job ${job.id} completed (simulated) with output ${outputCid}`);
   }
 
   // Get job status with details
@@ -291,7 +292,7 @@ export class TranscodingService {
       });
     }
 
-    console.log("[Transcoding Service] Seeded sample encoder nodes");
+    logTranscode.info("[Transcoding Service] Seeded sample encoder nodes");
   }
 }
 
