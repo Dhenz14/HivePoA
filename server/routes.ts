@@ -1686,13 +1686,11 @@ export async function registerRoutes(
         }
       }
 
-      // Generate session token for witnesses OR vouched validators
-      let sessionToken: string | undefined;
-      if (isTopWitness || isVouched) {
-        await storage.cleanExpiredSessions();
-        sessionToken = generateSessionToken();
-        await storage.createSession(sessionToken, username, new Date(Date.now() + 24 * 60 * 60 * 1000), "validator");
-      }
+      // Generate session token for any authenticated Hive user
+      await storage.cleanExpiredSessions();
+      const sessionToken = generateSessionToken();
+      const role = (isTopWitness || isVouched) ? "validator" : "user";
+      await storage.createSession(sessionToken, username, new Date(Date.now() + 24 * 60 * 60 * 1000), role);
 
       res.json({
         success: true,
@@ -1702,11 +1700,12 @@ export async function registerRoutes(
         vouchSponsor,
         witnessRank: isTopWitness ? witnessRank : null,
         sessionToken,
+        role,
         message: isTopWitness
           ? `Welcome, Witness #${witnessRank}!`
           : isVouched
             ? `Welcome, Vouched Validator! Sponsored by @${vouchSponsor}`
-            : "You are not in the top 150 witnesses and have no active vouch",
+            : `Welcome, @${username}!`,
       });
     } catch (error) {
       logRoutes.error({ err: error }, "Validator login error");
@@ -1731,33 +1730,31 @@ export async function registerRoutes(
         return;
       }
 
-      // Re-verify witness or vouch status (could have changed)
+      // Check current witness/vouch status (may have changed since login)
       const { createHiveClient } = await import("./services/hive-client");
       const hiveClient = createHiveClient();
 
       const isTopWitness = await hiveClient.isTopWitness(username, 150);
       const witnessRank = isTopWitness ? await hiveClient.getWitnessRank(username) : null;
 
-      if (isTopWitness) {
-        res.json({ valid: true, username, isTopWitness: true, isVouched: false, witnessRank });
-        return;
-      }
-
-      // Fallback: check Web of Trust
-      const vouch = await storage.getVouchForUser(username);
-      if (vouch && vouch.active) {
-        const sponsorValid = await hiveClient.isTopWitness(vouch.sponsorUsername, 150);
-        if (sponsorValid) {
-          res.json({ valid: true, username, isTopWitness: false, isVouched: true, vouchSponsor: vouch.sponsorUsername });
-          return;
+      let isVouched = false;
+      let vouchSponsor: string | undefined;
+      if (!isTopWitness) {
+        const vouch = await storage.getVouchForUser(username);
+        if (vouch && vouch.active) {
+          const sponsorValid = await hiveClient.isTopWitness(vouch.sponsorUsername, 150);
+          if (sponsorValid) {
+            isVouched = true;
+            vouchSponsor = vouch.sponsorUsername;
+          } else {
+            await storage.revokeVouch(vouch.sponsorUsername, "witness_dropped");
+            logWoT.warn({ sponsor: vouch.sponsorUsername, vouched: username }, "Auto-revoked vouch during session validation");
+          }
         }
-        // Auto-revoke
-        await storage.revokeVouch(vouch.sponsorUsername, "witness_dropped");
-        logWoT.warn({ sponsor: vouch.sponsorUsername, vouched: username }, "Auto-revoked vouch during session validation");
       }
 
-      await storage.deleteSession(sessionToken);
-      res.status(401).json({ valid: false, error: "No longer a top 150 witness and no active vouch" });
+      // Session is valid for any authenticated Hive user; witness/vouch status is metadata
+      res.json({ valid: true, username, isTopWitness, isVouched, vouchSponsor, witnessRank });
     } catch (error) {
       res.status(500).json({ valid: false, error: "Validation failed" });
     }

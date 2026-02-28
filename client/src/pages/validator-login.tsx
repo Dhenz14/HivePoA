@@ -5,8 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Shield, Key, AlertTriangle, CheckCircle2, ExternalLink, Loader2 } from "lucide-react";
+import { Key, AlertTriangle, CheckCircle2, ExternalLink, Loader2 } from "lucide-react";
 import { useHiveKeychain } from "@/hooks/use-hive-keychain";
 import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
 
@@ -14,17 +13,10 @@ export default function ValidatorLogin() {
   const [, setLocation] = useLocation();
   const { isAvailable, isChecking, requestSignature } = useHiveKeychain();
   const { login, isAuthenticated, user } = useValidatorAuth();
-  
+
   const [username, setUsername] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [witnessStatus, setWitnessStatus] = useState<{
-    checked: boolean;
-    isWitness: boolean;
-    rank: number | null;
-    isVouched: boolean;
-    vouchSponsor: string | null;
-  }>({ checked: false, isWitness: false, rank: null, isVouched: false, vouchSponsor: null });
 
   if (isAuthenticated && user) {
     return (
@@ -34,63 +26,29 @@ export default function ValidatorLogin() {
             <div className="mx-auto mb-4 p-3 rounded-full bg-green-500/20 w-fit">
               <CheckCircle2 className="h-8 w-8 text-green-500" />
             </div>
-            <CardTitle className="text-2xl">Logged In as Validator</CardTitle>
+            <CardTitle className="text-2xl">Logged In</CardTitle>
             <CardDescription>
-              @{user.username} {user.isVouched
-                ? `(Vouched by @${user.sponsor})`
-                : `(Witness #${user.witnessRank})`}
+              @{user.username}
+              {user.isTopWitness
+                ? ` — Witness #${user.witnessRank}`
+                : user.isVouched
+                  ? ` — Vouched by @${user.sponsor}`
+                  : ""}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <Button 
-              className="w-full" 
-              onClick={() => setLocation("/validator-dashboard")}
+            <Button
+              className="w-full"
+              onClick={() => setLocation("/")}
               data-testid="button-go-dashboard"
             >
-              Go to Validator Dashboard
+              Go to Dashboard
             </Button>
           </CardContent>
         </Card>
       </div>
     );
   }
-
-  const checkWitnessStatus = async () => {
-    if (!username.trim()) {
-      setError("Please enter your Hive username");
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const response = await fetch(`/api/validator/witness-check/${username.trim()}`);
-      const data = await response.json();
-
-      if (!response.ok) {
-        setError(data.error || "Account not found");
-        setWitnessStatus({ checked: true, isWitness: false, rank: null, isVouched: false, vouchSponsor: null });
-        return;
-      }
-
-      setWitnessStatus({
-        checked: true,
-        isWitness: data.isTopWitness,
-        rank: data.witnessRank,
-        isVouched: data.isVouched || false,
-        vouchSponsor: data.vouchSponsor || null,
-      });
-
-      if (!data.isTopWitness && !data.isVouched) {
-        setError(`@${username} is not in the top 150 witnesses and has no active vouch.`);
-      }
-    } catch (err) {
-      setError("Failed to check witness status");
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   const handleLogin = async () => {
     if (!username.trim()) {
@@ -124,7 +82,7 @@ export default function ValidatorLogin() {
         return;
       }
 
-      setLocation("/validator-dashboard");
+      setLocation("/");
     } catch (err) {
       setError("Login failed. Please try again.");
     } finally {
@@ -137,15 +95,14 @@ export default function ValidatorLogin() {
       <Card>
         <CardHeader className="text-center">
           <div className="mx-auto mb-4 p-3 rounded-full bg-primary/20 w-fit">
-            <Shield className="h-8 w-8 text-primary" />
+            <Key className="h-8 w-8 text-primary" />
           </div>
-          <CardTitle className="text-2xl">Validator Login</CardTitle>
+          <CardTitle className="text-2xl">Login with Hive Keychain</CardTitle>
           <CardDescription>
-            Sign in with Hive Keychain to access validator features.
-            Top 150 witnesses and vouched users can validate.
+            Sign in with your Hive account to access the network and earn rewards.
           </CardDescription>
         </CardHeader>
-        
+
         <CardContent className="space-y-6">
           {isChecking ? (
             <div className="flex items-center justify-center py-4">
@@ -182,73 +139,18 @@ export default function ValidatorLogin() {
 
               <div className="space-y-2">
                 <Label htmlFor="username">Hive Username</Label>
-                <div className="flex gap-2">
-                  <Input
-                    id="username"
-                    placeholder="yourusername"
-                    value={username}
-                    onChange={(e) => {
-                      setUsername(e.target.value.toLowerCase().replace("@", ""));
-                      setWitnessStatus({ checked: false, isWitness: false, rank: null, isVouched: false, vouchSponsor: null });
-                      setError(null);
-                    }}
-                    onKeyDown={(e) => e.key === "Enter" && checkWitnessStatus()}
-                    data-testid="input-username"
-                  />
-                  <Button 
-                    variant="outline" 
-                    onClick={checkWitnessStatus}
-                    disabled={isLoading || !username.trim()}
-                    data-testid="button-check-witness"
-                  >
-                    {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Check"}
-                  </Button>
-                </div>
+                <Input
+                  id="username"
+                  placeholder="yourusername"
+                  value={username}
+                  onChange={(e) => {
+                    setUsername(e.target.value.toLowerCase().replace("@", ""));
+                    setError(null);
+                  }}
+                  onKeyDown={(e) => e.key === "Enter" && handleLogin()}
+                  data-testid="input-username"
+                />
               </div>
-
-              {witnessStatus.checked && (
-                <div className={`p-4 rounded-lg border ${
-                  witnessStatus.isWitness
-                    ? "bg-green-500/10 border-green-500/30"
-                    : witnessStatus.isVouched
-                      ? "bg-blue-500/10 border-blue-500/30"
-                      : "bg-yellow-500/10 border-yellow-500/30"
-                }`}>
-                  {witnessStatus.isWitness ? (
-                    <div className="flex items-center gap-3">
-                      <CheckCircle2 className="h-5 w-5 text-green-500" />
-                      <div>
-                        <p className="font-medium">@{username} is a Top Witness</p>
-                        <p className="text-sm text-muted-foreground">
-                          Rank #{witnessStatus.rank} - Eligible to validate
-                        </p>
-                      </div>
-                      <Badge className="ml-auto">Witness</Badge>
-                    </div>
-                  ) : witnessStatus.isVouched ? (
-                    <div className="flex items-center gap-3">
-                      <CheckCircle2 className="h-5 w-5 text-blue-500" />
-                      <div>
-                        <p className="font-medium">@{username} is a Vouched Validator</p>
-                        <p className="text-sm text-muted-foreground">
-                          Sponsored by @{witnessStatus.vouchSponsor} via Web of Trust
-                        </p>
-                      </div>
-                      <Badge className="ml-auto bg-blue-500/20 text-blue-500 border-blue-500/30">Vouched</Badge>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-3">
-                      <AlertTriangle className="h-5 w-5 text-yellow-500" />
-                      <div>
-                        <p className="font-medium">Not a Top 150 Witness</p>
-                        <p className="text-sm text-muted-foreground">
-                          Only witnesses or vouched users can access validator features
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
 
               {error && (
                 <Alert variant="destructive">
@@ -261,7 +163,7 @@ export default function ValidatorLogin() {
                 className="w-full"
                 size="lg"
                 onClick={handleLogin}
-                disabled={isLoading || (!witnessStatus.isWitness && !witnessStatus.isVouched)}
+                disabled={isLoading || !username.trim()}
                 data-testid="button-login"
               >
                 {isLoading ? (
@@ -284,14 +186,6 @@ export default function ValidatorLogin() {
           )}
         </CardContent>
       </Card>
-
-      <div className="mt-6 text-center text-sm text-muted-foreground">
-        <p>Who can validate?</p>
-        <p className="mt-1">
-          Top 150 Hive witnesses and users vouched through the Web of Trust.
-          Witnesses can vouch for one trusted non-witness validator each.
-        </p>
-      </div>
     </div>
   );
 }

@@ -13,6 +13,7 @@ interface ValidatorAuthContextType {
   user: ValidatorUser | null;
   isLoading: boolean;
   isAuthenticated: boolean;
+  isValidator: boolean;
   login: (username: string, signature: string, challenge: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
 }
@@ -28,15 +29,15 @@ async function validateSession(username: string, sessionToken: string): Promise<
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, sessionToken }),
     });
-    
+
     if (!response.ok) return null;
-    
+
     const data = await response.json();
-    if (data.valid && (data.isTopWitness || data.isVouched)) {
+    if (data.valid) {
       return {
         username: data.username,
         witnessRank: data.witnessRank ?? null,
-        isTopWitness: data.isTopWitness,
+        isTopWitness: data.isTopWitness || false,
         isVouched: data.isVouched || false,
         sponsor: data.vouchSponsor,
         sessionToken,
@@ -74,7 +75,7 @@ export function ValidatorAuthProvider({ children }: { children: ReactNode }) {
       }
       setIsLoading(false);
     };
-    
+
     verifyStoredSession();
   }, []);
 
@@ -92,10 +93,6 @@ export function ValidatorAuthProvider({ children }: { children: ReactNode }) {
         return { success: false, error: data.error || "Login failed" };
       }
 
-      if (!data.isTopWitness && !data.isVouched) {
-        return { success: false, error: `Not in top 150 witnesses and no active vouch` };
-      }
-
       if (!data.sessionToken) {
         return { success: false, error: "Server did not return session token" };
       }
@@ -103,7 +100,7 @@ export function ValidatorAuthProvider({ children }: { children: ReactNode }) {
       const validatorUser: ValidatorUser = {
         username: data.username,
         witnessRank: data.witnessRank ?? null,
-        isTopWitness: data.isTopWitness,
+        isTopWitness: data.isTopWitness || false,
         isVouched: data.isVouched || false,
         sponsor: data.vouchSponsor,
         sessionToken: data.sessionToken,
@@ -134,8 +131,10 @@ export function ValidatorAuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, []);
 
+  const isValidator = !!user && (user.isTopWitness || user.isVouched);
+
   return (
-    <ValidatorAuthContext.Provider value={{ user, isLoading, isAuthenticated: !!user, login, logout }}>
+    <ValidatorAuthContext.Provider value={{ user, isLoading, isAuthenticated: !!user, isValidator, login, logout }}>
       {children}
     </ValidatorAuthContext.Provider>
   );

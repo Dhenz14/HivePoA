@@ -33,7 +33,7 @@ import Encoding from "@/pages/encoding";
 import generatedImage from '@assets/generated_images/a_dark,_futuristic_abstract_mesh_background_with_red_accents..png';
 
 function ProtectedValidatorRoute({ component: Component }: { component: React.ComponentType }) {
-  const { isAuthenticated, isLoading } = useValidatorAuth();
+  const { isAuthenticated, isValidator, isLoading } = useValidatorAuth();
   const [, setLocation] = useLocation();
 
   if (isLoading) {
@@ -43,6 +43,15 @@ function ProtectedValidatorRoute({ component: Component }: { component: React.Co
   if (!isAuthenticated) {
     setLocation("/validator-login");
     return null;
+  }
+
+  if (!isValidator) {
+    return (
+      <div className="p-8 text-center text-muted-foreground">
+        <p className="text-lg font-medium mb-2">Validator Access Required</p>
+        <p>Only top 150 Hive witnesses and vouched users can access validator features.</p>
+      </div>
+    );
   }
 
   return <Component />;

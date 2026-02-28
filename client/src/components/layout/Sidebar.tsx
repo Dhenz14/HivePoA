@@ -7,7 +7,7 @@ import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
 export function Sidebar() {
   const [location] = useLocation();
   const { config } = useNodeConfig();
-  const { user, isAuthenticated, logout } = useValidatorAuth();
+  const { user, isAuthenticated, isValidator, logout } = useValidatorAuth();
 
   const mainLinks = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -48,48 +48,11 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
-        {mainLinks.map((link) => {
-          const Icon = link.icon;
-          const isActive = location === link.href;
-          return (
-            <Link 
-              key={link.href} 
-              href={link.href}
-              className={cn(
-                "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-all duration-200 group",
-                isActive 
-                  ? "bg-primary/10 text-primary" 
-                  : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
-              )}
-            >
-              <Icon className={cn("w-4 h-4", isActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground")} />
-              {link.label}
-            </Link>
-          );
-        })}
-
-        <div className="pt-4 pb-2">
-          <div className="flex items-center justify-between px-3">
-            <span className="text-xs font-semibold text-muted-foreground/70 uppercase tracking-wider">
-              Validator
-            </span>
-            {isAuthenticated && user && (
-              <span className="text-xs text-primary font-medium flex items-center gap-1">
-                @{user.username}
-                {user.isVouched && (
-                  <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/20 text-blue-500 border border-blue-500/30 font-semibold">
-                    VOUCHED
-                  </span>
-                )}
-              </span>
-            )}
-          </div>
-        </div>
-        
+        {/* Login / User section at the top */}
         {!isAuthenticated ? (
           <Link
             href="/validator-login"
-            className="block mt-1"
+            className="block mb-3"
             data-testid="link-validator-login"
           >
             <div className="rounded-lg border border-primary/30 bg-primary/5 hover:bg-primary/10 transition-all duration-200 p-3 space-y-2 cursor-pointer group">
@@ -100,23 +63,76 @@ export function Sidebar() {
                 <span className="text-sm font-semibold text-primary">Login with Keychain</span>
               </div>
               <p className="text-[11px] text-muted-foreground leading-snug">
-                Sign in to validate & earn HBD rewards
+                Sign in with your Hive account to earn rewards
               </p>
             </div>
           </Link>
         ) : (
+          <div className="rounded-lg border border-green-500/30 bg-green-500/5 p-3 mb-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-green-500" />
+                <span className="text-sm font-semibold text-foreground">@{user!.username}</span>
+              </div>
+              <button
+                type="button"
+                title="Logout"
+                onClick={logout}
+                className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                data-testid="button-validator-logout"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            {(user!.isTopWitness || user!.isVouched) && (
+              <div className="mt-1.5 flex items-center gap-1">
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/20 text-primary border border-primary/30 font-semibold">
+                  {user!.isTopWitness ? `WITNESS #${user!.witnessRank}` : "VOUCHED"}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {mainLinks.map((link) => {
+          const Icon = link.icon;
+          const isActive = location === link.href;
+          return (
+            <Link
+              key={link.href}
+              href={link.href}
+              className={cn(
+                "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-all duration-200 group",
+                isActive
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
+              )}
+            >
+              <Icon className={cn("w-4 h-4", isActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground")} />
+              {link.label}
+            </Link>
+          );
+        })}
+
+        {/* Validator section - only shown for witnesses/vouched users */}
+        {isValidator && (
           <>
+            <div className="pt-4 pb-2">
+              <span className="px-3 text-xs font-semibold text-muted-foreground/70 uppercase tracking-wider">
+                Validator
+              </span>
+            </div>
             {validatorLinks.map((link) => {
               const Icon = link.icon;
               const isActive = location === link.href;
               return (
-                <Link 
-                  key={link.href} 
+                <Link
+                  key={link.href}
                   href={link.href}
                   className={cn(
                     "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-all duration-200 group",
-                    isActive 
-                      ? "bg-primary/10 text-primary" 
+                    isActive
+                      ? "bg-primary/10 text-primary"
                       : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
                   )}
                 >
@@ -125,14 +141,6 @@ export function Sidebar() {
                 </Link>
               );
             })}
-            <button
-              onClick={logout}
-              className="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-all duration-200 group text-muted-foreground hover:text-foreground hover:bg-accent/50 w-full"
-              data-testid="button-validator-logout"
-            >
-              <LogOut className="w-4 h-4 text-muted-foreground group-hover:text-foreground" />
-              Logout
-            </button>
           </>
         )}
 
@@ -145,13 +153,13 @@ export function Sidebar() {
           const Icon = link.icon;
           const isActive = location === link.href;
           return (
-            <Link 
-              key={link.href} 
+            <Link
+              key={link.href}
               href={link.href}
               className={cn(
                 "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-all duration-200 group",
-                isActive 
-                  ? "bg-primary/10 text-primary" 
+                isActive
+                  ? "bg-primary/10 text-primary"
                   : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
               )}
             >
@@ -169,10 +177,10 @@ export function Sidebar() {
             config.isConnected ? "bg-green-500 animate-pulse" : "bg-yellow-500"
           )} />
           <span>
-            {config.mode === "demo" 
-              ? "Demo Mode" 
-              : config.isConnected 
-                ? "IPFS: Connected" 
+            {config.mode === "demo"
+              ? "Demo Mode"
+              : config.isConnected
+                ? "IPFS: Connected"
                 : "IPFS: Disconnected"}
           </span>
         </div>
