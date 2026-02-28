@@ -1,0 +1,54 @@
+name: Release Desktop Agent
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win32-x64
+            builder_args: --win
+          - os: macos-latest
+            platform: darwin-x64
+            builder_args: --mac --x64
+          - os: macos-latest
+            platform: darwin-arm64
+            builder_args: --mac --arm64
+          - os: ubuntu-latest
+            platform: linux-x64
+            builder_args: --linux
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        working-directory: desktop-agent
+        run: npm ci
+
+      - name: Download Kubo binary
+        working-directory: desktop-agent
+        run: node scripts/download-kubo.js ${{ matrix.platform }}
+
+      - name: Build app
+        working-directory: desktop-agent
+        run: npm run build
+
+      - name: Package and publish
+        working-directory: desktop-agent
+        run: npx electron-builder ${{ matrix.builder_args }} --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
