@@ -11,4 +11,6 @@ contextBridge.exposeInMainWorld('spkAgent', {
   hasPostingKey: () => ipcRenderer.invoke('has-posting-key'),
   setPostingKey: (key: string) => ipcRenderer.invoke('set-posting-key', key),
   clearPostingKey: () => ipcRenderer.invoke('clear-posting-key'),
+  // Keychain auth
+  openKeychainAuth: () => ipcRenderer.invoke('open-keychain-auth'),
 });

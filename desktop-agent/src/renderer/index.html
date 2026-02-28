@@ -246,12 +246,20 @@
     <!-- Hive Account Config -->
     <div class="status-card config-section">
       <h2>Hive Account</h2>
-      <label for="hiveUsername">Hive Username</label>
-      <input type="text" id="hiveUsername" placeholder="Enter your Hive username">
-      <label for="postingKey">Posting Key (encrypted locally)</label>
-      <input type="password" id="postingKey" placeholder="Enter your Hive posting key">
+      <div id="keychainAuthStatus" style="display:none; background:rgba(0,212,170,0.1); border:1px solid rgba(0,212,170,0.3); border-radius:8px; padding:12px; margin-bottom:15px; font-size:13px; color:#00d4aa;"></div>
+      <button type="button" id="keychainLogin" style="background:#00d4aa; color:#1a1a2e; width:100%; margin-bottom:12px;">Login with Hive Keychain</button>
+      <div class="hint" style="margin-bottom:15px; margin-top:0;">Opens your browser. No private keys needed.</div>
+      <details style="margin-bottom:10px;">
+        <summary style="cursor:pointer; color:#888; font-size:13px;">Manual key entry (advanced)</summary>
+        <div style="margin-top:10px;">
+          <label for="hiveUsername">Hive Username</label>
+          <input type="text" id="hiveUsername" placeholder="Enter your Hive username">
+          <label for="postingKey">Posting Key (encrypted locally)</label>
+          <input type="password" id="postingKey" placeholder="Enter your Hive posting key">
+          <button type="button" id="saveConfig">Save & Connect to Network</button>
+        </div>
+      </details>
       <div class="hint" id="keyStatus">Your key is encrypted with OS-level security and never leaves your device.</div>
-      <button type="button" id="saveConfig">Save & Connect to Network</button>
     </div>
 
     <!-- Validation Settings -->

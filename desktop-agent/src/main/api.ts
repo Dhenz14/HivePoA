@@ -5,10 +5,163 @@ import axios from 'axios';
 import { app as electronApp } from 'electron';
 import { KuboManager } from './kubo';
 import { ConfigStore, AgentConfig } from './config';
+import { AgentHiveClient } from './hive';
 import type { AgentWSClient } from './agent-ws';
 import type { PeerDiscovery } from './peer-discovery';
 import type { LocalValidator } from './validator';
 import type { ChallengeHandler } from './challenge-handler';
+
+// Self-contained Keychain auth page served to the user's browser
+const AUTH_PAGE_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SPK Agent — Hive Keychain Login</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      color: #eee; min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .card {
+      background: rgba(255,255,255,0.06); border-radius: 16px;
+      padding: 40px; max-width: 420px; width: 100%; text-align: center;
+    }
+    h1 { color: #00d4aa; font-size: 22px; margin-bottom: 8px; }
+    .subtitle { color: #888; font-size: 14px; margin-bottom: 28px; }
+    label { display: block; text-align: left; font-size: 13px; color: #aaa; margin-bottom: 6px; }
+    input {
+      width: 100%; padding: 12px; border: 1px solid #333; border-radius: 8px;
+      background: rgba(255,255,255,0.05); color: #eee; font-size: 15px; margin-bottom: 18px;
+    }
+    input:focus { outline: none; border-color: #00d4aa; }
+    button {
+      width: 100%; padding: 14px; border: none; border-radius: 8px;
+      font-size: 15px; font-weight: 600; cursor: pointer; transition: background .2s;
+    }
+    .btn-primary { background: #00d4aa; color: #1a1a2e; }
+    .btn-primary:hover { background: #00b894; }
+    .btn-primary:disabled { background: #555; color: #999; cursor: not-allowed; }
+    .status { margin-top: 18px; font-size: 14px; min-height: 20px; }
+    .status.error { color: #ff6b6b; }
+    .status.success { color: #00d4aa; }
+    .status.info { color: #74b9ff; }
+    .no-keychain {
+      background: rgba(255,107,107,0.1); border: 1px solid rgba(255,107,107,0.3);
+      border-radius: 8px; padding: 16px; margin-bottom: 18px; font-size: 13px; color: #ff6b6b;
+    }
+    .no-keychain a { color: #74b9ff; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>SPK Desktop Agent</h1>
+    <p class="subtitle">Sign in with Hive Keychain — no private keys needed</p>
+
+    <div id="noKeychain" class="no-keychain" style="display:none;">
+      Hive Keychain extension not detected.<br>
+      <a href="https://hive-keychain.com" target="_blank" rel="noopener">Install Hive Keychain</a> and reload this page.
+    </div>
+
+    <div id="form">
+      <label for="username">Hive Username</label>
+      <input type="text" id="username" placeholder="yourusername" autocomplete="off" />
+      <button class="btn-primary" id="signBtn" disabled>Checking for Keychain...</button>
+    </div>
+
+    <div id="statusMsg" class="status"></div>
+  </div>
+
+  <script>
+    const CHALLENGE = "{{CHALLENGE}}";
+    let keychainReady = false;
+
+    function checkKeychain() {
+      if (window.hive_keychain) {
+        keychainReady = true;
+        document.getElementById('signBtn').disabled = false;
+        document.getElementById('signBtn').textContent = 'Sign with Hive Keychain';
+        document.getElementById('noKeychain').style.display = 'none';
+      } else {
+        document.getElementById('noKeychain').style.display = 'block';
+        document.getElementById('signBtn').textContent = 'Keychain not found';
+      }
+    }
+
+    // Keychain injects asynchronously; poll briefly
+    let checks = 0;
+    const poll = setInterval(() => {
+      checks++;
+      if (window.hive_keychain || checks > 20) {
+        clearInterval(poll);
+        checkKeychain();
+      }
+    }, 250);
+
+    document.getElementById('signBtn').addEventListener('click', async () => {
+      const username = document.getElementById('username').value.trim().toLowerCase();
+      if (!username) {
+        showStatus('Enter your Hive username', 'error');
+        return;
+      }
+      if (!keychainReady) {
+        showStatus('Hive Keychain not detected', 'error');
+        return;
+      }
+
+      const btn = document.getElementById('signBtn');
+      btn.disabled = true;
+      btn.textContent = 'Waiting for Keychain...';
+      showStatus('', '');
+
+      window.hive_keychain.requestSignBuffer(username, CHALLENGE, 'Posting', async (response) => {
+        if (!response.success) {
+          showStatus(response.message || 'Signing cancelled', 'error');
+          btn.disabled = false;
+          btn.textContent = 'Sign with Hive Keychain';
+          return;
+        }
+
+        showStatus('Verifying signature...', 'info');
+
+        try {
+          const res = await fetch('/api/auth/keychain-verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              username: username,
+              signature: response.result,
+              challenge: CHALLENGE,
+            }),
+          });
+          const data = await res.json();
+          if (data.success) {
+            showStatus('Authenticated! You can close this tab.', 'success');
+            btn.textContent = 'Done';
+          } else {
+            showStatus(data.error || 'Verification failed', 'error');
+            btn.disabled = false;
+            btn.textContent = 'Sign with Hive Keychain';
+          }
+        } catch (err) {
+          showStatus('Network error: ' + err.message, 'error');
+          btn.disabled = false;
+          btn.textContent = 'Sign with Hive Keychain';
+        }
+      });
+    });
+
+    function showStatus(msg, type) {
+      const el = document.getElementById('statusMsg');
+      el.textContent = msg;
+      el.className = 'status ' + (type || '');
+    }
+  </script>
+</body>
+</html>`;
 
 export class ApiServer {
   private app: Express;
@@ -22,6 +175,13 @@ export class ApiServer {
   private peerDiscovery: PeerDiscovery | null = null;
   private validator: LocalValidator | null = null;
   private challengeHandler: ChallengeHandler | null = null;
+
+  // Keychain auth state
+  private pendingChallenge: { token: string; expiresAt: number } | null = null;
+  private verifyAttempts: { count: number; windowStart: number } = { count: 0, windowStart: 0 };
+  private static readonly MAX_VERIFY_ATTEMPTS = 5;
+  private static readonly VERIFY_WINDOW_MS = 60000;
+  private static readonly CHALLENGE_TTL_MS = 60000;
 
   constructor(kubo: KuboManager, config: ConfigStore) {
     this.kubo = kubo;
@@ -389,6 +549,82 @@ export class ApiServer {
       }
 
       res.json({ success: true, enabled });
+    });
+
+    // ─── Hive Keychain Auth ────────────────────────────────────────────
+
+    // Serve the Keychain auth page (opened in the user's default browser)
+    this.app.get('/auth/keychain', (req: Request, res: Response) => {
+      // Localhost-only
+      const ip = req.ip || req.socket.remoteAddress || '';
+      if (!ip.includes('127.0.0.1') && !ip.includes('::1') && !ip.includes('::ffff:127.0.0.1')) {
+        return res.status(403).send('Forbidden');
+      }
+
+      // Generate a one-time challenge
+      const token = crypto.randomBytes(32).toString('hex');
+      this.pendingChallenge = {
+        token,
+        expiresAt: Date.now() + ApiServer.CHALLENGE_TTL_MS,
+      };
+
+      const html = AUTH_PAGE_HTML.replace('{{CHALLENGE}}', token);
+      res.type('html').send(html);
+    });
+
+    // Verify the Keychain signature
+    this.app.post('/api/auth/keychain-verify', async (req: Request, res: Response) => {
+      // Localhost-only
+      const ip = req.ip || req.socket.remoteAddress || '';
+      if (!ip.includes('127.0.0.1') && !ip.includes('::1') && !ip.includes('::ffff:127.0.0.1')) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      // Rate limit
+      const now = Date.now();
+      if (now - this.verifyAttempts.windowStart > ApiServer.VERIFY_WINDOW_MS) {
+        this.verifyAttempts = { count: 0, windowStart: now };
+      }
+      this.verifyAttempts.count++;
+      if (this.verifyAttempts.count > ApiServer.MAX_VERIFY_ATTEMPTS) {
+        return res.status(429).json({ error: 'Too many attempts. Wait 60 seconds.' });
+      }
+
+      const { username, signature, challenge } = req.body;
+      if (!username || !signature || !challenge) {
+        return res.status(400).json({ error: 'Missing username, signature, or challenge' });
+      }
+
+      // Validate challenge
+      if (!this.pendingChallenge || this.pendingChallenge.token !== challenge) {
+        return res.status(400).json({ error: 'Invalid or expired challenge. Reload the page.' });
+      }
+      if (Date.now() > this.pendingChallenge.expiresAt) {
+        this.pendingChallenge = null;
+        return res.status(400).json({ error: 'Challenge expired. Reload the page.' });
+      }
+
+      // Consume the challenge (single-use)
+      this.pendingChallenge = null;
+
+      try {
+        // Create a temporary Hive client for verification
+        const hive = new AgentHiveClient({ username });
+        const valid = await hive.verifySignature(username, challenge, signature);
+
+        if (!valid) {
+          return res.status(401).json({ error: 'Signature verification failed. Check your username.' });
+        }
+
+        // Authentication successful — store the username
+        this.config.setConfig({ hiveUsername: username });
+        console.log(`[API] Keychain auth: ${username} verified successfully`);
+
+        res.json({ success: true, username });
+      } catch (err: any) {
+        console.error('[API] Keychain verify error:', err.message);
+        res.status(500).json({ error: 'Verification failed. Try again.' });
+      }
     });
   }
 

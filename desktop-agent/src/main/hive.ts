@@ -1,4 +1,4 @@
-import { Client, PrivateKey, CustomJsonOperation } from '@hiveio/dhive';
+import { Client, PrivateKey, CustomJsonOperation, Signature, PublicKey, cryptoUtils } from '@hiveio/dhive';
 
 // 7 public Hive API nodes — dhive rotates through them automatically on failure
 const DEFAULT_HIVE_NODES = [
@@ -321,6 +321,34 @@ export class AgentHiveClient {
       latencyMs,
       timestamp: new Date().toISOString(),
     });
+  }
+
+  /** Verify a Hive Keychain signature against the account's posting key authorities. */
+  async verifySignature(username: string, message: string, signature: string): Promise<boolean> {
+    try {
+      const account = await this.getAccount(username);
+      if (!account) return false;
+
+      const messageHash = cryptoUtils.sha256(message);
+      const sig = Signature.fromString(signature);
+
+      const postingAuth = account.posting;
+      for (const [pubKeyStr] of postingAuth.key_auths) {
+        try {
+          const pubKey = PublicKey.fromString(pubKeyStr as string);
+          const recovered = sig.recover(messageHash);
+          if (recovered.toString() === pubKey.toString()) {
+            return true;
+          }
+        } catch {
+          continue;
+        }
+      }
+      return false;
+    } catch (err: any) {
+      console.error('[Hive] Signature verification failed:', err.message);
+      return false;
+    }
   }
 
   /** Check if the client has a posting key configured. */

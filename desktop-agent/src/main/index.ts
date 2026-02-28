@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, Tray, Menu, nativeImage, dialog, ipcMain, shell } from 'electron';
 import * as path from 'path';
 import { KuboManager } from './kubo';
 import { ApiServer } from './api';
@@ -251,6 +251,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('clear-posting-key', () => {
     configStore?.clearPostingKey();
     return true;
+  });
+  ipcMain.handle('open-keychain-auth', async () => {
+    const port = configStore?.getConfig().apiPort || 5111;
+    await shell.openExternal(`http://127.0.0.1:${port}/auth/keychain`);
   });
 
   try {

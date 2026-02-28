@@ -298,11 +298,71 @@ async function updateUI(): Promise<void> {
   }
 }
 
+async function keychainLogin(): Promise<void> {
+  const btn = document.getElementById('keychainLogin') as HTMLButtonElement;
+  const statusEl = document.getElementById('keychainAuthStatus');
+  btn.disabled = true;
+  btn.textContent = 'Opening browser...';
+
+  try {
+    await (window as any).spkAgent.openKeychainAuth();
+  } catch {
+    btn.disabled = false;
+    btn.textContent = 'Login with Hive Keychain';
+    if (statusEl) {
+      statusEl.style.display = 'block';
+      statusEl.style.borderColor = 'rgba(255,107,107,0.3)';
+      statusEl.style.color = '#ff6b6b';
+      statusEl.textContent = 'Failed to open browser.';
+    }
+    return;
+  }
+
+  // Poll for auth completion (every 2s for up to 2 minutes)
+  btn.textContent = 'Waiting for sign-in...';
+  if (statusEl) {
+    statusEl.style.display = 'block';
+    statusEl.style.borderColor = 'rgba(116,185,255,0.3)';
+    statusEl.style.color = '#74b9ff';
+    statusEl.textContent = 'Complete the sign-in in your browser, then return here.';
+  }
+
+  let attempts = 0;
+  const pollInterval = setInterval(async () => {
+    attempts++;
+    if (attempts > 60) { // 2 minutes
+      clearInterval(pollInterval);
+      btn.disabled = false;
+      btn.textContent = 'Login with Hive Keychain';
+      if (statusEl) {
+        statusEl.style.color = '#ff6b6b';
+        statusEl.style.borderColor = 'rgba(255,107,107,0.3)';
+        statusEl.textContent = 'Timed out. Try again.';
+      }
+      return;
+    }
+
+    const status = await fetchStatus();
+    if (status?.config?.hiveUsername) {
+      clearInterval(pollInterval);
+      btn.disabled = false;
+      btn.textContent = 'Login with Hive Keychain';
+      if (statusEl) {
+        statusEl.style.color = '#00d4aa';
+        statusEl.style.borderColor = 'rgba(0,212,170,0.3)';
+        statusEl.textContent = `Signed in as @${status.config.hiveUsername}`;
+      }
+      updateUI();
+    }
+  }, 2000);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('saveConfig')?.addEventListener('click', saveConfig);
   document.getElementById('saveBandwidth')?.addEventListener('click', saveBandwidth);
   document.getElementById('saveStorage')?.addEventListener('click', saveStorage);
   document.getElementById('saveValidation')?.addEventListener('click', saveValidation);
+  document.getElementById('keychainLogin')?.addEventListener('click', keychainLogin);
 
   updateUI();
   setInterval(updateUI, 5000);
