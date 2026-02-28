@@ -1,6 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Activity, HardDrive, Server, DollarSign, ArrowUpRight, ShieldCheck, Box, Search, PlayCircle } from "lucide-react";
+import { Activity, HardDrive, Server, DollarSign, ArrowUpRight, ShieldCheck, Box, Search, PlayCircle, Key } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { cn } from "@/lib/utils";
@@ -8,6 +8,8 @@ import { Badge } from "@/components/ui/badge";
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, connectWebSocket } from "@/lib/api";
+import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
+import { Link } from "wouter";
 
 const data = [
   { time: "00:00", proofs: 12 },
@@ -21,7 +23,8 @@ const data = [
 
 export default function Dashboard() {
   const [validations, setValidations] = useState<any[]>([]);
-  
+  const { isAuthenticated } = useValidatorAuth();
+
   // Fetch dashboard stats
   const { data: stats } = useQuery({
     queryKey: ["stats"],
@@ -67,6 +70,32 @@ export default function Dashboard() {
           </span>
         </div>
       </div>
+
+      {!isAuthenticated && (
+        <Card className="border-primary/30 bg-primary/5">
+          <CardContent className="p-5">
+            <div className="flex items-center justify-between gap-6 flex-wrap">
+              <div className="flex items-center gap-4">
+                <div className="p-2.5 rounded-xl bg-primary/20 text-primary shrink-0">
+                  <Key className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-base">Login with Hive Keychain</h3>
+                  <p className="text-sm text-muted-foreground mt-0.5">
+                    Sign in to validate storage proofs and earn HBD rewards
+                  </p>
+                </div>
+              </div>
+              <Link href="/validator-login">
+                <Button size="lg" className="font-semibold shrink-0">
+                  <Key className="mr-2 h-4 w-4" />
+                  Login with Keychain
+                </Button>
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatsCard

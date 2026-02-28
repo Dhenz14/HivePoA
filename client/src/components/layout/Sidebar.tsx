@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, HardDrive, Wallet, Server, Settings, Globe, Hexagon, Play, Wifi, Download, Coins, ShoppingBag, BarChart3, Shield, Zap, AlertTriangle, LogIn, LogOut, FileText, Landmark, Users, Video } from "lucide-react";
+import { LayoutDashboard, HardDrive, Wallet, Server, Settings, Globe, Hexagon, Play, Wifi, Download, Coins, ShoppingBag, BarChart3, Shield, Zap, AlertTriangle, LogOut, FileText, Landmark, Users, Video, Key } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useNodeConfig } from "@/contexts/NodeConfigContext";
 import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
@@ -87,18 +87,22 @@ export function Sidebar() {
         </div>
         
         {!isAuthenticated ? (
-          <Link 
+          <Link
             href="/validator-login"
-            className={cn(
-              "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-all duration-200 group",
-              location === "/validator-login"
-                ? "bg-primary/10 text-primary" 
-                : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
-            )}
+            className="block mt-1"
             data-testid="link-validator-login"
           >
-            <LogIn className={cn("w-4 h-4", location === "/validator-login" ? "text-primary" : "text-muted-foreground group-hover:text-foreground")} />
-            Validator Login
+            <div className="rounded-lg border border-primary/30 bg-primary/5 hover:bg-primary/10 transition-all duration-200 p-3 space-y-2 cursor-pointer group">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-md bg-primary/20 text-primary">
+                  <Key className="w-4 h-4" />
+                </div>
+                <span className="text-sm font-semibold text-primary">Login with Keychain</span>
+              </div>
+              <p className="text-[11px] text-muted-foreground leading-snug">
+                Sign in to validate & earn HBD rewards
+              </p>
+            </div>
           </Link>
         ) : (
           <>
