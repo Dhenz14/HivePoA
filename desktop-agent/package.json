@@ -2,7 +2,7 @@
   "name": "spk-desktop-agent",
   "version": "1.1.0",
   "description": "SPK Network Desktop Agent - Earn HBD by providing IPFS storage",
-  "homepage": "https://github.com/Dhenz14/spknetworkpoa",
+  "homepage": "https://github.com/Dhenz14/HivePoA",
   "main": "./dist/main/index.js",
   "scripts": {
     "dev": "cross-env ELECTRON_RUN_AS_NODE= NODE_ENV=development electron .",
@@ -13,6 +13,7 @@
     "package:win": "npm run build && electron-builder --win",
     "package:mac": "npm run build && electron-builder --mac",
     "package:linux": "npm run build && electron-builder --linux",
+    "release": "npm run package:win && node scripts/publish-release.js",
     "postinstall": "electron-builder install-app-deps",
     "download-kubo": "node scripts/download-kubo.js"
   },
@@ -55,7 +56,7 @@
     "publish": {
       "provider": "github",
       "owner": "Dhenz14",
-      "repo": "spknetworkpoa"
+      "repo": "HivePoA"
     },
     "files": [
       "dist/**/*",
