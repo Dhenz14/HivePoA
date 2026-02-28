@@ -50,7 +50,7 @@ export class ApiServer {
         res.header('Access-Control-Allow-Origin', origin || '*');
       }
       res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-File-Name');
       if (req.method === 'OPTIONS') {
         return res.sendStatus(200);
       }
@@ -205,6 +205,46 @@ export class ApiServer {
         await axios.post(`${this.kubo.getApiUrl()}/api/v0/pin/rm?arg=${cid}`);
         res.json({ success: true });
       } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Upload file directly to IPFS (add + pin in one step)
+    this.app.post('/api/upload', express.raw({ type: '*/*', limit: '500mb' }), async (req: Request, res: Response) => {
+      const fileBuffer = req.body as Buffer;
+      if (!fileBuffer || fileBuffer.length === 0) {
+        return res.status(400).json({ error: 'No file data provided' });
+      }
+
+      const fileName = (req.headers['x-file-name'] as string) || 'upload';
+
+      try {
+        // Construct multipart form data for Kubo /api/v0/add
+        const boundary = '----IPFSUpload' + Date.now();
+        const header = Buffer.from(
+          `--${boundary}\r\n` +
+          `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
+          `Content-Type: application/octet-stream\r\n\r\n`
+        );
+        const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
+        const body = Buffer.concat([header, fileBuffer, footer]);
+
+        const response = await axios.post(
+          `${this.kubo.getApiUrl()}/api/v0/add?pin=true&cid-version=1`,
+          body,
+          {
+            headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+            timeout: 300000,
+            maxBodyLength: Infinity,
+            maxContentLength: Infinity,
+          }
+        );
+
+        const cid = response.data.Hash;
+        console.log(`[API] Uploaded file "${fileName}" → ${cid}`);
+        res.json({ success: true, cid, name: fileName, size: fileBuffer.length });
+      } catch (error: any) {
+        console.error('[API] Upload failed:', error.message);
         res.status(500).json({ error: error.message });
       }
     });

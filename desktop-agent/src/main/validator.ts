@@ -73,20 +73,30 @@ export class LocalValidator {
     // Get initial block hash
     await this.updateBlockHash();
 
-    // Refresh block hash every 30 seconds
-    this.blockHashTimer = setInterval(() => this.updateBlockHash(), 30000);
+    // Refresh block hash every 60 seconds (was 30s — reduces API calls by half)
+    this.blockHashTimer = setInterval(() => this.updateBlockHash(), 60000);
 
     // Run first challenge after a short delay (let peer discovery populate)
-    setTimeout(() => this.runChallengeRound(), 10000);
+    setTimeout(() => this.runChallengeRound(), 15000);
 
-    // Run challenge rounds on interval
-    this.challengeTimer = setInterval(() => this.runChallengeRound(), this.challengeIntervalMs);
+    // Run challenge rounds with jitter (±20% of interval) to prevent synchronized behavior
+    this.scheduleNextChallenge();
+  }
+
+  /** Schedule next challenge round with random jitter. */
+  private scheduleNextChallenge(): void {
+    const jitter = Math.floor(this.challengeIntervalMs * 0.2 * (Math.random() * 2 - 1));
+    const interval = this.challengeIntervalMs + jitter;
+
+    this.challengeTimer = setTimeout(() => {
+      this.runChallengeRound().finally(() => this.scheduleNextChallenge());
+    }, interval);
   }
 
   /** Stop the validator engine. */
   stop(): void {
     if (this.challengeTimer) {
-      clearInterval(this.challengeTimer);
+      clearTimeout(this.challengeTimer);
       this.challengeTimer = null;
     }
     if (this.blockHashTimer) {
@@ -285,8 +295,8 @@ export class LocalValidator {
   setChallengeInterval(ms: number): void {
     this.challengeIntervalMs = ms;
     if (this.challengeTimer) {
-      clearInterval(this.challengeTimer);
-      this.challengeTimer = setInterval(() => this.runChallengeRound(), this.challengeIntervalMs);
+      clearTimeout(this.challengeTimer);
+      this.scheduleNextChallenge();
     }
   }
 }

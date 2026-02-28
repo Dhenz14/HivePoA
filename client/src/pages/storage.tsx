@@ -6,8 +6,8 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Upload, File, Search, Copy, CheckCircle2, Clock, ShieldCheck, AlertCircle, Users, Coins, AlertTriangle, XCircle, Ban, Wifi, Network, Film, Cpu, Hash, Globe, X, Trash2, Pin, Settings, Download, Loader2, Monitor } from "lucide-react";
-import { useState, useRef } from "react";
+import { Upload, File, Search, Copy, CheckCircle2, Clock, ShieldCheck, AlertCircle, Users, Coins, AlertTriangle, XCircle, Ban, Wifi, Network, Film, Cpu, Hash, Globe, X, Trash2, Pin, Settings, Download, Loader2, Monitor, HardDrive, Zap } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useDesktopAgent } from "@/hooks/use-desktop-agent";
 import { cn } from "@/lib/utils";
@@ -17,10 +17,12 @@ import { Badge } from "@/components/ui/badge";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, UserSettings } from "@/lib/api";
 
+const AGENT_URL = "http://127.0.0.1:5111";
+
 export default function Storage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const { check: checkAgent } = useDesktopAgent();
+  const { isRunning: agentRunning, status: agentStatus, pins: agentPins, check: checkAgent, unpinCid, refreshPins } = useDesktopAgent();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'pinning' | 'complete'>('idle');
@@ -30,20 +32,44 @@ export default function Storage() {
   const [showAgentPrompt, setShowAgentPrompt] = useState(false);
   const FILES_PER_PAGE = 20;
 
-  // Fetch files from API with pagination
+  // When agent is running, use agent data. Otherwise fall back to server API.
+  const agentConnected = agentRunning === true && agentStatus !== null;
+
+  // Fetch files from server API (fallback when agent is not connected)
   const { data: filesData, isLoading: filesLoading } = useQuery({
     queryKey: ["files", filePage],
     queryFn: () => api.getFilesPaginated(filePage, FILES_PER_PAGE),
     refetchInterval: 10000,
+    enabled: !agentConnected, // Skip server query when agent is live
   });
-  const files = filesData?.data || [];
-  const totalPages = filesData?.totalPages || 1;
+  const serverFiles = filesData?.data || [];
+  const totalPages = agentConnected ? 1 : (filesData?.totalPages || 1);
 
-  // Fetch nodes to get our own reputation
+  // Build the file list: when agent is connected, show agent pins; otherwise server files
+  const files = agentConnected
+    ? agentPins
+        .filter(cid => !fileSearch || cid.toLowerCase().includes(fileSearch))
+        .map((cid, i) => ({
+          id: cid,
+          cid,
+          name: `Pin ${i + 1}`,
+          size: "-",
+          uploaderUsername: agentStatus?.config?.hiveUsername || "local",
+          status: "active",
+          replicationCount: agentStatus?.network?.peerCount || 0,
+          confidence: 100,
+          poaEnabled: true,
+          createdAt: new Date().toISOString(),
+          earnedHbd: 0,
+        }))
+    : serverFiles;
+
+  // Fetch nodes to get our own reputation (server fallback)
   const { data: nodes = [] } = useQuery({
     queryKey: ["nodes"],
     queryFn: api.getNodes,
     refetchInterval: 10000,
+    enabled: !agentConnected,
   });
 
   // Fetch user settings (simulated username "demo_user")
@@ -51,6 +77,7 @@ export default function Storage() {
     queryKey: ["settings", "demo_user"],
     queryFn: () => api.getSettings("demo_user"),
     refetchInterval: 30000,
+    enabled: !agentConnected,
   });
 
   // Update settings mutation
@@ -91,15 +118,18 @@ export default function Storage() {
     },
   });
 
-  // Get first node's reputation (simulate "your" node)
-  const reputation = nodes[0]?.reputation || 50;
-
-  // Stats calculation
-  const totalProofs = nodes.reduce((sum, n) => sum + n.totalProofs, 0);
-  const totalFails = nodes.reduce((sum, n) => sum + n.failedProofs, 0);
-  const successRate = totalProofs + totalFails > 0 
+  // Agent stats (live from agent) or server fallback
+  const reputation = agentConnected ? 100 : (nodes[0]?.reputation || 50);
+  const validationStats = agentStatus?.network?.validationStats;
+  const totalProofs = agentConnected
+    ? (validationStats?.passed || 0)
+    : nodes.reduce((sum, n) => sum + n.totalProofs, 0);
+  const totalFails = agentConnected
+    ? (validationStats?.failed || 0)
+    : nodes.reduce((sum, n) => sum + n.failedProofs, 0);
+  const successRate = totalProofs + totalFails > 0
     ? ((totalProofs / (totalProofs + totalFails)) * 100).toFixed(1)
-    : "0.0";
+    : "100.0";
 
   // Create file mutation
   const createFileMutation = useMutation({
@@ -109,10 +139,18 @@ export default function Storage() {
     },
   });
 
-  // Delete file mutation
+  // Delete / unpin file
   const deleteFileMutation = useMutation({
-    mutationFn: (id: string) => api.deleteFile(id),
+    mutationFn: async (id: string) => {
+      if (agentConnected) {
+        const ok = await unpinCid(id);
+        if (!ok) throw new Error("Failed to unpin from agent");
+        return;
+      }
+      return api.deleteFile(id);
+    },
     onSuccess: () => {
+      if (agentConnected) refreshPins();
       queryClient.invalidateQueries({ queryKey: ["files"] });
       toast({
         title: "File Unpinned",
@@ -129,7 +167,8 @@ export default function Storage() {
   });
 
   const handleDelete = (file: { id: string; name: string }) => {
-    if (confirm(`Are you sure you want to unpin "${file.name}"? This will remove it from your IPFS node.`)) {
+    const label = file.name.startsWith("Pin ") ? file.id.substring(0, 16) + "..." : file.name;
+    if (confirm(`Are you sure you want to unpin "${label}"? This will remove it from your IPFS node.`)) {
       deleteFileMutation.mutate(file.id);
     }
   };
@@ -155,42 +194,72 @@ export default function Storage() {
       setUploadProgress(30);
       setUploadStatus('pinning');
 
-      const sessionToken = localStorage.getItem("spk_validator_session");
-      let authToken = "";
-      if (sessionToken) {
-        try {
-          const parsed = JSON.parse(sessionToken);
-          authToken = parsed.user?.sessionToken || "";
-        } catch { /* ignore */ }
+      // Route upload through desktop agent when connected, otherwise use server
+      if (agentConnected) {
+        const res = await fetch(`${AGENT_URL}/api/upload`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "X-File-Name": file.name,
+          },
+          body: buffer,
+        });
+
+        setUploadProgress(90);
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.error || "Upload failed");
+        }
+
+        const result = await res.json();
+        setUploadProgress(100);
+        setUploadStatus('complete');
+
+        toast({
+          title: "File Pinned to Local IPFS",
+          description: `${file.name} pinned with CID: ${result.cid?.substring(0, 16)}...`,
+        });
+
+        // Refresh agent pins
+        refreshPins();
+      } else {
+        const sessionToken = localStorage.getItem("spk_validator_session");
+        let authToken = "";
+        if (sessionToken) {
+          try {
+            const parsed = JSON.parse(sessionToken);
+            authToken = parsed.user?.sessionToken || "";
+          } catch { /* ignore */ }
+        }
+
+        const res = await fetch("/api/upload/simple", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "X-File-Name": file.name,
+            ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+          },
+          body: buffer,
+        });
+
+        setUploadProgress(90);
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.error || "Upload failed");
+        }
+
+        const result = await res.json();
+        setUploadProgress(100);
+        setUploadStatus('complete');
+
+        toast({
+          title: "File Uploaded to IPFS",
+          description: `${file.name} pinned with CID: ${result.cid?.substring(0, 16)}...`,
+        });
+
+        queryClient.invalidateQueries({ queryKey: ["files"] });
       }
 
-      const res = await fetch("/api/upload/simple", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/octet-stream",
-          "X-File-Name": file.name,
-          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
-        },
-        body: buffer,
-      });
-
-      setUploadProgress(90);
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Upload failed");
-      }
-
-      const result = await res.json();
-      setUploadProgress(100);
-      setUploadStatus('complete');
-
-      toast({
-        title: "File Uploaded to IPFS",
-        description: `${file.name} pinned with CID: ${result.cid?.substring(0, 16)}...`,
-      });
-
-      queryClient.invalidateQueries({ queryKey: ["files"] });
       setTimeout(() => setUploadStatus('idle'), 3000);
     } catch (error: any) {
       toast({
@@ -224,12 +293,91 @@ export default function Storage() {
 
   return (
     <div className="p-8 space-y-8 max-w-7xl mx-auto">
-      
+
+      {/* Desktop Agent Status Banner */}
+      {agentConnected && (
+        <Card className="border-green-500/30 bg-green-500/5 backdrop-blur-sm">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse" />
+                <div>
+                  <p className="text-sm font-medium flex items-center gap-2">
+                    <Monitor className="w-4 h-4" />
+                    Desktop Agent Connected
+                    {agentStatus?.version && <Badge variant="outline" className="text-xs">{agentStatus.version}</Badge>}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {agentStatus?.config?.hiveUsername
+                      ? `@${agentStatus.config.hiveUsername}`
+                      : "No Hive account linked"
+                    }
+                    {agentStatus?.peerId && ` \u00B7 Peer ${agentStatus.peerId.substring(0, 12)}...`}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-6 text-sm">
+                <div className="text-center">
+                  <div className="font-bold font-display">{agentPins.length}</div>
+                  <div className="text-xs text-muted-foreground">Pins</div>
+                </div>
+                <div className="text-center">
+                  <div className="font-bold font-display">{agentStatus?.network?.peerCount || 0}</div>
+                  <div className="text-xs text-muted-foreground">Peers</div>
+                </div>
+                <div className="text-center">
+                  <div className="font-bold font-display text-green-500">
+                    {(agentStatus?.earnings?.totalHbd || 0).toFixed(3)}
+                  </div>
+                  <div className="text-xs text-muted-foreground">HBD</div>
+                </div>
+                {agentStatus?.storageInfo && (
+                  <div className="text-center">
+                    <div className="font-bold font-display">{agentStatus.storageInfo.usedFormatted}</div>
+                    <div className="text-xs text-muted-foreground">
+                      / {agentStatus.storageInfo.maxFormatted}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Agent not detected warning */}
+      {agentRunning === false && (
+        <Card className="border-yellow-500/30 bg-yellow-500/5 backdrop-blur-sm">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <AlertTriangle className="w-5 h-5 text-yellow-500" />
+                <div>
+                  <p className="text-sm font-medium">Desktop Agent Not Detected</p>
+                  <p className="text-xs text-muted-foreground">
+                    Download and run the desktop agent to store files locally and earn HBD
+                  </p>
+                </div>
+              </div>
+              <Button size="sm" variant="outline" onClick={() => window.location.href = "/download"}>
+                <Download className="w-4 h-4 mr-2" />
+                Get Agent
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Header & Upload */}
       <div className="flex justify-between items-end">
         <div>
           <h1 className="text-3xl font-display font-bold">Storage Management</h1>
-          <p className="text-muted-foreground mt-1">Manage your IPFS pins and content proofs</p>
+          <p className="text-muted-foreground mt-1">
+            {agentConnected
+              ? `Managing ${agentPins.length} pins on your local IPFS node`
+              : "Manage your IPFS pins and content proofs"
+            }
+          </p>
         </div>
         <div className="flex items-center gap-4">
           <input
@@ -279,104 +427,164 @@ export default function Storage() {
         </div>
       </div>
 
-      {/* Network Download & Auto-Pin Settings */}
+      {/* Agent P2P Network / Download & Auto-Pin Settings */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Network Download Card */}
-        <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
-          <CardHeader className="pb-4">
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <Download className="w-4 h-4 text-primary" />
-              Download Network Videos
-            </CardTitle>
-            <CardDescription>Download existing videos from the network to store and earn HBD</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="download-mode">Download Mode</Label>
-              <Select
-                data-testid="select-download-mode"
-                value={settings?.downloadMode || "off"}
-                onValueChange={(value: "off" | "all" | "quota") => {
-                  updateSettingsMutation.mutate({ downloadMode: value });
-                }}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select mode" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="off">Off - No automatic downloads</SelectItem>
-                  <SelectItem value="all">All - Download every video</SelectItem>
-                  <SelectItem value="quota">Quota - Download a set number</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="download-quota">Videos to Download</Label>
-              <div className="flex items-center gap-2">
-                <Input
-                  data-testid="input-download-quota"
-                  id="download-quota"
-                  type="number"
-                  min={1}
-                  max={1000}
-                  value={settings?.downloadQuota || 10}
-                  disabled={settings?.downloadMode !== "quota"}
-                  onChange={(e) => {
-                    const value = parseInt(e.target.value) || 10;
-                    updateSettingsMutation.mutate({ downloadQuota: value });
-                  }}
-                  className="w-24"
-                />
-                <span className="text-sm text-muted-foreground">videos</span>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Download Progress</Label>
-              <div className="flex items-center gap-3">
-                <div className="flex-1">
-                  <Progress 
-                    value={settings?.downloadMode === "quota" && settings?.downloadQuota 
-                      ? ((settings?.downloadedToday || 0) / settings.downloadQuota) * 100 
-                      : 0
-                    } 
-                    className="h-2"
-                  />
+        {agentConnected ? (
+          /* P2P Network Status Card (shown when agent is connected) */
+          <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
+            <CardHeader className="pb-4">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Network className="w-4 h-4 text-primary" />
+                P2P Network
+              </CardTitle>
+              <CardDescription>Your node's peer-to-peer network activity</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="rounded-lg border bg-muted/30 p-3 text-center">
+                  <Users className="w-5 h-5 mx-auto text-primary mb-1" />
+                  <div className="text-2xl font-bold font-display">{agentStatus?.network?.peerCount || 0}</div>
+                  <div className="text-xs text-muted-foreground">Connected Peers</div>
                 </div>
-                <span className="text-sm font-medium">
-                  {settings?.downloadedToday || 0}
-                  {settings?.downloadMode === "quota" && `/${settings?.downloadQuota || 10}`}
-                </span>
+                <div className="rounded-lg border bg-muted/30 p-3 text-center">
+                  <Zap className="w-5 h-5 mx-auto text-yellow-500 mb-1" />
+                  <div className="text-2xl font-bold font-display">{validationStats?.issued || 0}</div>
+                  <div className="text-xs text-muted-foreground">Challenges Issued</div>
+                </div>
               </div>
-            </div>
 
-            <Button
-              data-testid="button-start-download"
-              onClick={() => startDownloadMutation.mutate()}
-              disabled={settings?.downloadMode === "off" || settings?.downloadInProgress || startDownloadMutation.isPending}
-              className="w-full"
-            >
-              {settings?.downloadInProgress || startDownloadMutation.isPending ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Downloading...
-                </>
-              ) : (
-                <>
-                  <Download className="w-4 h-4 mr-2" />
-                  Start Download
-                </>
+              <div className="space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Validator Mode</span>
+                  <Badge variant={agentStatus?.network?.validatorEnabled ? "default" : "outline"}>
+                    {agentStatus?.network?.validatorEnabled ? "Active" : "Disabled"}
+                  </Badge>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Hive Posting Key</span>
+                  <Badge variant={agentStatus?.network?.hasPostingKey ? "default" : "destructive"}>
+                    {agentStatus?.network?.hasPostingKey ? "Configured" : "Not Set"}
+                  </Badge>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Challenges Passed</span>
+                  <span className="font-mono">{agentStatus?.earnings?.challengesPassed || 0}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Total Earned</span>
+                  <span className="font-mono text-green-500">{(agentStatus?.earnings?.totalHbd || 0).toFixed(3)} HBD</span>
+                </div>
+              </div>
+
+              {agentStatus?.storageInfo && (
+                <div className="space-y-1">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">Storage</span>
+                    <span className="font-mono text-xs">{agentStatus.storageInfo.usedFormatted} / {agentStatus.storageInfo.maxFormatted}</span>
+                  </div>
+                  <Progress value={agentStatus.storageInfo.percentage} className="h-2" />
+                </div>
               )}
-            </Button>
+            </CardContent>
+          </Card>
+        ) : (
+          /* Network Download Card (shown when agent is NOT connected) */
+          <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
+            <CardHeader className="pb-4">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Download className="w-4 h-4 text-primary" />
+                Download Network Videos
+              </CardTitle>
+              <CardDescription>Download existing videos from the network to store and earn HBD</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="download-mode">Download Mode</Label>
+                <Select
+                  data-testid="select-download-mode"
+                  value={settings?.downloadMode || "off"}
+                  onValueChange={(value: "off" | "all" | "quota") => {
+                    updateSettingsMutation.mutate({ downloadMode: value });
+                  }}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Select mode" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="off">Off - No automatic downloads</SelectItem>
+                    <SelectItem value="all">All - Download every video</SelectItem>
+                    <SelectItem value="quota">Quota - Download a set number</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
 
-            <p className="text-xs text-muted-foreground">
-              {settings?.downloadMode === "off" && "Enable a download mode to start downloading videos"}
-              {settings?.downloadMode === "all" && `Will download all ${files.length} available videos`}
-              {settings?.downloadMode === "quota" && `${(settings?.downloadQuota || 10) - (settings?.downloadedToday || 0)} videos remaining to download`}
-            </p>
-          </CardContent>
-        </Card>
+              <div className="space-y-2">
+                <Label htmlFor="download-quota">Videos to Download</Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    data-testid="input-download-quota"
+                    id="download-quota"
+                    type="number"
+                    min={1}
+                    max={1000}
+                    value={settings?.downloadQuota || 10}
+                    disabled={settings?.downloadMode !== "quota"}
+                    onChange={(e) => {
+                      const value = parseInt(e.target.value) || 10;
+                      updateSettingsMutation.mutate({ downloadQuota: value });
+                    }}
+                    className="w-24"
+                  />
+                  <span className="text-sm text-muted-foreground">videos</span>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Download Progress</Label>
+                <div className="flex items-center gap-3">
+                  <div className="flex-1">
+                    <Progress
+                      value={settings?.downloadMode === "quota" && settings?.downloadQuota
+                        ? ((settings?.downloadedToday || 0) / settings.downloadQuota) * 100
+                        : 0
+                      }
+                      className="h-2"
+                    />
+                  </div>
+                  <span className="text-sm font-medium">
+                    {settings?.downloadedToday || 0}
+                    {settings?.downloadMode === "quota" && `/${settings?.downloadQuota || 10}`}
+                  </span>
+                </div>
+              </div>
+
+              <Button
+                data-testid="button-start-download"
+                onClick={() => startDownloadMutation.mutate()}
+                disabled={settings?.downloadMode === "off" || settings?.downloadInProgress || startDownloadMutation.isPending}
+                className="w-full"
+              >
+                {settings?.downloadInProgress || startDownloadMutation.isPending ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Downloading...
+                  </>
+                ) : (
+                  <>
+                    <Download className="w-4 h-4 mr-2" />
+                    Start Download
+                  </>
+                )}
+              </Button>
+
+              <p className="text-xs text-muted-foreground">
+                {settings?.downloadMode === "off" && "Enable a download mode to start downloading videos"}
+                {settings?.downloadMode === "all" && `Will download all ${files.length} available videos`}
+                {settings?.downloadMode === "quota" && `${(settings?.downloadQuota || 10) - (settings?.downloadedToday || 0)} videos remaining to download`}
+              </p>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Auto-Pin Settings Card */}
         <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
@@ -395,7 +603,7 @@ export default function Storage() {
                 data-testid="select-auto-pin-mode"
                 value={settings?.autoPinMode || "off"}
                 onValueChange={(value: "off" | "all" | "daily_limit") => {
-                  updateSettingsMutation.mutate({ 
+                  updateSettingsMutation.mutate({
                     autoPinMode: value,
                     autoPinEnabled: value !== "off"
                   });
@@ -437,11 +645,11 @@ export default function Storage() {
               <Label>Today's Progress</Label>
               <div className="flex items-center gap-3">
                 <div className="flex-1">
-                  <Progress 
-                    value={settings?.autoPinMode === "daily_limit" && settings?.autoPinDailyLimit 
-                      ? ((settings?.autoPinTodayCount || 0) / settings.autoPinDailyLimit) * 100 
+                  <Progress
+                    value={settings?.autoPinMode === "daily_limit" && settings?.autoPinDailyLimit
+                      ? ((settings?.autoPinTodayCount || 0) / settings.autoPinDailyLimit) * 100
                       : 0
-                    } 
+                    }
                     className="h-2"
                   />
                 </div>
@@ -544,7 +752,9 @@ export default function Storage() {
       {/* Files Table */}
       <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
-          <CardTitle className="font-display text-lg">Pinned Content</CardTitle>
+          <CardTitle className="font-display text-lg">
+            {agentConnected ? `Pinned Content (${agentPins.length} pins)` : "Pinned Content"}
+          </CardTitle>
           <div className="relative w-64">
             <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
@@ -581,7 +791,9 @@ export default function Storage() {
                 <TableRow>
                   <TableCell colSpan={8} className="text-center py-12">
                     <Upload className="w-12 h-12 mx-auto mb-3 opacity-20" />
-                    <p className="text-muted-foreground">No files pinned yet</p>
+                    <p className="text-muted-foreground">
+                      {agentConnected ? "No files pinned on your local node" : "No files pinned yet"}
+                    </p>
                     <p className="text-sm text-muted-foreground mt-1">Upload content to start earning HBD</p>
                   </TableCell>
                 </TableRow>
@@ -590,13 +802,36 @@ export default function Storage() {
                 .map((file) => (
                 <TableRow key={file.id} className="hover:bg-primary/5 border-border/50 group transition-colors">
                   <TableCell className="font-medium flex items-center gap-2">
-                    <File className="w-4 h-4 text-primary" />
-                    {file.name}
+                    {agentConnected ? (
+                      <>
+                        <HardDrive className="w-4 h-4 text-primary" />
+                        <span className="font-mono text-xs">{file.cid.substring(0, 20)}...</span>
+                      </>
+                    ) : (
+                      <>
+                        <File className="w-4 h-4 text-primary" />
+                        {file.name}
+                      </>
+                    )}
                   </TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">
                     <div className="flex items-center gap-2">
-                      {file.cid}
-                      <button className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-primary">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="cursor-help">{file.cid.length > 20 ? file.cid.substring(0, 20) + "..." : file.cid}</span>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="font-mono text-xs max-w-md break-all">
+                          {file.cid}
+                        </TooltipContent>
+                      </Tooltip>
+                      <button
+                        title="Copy CID"
+                        className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-primary"
+                        onClick={() => {
+                          navigator.clipboard.writeText(file.cid);
+                          toast({ title: "CID Copied", description: file.cid.substring(0, 24) + "..." });
+                        }}
+                      >
                         <Copy className="w-3 h-3" />
                       </button>
                     </div>
@@ -694,6 +929,7 @@ export default function Storage() {
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <button
+                          title="Unpin from IPFS"
                           data-testid={`button-delete-${file.id}`}
                           onClick={() => handleDelete(file)}
                           disabled={deleteFileMutation.isPending}

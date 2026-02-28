@@ -17,6 +17,12 @@ export interface PeerInfo {
 /**
  * Discovers and maintains a roster of active P2P nodes
  * by scanning Hive blockchain for hivepoa_node_announce custom_json operations.
+ *
+ * Optimized to minimize Hive API calls:
+ * - Uses batch block fetching (get_block_range — 1 call per 50 blocks)
+ * - Scans only ~20 new blocks per poll (matching Hive's 3s block time × 60s poll)
+ * - Adds jitter to scan interval to prevent thundering herd
+ * - Backs off automatically on API errors (via AgentHiveClient)
  */
 export class PeerDiscovery {
   private hive: AgentHiveClient;
@@ -27,6 +33,14 @@ export class PeerDiscovery {
   private announceInterval: NodeJS.Timeout | null = null;
   private kuboApiUrl: string = '';
   private myPeerId: string = '';
+
+  // Hive produces 1 block every 3 seconds → 20 blocks per minute
+  // We scan every 60-90s (with jitter), so ~20-30 new blocks per scan
+  private static readonly MAX_BLOCKS_PER_SCAN = 30;
+  private static readonly SCAN_BASE_INTERVAL_MS = 60000;   // 60 seconds
+  private static readonly SCAN_JITTER_MS = 30000;          // ±30 seconds
+  private static readonly ANNOUNCE_INTERVAL_MS = 60 * 60 * 1000; // 60 minutes
+  private static readonly STALE_CUTOFF_MS = 4 * 60 * 60 * 1000; // 4 hours
 
   constructor(hive: AgentHiveClient, config: ConfigStore) {
     this.hive = hive;
@@ -49,20 +63,33 @@ export class PeerDiscovery {
     // Initial scan
     await this.scanBlocks();
 
-    // Scan every 60 seconds
-    this.scanInterval = setInterval(() => this.scanBlocks(), 60000);
+    // Scan with jitter to prevent all agents scanning at exactly the same time
+    this.scheduleScan();
 
     // Announce self immediately, then every 60 minutes
     await this.announceNode();
-    this.announceInterval = setInterval(() => this.announceNode(), 60 * 60 * 1000);
+    this.announceInterval = setInterval(
+      () => this.announceNode(),
+      PeerDiscovery.ANNOUNCE_INTERVAL_MS
+    );
 
     console.log(`[PeerDiscovery] Active with ${this.peers.size} known peers`);
+  }
+
+  /** Schedule next scan with random jitter. */
+  private scheduleScan(): void {
+    const jitter = Math.floor(Math.random() * PeerDiscovery.SCAN_JITTER_MS);
+    const interval = PeerDiscovery.SCAN_BASE_INTERVAL_MS + jitter;
+
+    this.scanInterval = setTimeout(() => {
+      this.scanBlocks().then(() => this.scheduleScan());
+    }, interval);
   }
 
   /** Stop scanning and announcing. */
   stop(): void {
     if (this.scanInterval) {
-      clearInterval(this.scanInterval);
+      clearTimeout(this.scanInterval);
       this.scanInterval = null;
     }
     if (this.announceInterval) {
@@ -72,62 +99,74 @@ export class PeerDiscovery {
     console.log('[PeerDiscovery] Stopped');
   }
 
-  /** Scan recent Hive blocks for hivepoa_node_announce operations. */
+  /**
+   * Scan recent Hive blocks for hivepoa_node_announce operations.
+   *
+   * API cost: 1 call for getDynamicGlobalProperties (cached) +
+   *           1 call for get_block_range (up to 30 blocks)
+   *         = ~2 Hive API calls per scan
+   */
   private async scanBlocks(): Promise<void> {
     try {
       const headBlock = await this.hive.getHeadBlockNumber();
 
-      // On first run, start from ~1 hour ago (1200 blocks at 3s each)
+      // On first run, start from ~5 minutes ago (100 blocks)
+      // instead of 1 hour — reduces initial API load significantly
       if (this.lastScannedBlock === 0) {
-        this.lastScannedBlock = Math.max(0, headBlock - 1200);
+        this.lastScannedBlock = Math.max(0, headBlock - 100);
       }
 
-      // Don't scan more than 100 blocks per poll (avoid overloading on large gaps)
-      const startBlock = Math.max(this.lastScannedBlock + 1, headBlock - 100);
-      const blocksToScan = headBlock - startBlock + 1;
+      // Only scan new blocks since last poll, capped to MAX_BLOCKS_PER_SCAN
+      const startBlock = this.lastScannedBlock + 1;
+      const blocksAvailable = headBlock - startBlock + 1;
 
-      if (blocksToScan <= 0) return;
+      if (blocksAvailable <= 0) return;
 
-      for (let i = startBlock; i <= headBlock; i++) {
-        try {
-          const block = await this.hive.getBlock(i);
-          if (!block || !block.transactions) continue;
+      const blocksToFetch = Math.min(blocksAvailable, PeerDiscovery.MAX_BLOCKS_PER_SCAN);
+      const fetchStart = headBlock - blocksToFetch + 1; // Scan most recent blocks
 
-          for (const tx of block.transactions) {
-            for (const op of tx.operations) {
-              if (op[0] === 'custom_json' && op[1].id === 'hivepoa_node_announce') {
-                try {
-                  const json = JSON.parse(op[1].json);
-                  const author = op[1].required_posting_auths?.[0] || '';
-                  if (author && json.type === 'announce') {
-                    this.processAnnouncement(author, json, i);
-                  }
-                } catch {}
-              }
+      // Batch fetch — 1 API call for up to 30 blocks
+      const blocks = await this.hive.getBlockRange(fetchStart, blocksToFetch);
+
+      let announceCount = 0;
+      for (let i = 0; i < blocks.length; i++) {
+        const block = blocks[i];
+        if (!block || !block.transactions) continue;
+
+        for (const tx of block.transactions) {
+          for (const op of tx.operations) {
+            if (op[0] === 'custom_json' && op[1].id === 'hivepoa_node_announce') {
+              try {
+                const json = JSON.parse(op[1].json);
+                const author = op[1].required_posting_auths?.[0] || '';
+                if (author && json.type === 'announce') {
+                  this.processAnnouncement(author, json);
+                  announceCount++;
+                }
+              } catch {}
             }
-          }
-        } catch (err: any) {
-          // Individual block fetch failure — skip and continue
-          if (!err.message?.includes('abort')) {
-            console.error(`[PeerDiscovery] Block ${i} fetch error:`, err.message);
           }
         }
       }
 
       this.lastScannedBlock = headBlock;
-      // Persist last scanned block
       (this.config as any).store?.set('lastScannedBlock', headBlock);
+
+      if (announceCount > 0) {
+        console.log(`[PeerDiscovery] Found ${announceCount} announcements in ${blocks.length} blocks`);
+      }
 
       // Prune stale peers
       this.pruneStale();
 
     } catch (err: any) {
       console.error('[PeerDiscovery] Block scan error:', err.message);
+      // Don't update lastScannedBlock on error — retry next cycle
     }
   }
 
   /** Process a peer announcement from the blockchain. */
-  private processAnnouncement(hiveUsername: string, json: any, blockNum: number): void {
+  private processAnnouncement(hiveUsername: string, json: any): void {
     const cfg = this.config.getConfig();
 
     // Skip self
@@ -206,7 +245,7 @@ export class PeerDiscovery {
 
   /** Remove peers not seen in 4 hours. */
   private pruneStale(): void {
-    const cutoff = Date.now() - (4 * 60 * 60 * 1000);
+    const cutoff = Date.now() - PeerDiscovery.STALE_CUTOFF_MS;
     for (const [username, peer] of this.peers) {
       if (peer.lastAnnounce < cutoff) {
         this.peers.delete(username);
@@ -225,7 +264,7 @@ export class PeerDiscovery {
       // Skip self
       if (peer.hiveUsername === cfg.hiveUsername) return false;
       // Skip stale (>4h)
-      if (now - peer.lastAnnounce > 4 * 60 * 60 * 1000) return false;
+      if (now - peer.lastAnnounce > PeerDiscovery.STALE_CUTOFF_MS) return false;
       // Skip recently challenged
       if (now - peer.lastChallengedAt < challengeCooldown) return false;
       // Skip low reputation
