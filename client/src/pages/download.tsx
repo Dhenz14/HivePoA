@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Download, Monitor, Apple, Terminal, CheckCircle2, Loader2, HardDrive, Shield, Zap, Clock } from "lucide-react";
 
+const GITHUB_REPO = "Dhenz14/HivePoA";
+
 type Platform = "windows" | "macos" | "macos-arm" | "linux" | "unknown";
 
 interface PlatformInfo {
@@ -80,6 +82,31 @@ interface DownloadFile {
 interface DownloadListResponse {
   files: DownloadFile[];
   version: string | null;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+async function fetchFromGitHubReleases(): Promise<DownloadListResponse> {
+  const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+    headers: { Accept: "application/vnd.github.v3+json" },
+  });
+  if (!res.ok) return { files: [], version: null };
+
+  const release = await res.json();
+  const version = (release.tag_name || release.name || "").replace(/^v/, "");
+  const files: DownloadFile[] = (release.assets || [])
+    .filter((a: any) => !a.name.endsWith(".blockmap") && !a.name.endsWith(".yml"))
+    .map((a: any) => ({
+      name: a.name,
+      size: a.size,
+      sizeFormatted: formatBytes(a.size),
+      url: a.browser_download_url,
+    }));
+  return { files, version: version || null };
 }
 
 function detectPlatform(): Platform {
@@ -221,8 +248,7 @@ export default function DownloadPage() {
   useEffect(() => {
     setDetectedPlatform(detectPlatform());
 
-    fetch("/api/downloads/list")
-      .then(res => res.json())
+    fetchFromGitHubReleases()
       .then(data => {
         setDownloads(data);
         setLoading(false);

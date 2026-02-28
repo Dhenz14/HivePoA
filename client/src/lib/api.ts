@@ -323,7 +323,14 @@ export const api = {
 };
 
 // WebSocket connection for real-time updates
+// Only available when connected to Express server (not on GitHub Pages)
 export function connectWebSocket(onMessage: (data: any) => void) {
+  // On GitHub Pages or agent-only mode, WebSocket is unavailable
+  const isLocalServer = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+  if (!isLocalServer) {
+    return { close: () => {}, readyState: 3 } as unknown as WebSocket;
+  }
+
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
 

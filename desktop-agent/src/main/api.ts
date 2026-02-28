@@ -195,7 +195,7 @@ export class ApiServer {
   private setupMiddleware(): void {
     this.app.use(express.json());
 
-    // CORS — allow localhost origins + file:// (Electron renderer sends null origin)
+    // CORS — allow localhost origins, GitHub Pages, and file:// (Electron renderer sends null origin)
     const allowedOrigins = [
       'http://localhost:3000',
       'http://localhost:5000',
@@ -203,6 +203,7 @@ export class ApiServer {
       'http://127.0.0.1:3000',
       'http://127.0.0.1:5000',
       'http://127.0.0.1:8080',
+      'https://dhenz14.github.io',
     ];
     this.app.use((req, res, next) => {
       const origin = req.headers.origin;
@@ -549,6 +550,85 @@ export class ApiServer {
       }
 
       res.json({ success: true, enabled });
+    });
+
+    // ─── 3Speak Proxy (CORS bypass for GitHub Pages) ────────────────────
+
+    const THREESPEAK_API = 'https://legacy.3speak.tv/apiv2';
+
+    const mapVideo = (v: any) => ({
+      id: v._id || v.permlink || `${v.author}-${v.permlink}`,
+      permlink: v.permlink || '',
+      author: v.author || v.owner || '',
+      title: v.title || 'Untitled',
+      description: v.description || v.body || '',
+      thumbnail: v.thumbUrl || v.thumbnail || v.images?.thumbnail ||
+        `https://images.3speak.tv/${v.permlink}/thumbnail.png`,
+      duration: v.duration || v.video?.duration || 0,
+      views: v.views || v.total_views || 0,
+      created: v.created || v.created_at || new Date().toISOString(),
+      ipfs: v.video_v2 || v.ipfs || v.video?.ipfs || (() => {
+        const url = v.playUrl || '';
+        const m = url.match(/\/ipfs\/(Qm[a-zA-Z0-9]+|baf[a-zA-Z0-9]+)/);
+        return m ? m[1] : '';
+      })(),
+      tags: v.tags || [],
+    });
+
+    this.app.get('/api/threespeak/trending', async (req: Request, res: Response) => {
+      const limit = Math.min(Number(req.query.limit) || 20, 50);
+      const page = Math.max(Number(req.query.page) || 1, 1);
+      try {
+        const r = await axios.get(`${THREESPEAK_API}/feeds/trending`, {
+          params: { limit, skip: (page - 1) * limit },
+          timeout: 10000,
+        });
+        const raw = Array.isArray(r.data) ? r.data : r.data?.videos || [];
+        res.json({ videos: raw.map(mapVideo), total: raw.length, page, hasMore: raw.length === limit });
+      } catch {
+        res.json({ videos: [], total: 0, page, hasMore: false });
+      }
+    });
+
+    this.app.get('/api/threespeak/new', async (req: Request, res: Response) => {
+      const limit = Math.min(Number(req.query.limit) || 20, 50);
+      const page = Math.max(Number(req.query.page) || 1, 1);
+      try {
+        const r = await axios.get(`${THREESPEAK_API}/feeds/new`, {
+          params: { limit, skip: (page - 1) * limit },
+          timeout: 10000,
+        });
+        const raw = Array.isArray(r.data) ? r.data : r.data?.videos || [];
+        res.json({ videos: raw.map(mapVideo), total: raw.length, page, hasMore: raw.length === limit });
+      } catch {
+        res.json({ videos: [], total: 0, page, hasMore: false });
+      }
+    });
+
+    this.app.get('/api/threespeak/search', async (req: Request, res: Response) => {
+      const q = String(req.query.q || '');
+      const limit = Math.min(Number(req.query.limit) || 20, 50);
+      if (!q) return res.json({ videos: [], total: 0, page: 1, hasMore: false });
+      try {
+        const r = await axios.get(`${THREESPEAK_API}/search`, {
+          params: { q, limit },
+          timeout: 10000,
+        });
+        const raw = Array.isArray(r.data) ? r.data : r.data?.videos || [];
+        res.json({ videos: raw.map(mapVideo), total: raw.length, page: 1, hasMore: false });
+      } catch {
+        res.json({ videos: [], total: 0, page: 1, hasMore: false });
+      }
+    });
+
+    this.app.get('/api/threespeak/video/:author/:permlink', async (req: Request, res: Response) => {
+      const { author, permlink } = req.params;
+      try {
+        const r = await axios.get(`${THREESPEAK_API}/video/${author}/${permlink}`, { timeout: 10000 });
+        res.json(mapVideo(r.data));
+      } catch {
+        res.status(404).json({ error: 'Video not found' });
+      }
     });
 
     // ─── Hive Keychain Auth ────────────────────────────────────────────

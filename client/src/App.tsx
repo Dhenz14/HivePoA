@@ -1,4 +1,5 @@
-import { Switch, Route, Redirect, useLocation } from "wouter";
+import { useEffect } from "react";
+import { Switch, Route, Redirect, useLocation, Router } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -9,6 +10,8 @@ import { AlertsProvider } from "@/components/AlertsProvider";
 import NotFound from "@/pages/not-found";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Layout } from "@/components/layout/Layout";
+import { AgentRequired } from "@/components/AgentRequired";
+import { detectBackendMode } from "@/lib/api-mode";
 import Dashboard from "@/pages/dashboard";
 import Storage from "@/pages/storage";
 import Browse from "@/pages/browse";
@@ -58,42 +61,48 @@ function ProtectedValidatorRoute({ component: Component }: { component: React.Co
   return <Component />;
 }
 
-function Router() {
+function AppRoutes() {
   return (
     <Layout>
       <Switch>
-        <Route path="/" component={Dashboard} />
-        <Route path="/storage" component={Storage} />
-        <Route path="/browse" component={Browse} />
-        <Route path="/connect" component={Connect} />
-        <Route path="/wallet" component={Wallet} />
-        <Route path="/node" component={NodeStatus} />
-        <Route path="/settings" component={ValidatorSettings} />
-        <Route path="/validators" component={Validators} />
+        {/* Agent-dependent pages — need desktop agent running */}
+        <Route path="/">{() => <AgentRequired><Dashboard /></AgentRequired>}</Route>
+        <Route path="/storage">{() => <AgentRequired><Storage /></AgentRequired>}</Route>
+        <Route path="/browse">{() => <AgentRequired><Browse /></AgentRequired>}</Route>
+        <Route path="/connect">{() => <AgentRequired><Connect /></AgentRequired>}</Route>
+        <Route path="/wallet">{() => <AgentRequired><Wallet /></AgentRequired>}</Route>
+        <Route path="/node">{() => <AgentRequired><NodeStatus /></AgentRequired>}</Route>
+        <Route path="/settings">{() => <AgentRequired><ValidatorSettings /></AgentRequired>}</Route>
+        <Route path="/earnings">{() => <AgentRequired><Earnings /></AgentRequired>}</Route>
+        <Route path="/p2p-network">{() => <AgentRequired><P2PNetwork /></AgentRequired>}</Route>
+        <Route path="/watch/:author/:permlink">{() => <AgentRequired><Watch /></AgentRequired>}</Route>
+
+        {/* Works without agent — download page uses GitHub API directly */}
         <Route path="/download" component={Download} />
-        <Route path="/earnings" component={Earnings} />
-        <Route path="/marketplace" component={Marketplace} />
-        <Route path="/analytics" component={Analytics} />
         <Route path="/validator-login" component={ValidatorLogin} />
+
+        {/* Server-only pages — need full server deployment */}
+        <Route path="/validators">{() => <AgentRequired serverOnly><Validators /></AgentRequired>}</Route>
+        <Route path="/marketplace">{() => <AgentRequired serverOnly><Marketplace /></AgentRequired>}</Route>
+        <Route path="/analytics">{() => <AgentRequired serverOnly><Analytics /></AgentRequired>}</Route>
+        <Route path="/wallet-dashboard">{() => <AgentRequired serverOnly><WalletDashboard /></AgentRequired>}</Route>
+        <Route path="/encoding">{() => <AgentRequired serverOnly><Encoding /></AgentRequired>}</Route>
         <Route path="/validator-dashboard">
-          {() => <ProtectedValidatorRoute component={ValidatorDashboard} />}
+          {() => <AgentRequired serverOnly><ProtectedValidatorRoute component={ValidatorDashboard} /></AgentRequired>}
         </Route>
         <Route path="/node-monitoring">
-          {() => <ProtectedValidatorRoute component={NodeMonitoring} />}
+          {() => <AgentRequired serverOnly><ProtectedValidatorRoute component={NodeMonitoring} /></AgentRequired>}
         </Route>
         <Route path="/challenge-queue">
-          {() => <ProtectedValidatorRoute component={ChallengeQueue} />}
+          {() => <AgentRequired serverOnly><ProtectedValidatorRoute component={ChallengeQueue} /></AgentRequired>}
         </Route>
         <Route path="/fraud-detection">
-          {() => <ProtectedValidatorRoute component={FraudDetection} />}
+          {() => <AgentRequired serverOnly><ProtectedValidatorRoute component={FraudDetection} /></AgentRequired>}
         </Route>
         <Route path="/payout-generator">
-          {() => <ProtectedValidatorRoute component={PayoutGenerator} />}
+          {() => <AgentRequired serverOnly><ProtectedValidatorRoute component={PayoutGenerator} /></AgentRequired>}
         </Route>
-        <Route path="/wallet-dashboard" component={WalletDashboard} />
-        <Route path="/p2p-network" component={P2PNetwork} />
-        <Route path="/watch/:author/:permlink" component={Watch} />
-        <Route path="/encoding" component={Encoding} />
+
         <Route component={NotFound} />
       </Switch>
     </Layout>
@@ -101,6 +110,10 @@ function Router() {
 }
 
 function App() {
+  useEffect(() => {
+    detectBackendMode();
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <NodeConfigProvider>
@@ -115,7 +128,9 @@ function App() {
               
               <Toaster />
               <ErrorBoundary>
-                <Router />
+                <Router base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
+                  <AppRoutes />
+                </Router>
               </ErrorBoundary>
             </AlertsProvider>
           </TooltipProvider>
