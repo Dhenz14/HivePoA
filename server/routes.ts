@@ -3575,9 +3575,57 @@ export async function registerRoutes(
 
   const DOWNLOADS_DIR = path.resolve(process.cwd(), "desktop-agent", "build");
   const ALLOWED_EXTENSIONS = [".exe", ".dmg", ".AppImage", ".deb", ".rpm", ".zip", ".tar.gz"];
+  const GITHUB_REPO = "Dhenz14/HivePoA";
 
-  // GET /api/downloads/list — List available installer files
-  app.get("/api/downloads/list", (_req, res) => {
+  // Cache GitHub release data for 5 minutes
+  let ghReleaseCache: { data: any; expiresAt: number } | null = null;
+  const GH_CACHE_TTL = 5 * 60 * 1000;
+
+  async function fetchGitHubRelease(): Promise<{ files: any[]; version: string | null }> {
+    const now = Date.now();
+    if (ghReleaseCache && now < ghReleaseCache.expiresAt) {
+      return ghReleaseCache.data;
+    }
+
+    const response = await fetch(
+      `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`,
+      { headers: { "Accept": "application/vnd.github.v3+json", "User-Agent": "HivePoA-Server" } }
+    );
+    if (!response.ok) throw new Error(`GitHub API: ${response.status}`);
+
+    const release = await response.json() as any;
+    const version = release.tag_name?.replace(/^v/, '') || null;
+    const files = (release.assets || [])
+      .filter((asset: any) => {
+        const name = asset.name.toLowerCase();
+        return ALLOWED_EXTENSIONS.some(ext => name.endsWith(ext.toLowerCase()));
+      })
+      .map((asset: any) => ({
+        name: asset.name,
+        size: asset.size,
+        sizeFormatted: formatFileSize(asset.size),
+        url: asset.browser_download_url,
+      }));
+
+    const result = { files, version };
+    ghReleaseCache = { data: result, expiresAt: now + GH_CACHE_TTL };
+    return result;
+  }
+
+  // GET /api/downloads/list — List available installer files (GitHub Releases → local fallback)
+  app.get("/api/downloads/list", async (_req, res) => {
+    try {
+      // Try GitHub Releases first
+      const ghData = await fetchGitHubRelease();
+      if (ghData.files.length > 0) {
+        res.json(ghData);
+        return;
+      }
+    } catch (err) {
+      logRoutes.debug({ err }, "GitHub release fetch failed, trying local builds");
+    }
+
+    // Fallback: serve from local build directory
     try {
       if (!fs.existsSync(DOWNLOADS_DIR)) {
         res.json({ files: [], version: null });
@@ -3601,7 +3649,6 @@ export async function registerRoutes(
           };
         });
 
-      // Extract version from installer file names (e.g., "SPK Desktop Agent Setup 1.0.7.exe")
       let version: string | null = null;
       for (const f of installerFiles) {
         const m = f.name.match(/(\d+\.\d+\.\d+)/);
