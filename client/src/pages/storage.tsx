@@ -65,12 +65,13 @@ export default function Storage() {
     : serverFiles;
 
   // Fetch nodes to get our own reputation (server fallback)
-  const { data: nodes = [] } = useQuery({
+  const { data: nodesRaw } = useQuery({
     queryKey: ["nodes"],
     queryFn: api.getNodes,
     refetchInterval: 10000,
     enabled: !agentConnected,
   });
+  const nodes = Array.isArray(nodesRaw) ? nodesRaw : [];
 
   // Fetch user settings (simulated username "demo_user")
   const { data: settings } = useQuery({

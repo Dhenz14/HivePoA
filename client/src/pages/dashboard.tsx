@@ -69,34 +69,34 @@ export default function Dashboard() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatsCard 
-          title="HBD Rewards" 
-          value={stats?.rewards.totalHBD || "0.000"} 
-          unit="HBD" 
-          icon={DollarSign} 
-          sub={`${stats?.rewards.transactions || 0} payouts`}
+        <StatsCard
+          title="HBD Rewards"
+          value={stats?.rewards?.totalHBD || "0.000"}
+          unit="HBD"
+          icon={DollarSign}
+          sub={`${stats?.rewards?.transactions || 0} payouts`}
         />
-        <StatsCard 
-          title="Files Hosted" 
-          value={stats?.files.total.toString() || "0"} 
-          unit="Files" 
-          icon={HardDrive} 
-          sub={`${stats?.files.pinned || 0} pinned`}
+        <StatsCard
+          title="Files Hosted"
+          value={stats?.files?.total?.toString() || "0"}
+          unit="Files"
+          icon={HardDrive}
+          sub={`${stats?.files?.pinned || 0} pinned`}
         />
-        <StatsCard 
-          title="Validations (24h)" 
-          value={stats?.challenges.total.toString() || "0"} 
-          unit="Proofs" 
-          icon={ShieldCheck} 
-          trend={stats?.challenges.successRate ? `${stats.challenges.successRate}%` : "0%"}
+        <StatsCard
+          title="Validations (24h)"
+          value={stats?.challenges?.total?.toString() || "0"}
+          unit="Proofs"
+          icon={ShieldCheck}
+          trend={stats?.challenges?.successRate ? `${stats.challenges.successRate}%` : "0%"}
           trendUp={true}
         />
-        <StatsCard 
-          title="Active Nodes" 
-          value={stats?.nodes.active.toString() || "0"} 
-          unit="Nodes" 
-          icon={Server} 
-          sub={`${stats?.validators.online || 0} validators online`}
+        <StatsCard
+          title="Active Nodes"
+          value={stats?.nodes?.active?.toString() || "0"}
+          unit="Nodes"
+          icon={Server}
+          sub={`${stats?.validators?.online || 0} validators online`}
         />
       </div>
 
