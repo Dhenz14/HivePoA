@@ -249,10 +249,16 @@ async function initialize(): Promise<void> {
   }
 
   // Auto-open Keychain login if no username configured (first launch experience)
+  // Small delay so the API server is fully ready to serve the auth page
   if (!configStore.getConfig().hiveUsername) {
-    console.log('[SPK] No Hive username configured — opening Keychain auth in browser');
-    const port = configStore.getConfig().apiPort || 5111;
-    shell.openExternal(`http://127.0.0.1:${port}/auth/keychain`);
+    setTimeout(() => {
+      // Re-check in case the web app synced the username while we waited
+      if (!configStore.getConfig().hiveUsername) {
+        console.log('[SPK] No Hive username configured — opening Keychain auth in browser');
+        const port = configStore.getConfig().apiPort || 5111;
+        shell.openExternal(`http://127.0.0.1:${port}/auth/keychain`);
+      }
+    }, 3000);
     mainWindow?.show();
   }
 

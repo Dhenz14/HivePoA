@@ -235,17 +235,16 @@ async function updateUI(): Promise<void> {
       if (peerCountEl) peerCountEl.textContent = net.peerCount.toString();
       if (validationsIssuedEl) validationsIssuedEl.textContent = net.validationStats.issued.toString();
 
-      if (net.peerCount > 0) {
+      if (status.config.hiveUsername) {
+        // User is signed in — always show green dot
         networkDot?.classList.add('running');
-        if (networkText) {
-          networkText.textContent = `${net.peerCount} peer${net.peerCount !== 1 ? 's' : ''} discovered`;
+        if (net.peerCount > 0) {
+          if (networkText) networkText.textContent = `@${status.config.hiveUsername} — ${net.peerCount} peer${net.peerCount !== 1 ? 's' : ''} connected`;
+        } else if (net.hasPostingKey) {
+          if (networkText) networkText.textContent = `@${status.config.hiveUsername} — Scanning for peers...`;
+        } else {
+          if (networkText) networkText.textContent = `@${status.config.hiveUsername} — Ready`;
         }
-      } else if (net.hasPostingKey && status.config.hiveUsername) {
-        networkDot?.classList.remove('running');
-        if (networkText) networkText.textContent = 'Scanning for peers...';
-      } else if (status.config.hiveUsername && !net.hasPostingKey) {
-        networkDot?.classList.remove('running');
-        if (networkText) networkText.textContent = 'Set posting key to join P2P network';
       } else {
         networkDot?.classList.remove('running');
         if (networkText) networkText.textContent = 'Sign in with Hive Keychain to get started';
