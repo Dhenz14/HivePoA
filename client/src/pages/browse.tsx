@@ -112,9 +112,7 @@ function VideoCard({
         </div>
         <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity bg-black/40">
           <a
-            href={`https://3speak.tv/watch?v=${video.author}/${video.permlink}`}
-            target="_blank"
-            rel="noopener noreferrer"
+            href={`/watch/${video.author}/${video.permlink}`}
             className="bg-primary text-primary-foreground rounded-full p-4"
             data-testid={`play-button-${video.id}`}
           >

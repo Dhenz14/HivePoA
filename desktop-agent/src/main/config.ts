@@ -18,6 +18,9 @@ export interface AgentConfig {
   validatorEnabled: boolean;  // Whether this node validates other peers
   challengeIntervalMs: number; // How often to challenge peers (ms)
   minPeerReputation: number;  // Minimum Hive reputation to accept peer
+  // Auto-pin popular content
+  autoPinPopular: boolean;    // Auto-pin popular content from network
+  autoPinMaxGB: number;       // Max storage for auto-pinned content (GB)
 }
 
 export interface EarningsData {
@@ -61,6 +64,8 @@ export class ConfigStore {
       validatorEnabled: this.store.get('validatorEnabled', true) as boolean,
       challengeIntervalMs: this.store.get('challengeIntervalMs', 300000) as number,
       minPeerReputation: this.store.get('minPeerReputation', 25) as number,
+      autoPinPopular: this.store.get('autoPinPopular', true) as boolean,
+      autoPinMaxGB: this.store.get('autoPinMaxGB', 10) as number,
     };
   }
 

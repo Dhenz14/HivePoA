@@ -10,6 +10,7 @@ import { PeerDiscovery } from './peer-discovery';
 import { PubSubBridge } from './pubsub';
 import { ChallengeHandler, ChallengeMessage, ChallengeResponse } from './challenge-handler';
 import { LocalValidator } from './validator';
+import { AutoPinner } from './auto-pinner';
 
 // ─── Global error handlers — prevent silent crashes ─────────────────────────
 process.on('uncaughtException', (error) => {
@@ -39,6 +40,7 @@ let peerDiscovery: PeerDiscovery | null = null;
 let pubsub: PubSubBridge | null = null;
 let challengeHandler: ChallengeHandler | null = null;
 let validator: LocalValidator | null = null;
+let autoPinner: AutoPinner | null = null;
 
 const CHALLENGE_TOPIC = 'hivepoa-challenges';
 
@@ -166,6 +168,16 @@ async function initializeP2P(): Promise<void> {
       !!postingKey // Only broadcast if posting key is available
     );
     await validator.start();
+  }
+
+  // Start auto-pinner for popular content (if enabled)
+  if (cfg.autoPinPopular) {
+    autoPinner = new AutoPinner(
+      kuboManager.getApiUrl(),
+      cfg.serverUrl,
+      cfg.autoPinMaxGB
+    );
+    await autoPinner.start();
   }
 
   // Wire P2P modules to API server
@@ -322,6 +334,7 @@ app.on('before-quit', async () => {
   console.log('[SPK] Shutting down...');
 
   // P2P cleanup
+  autoPinner?.stop();
   validator?.stop();
   challengeHandler?.stop();
   peerDiscovery?.stop();

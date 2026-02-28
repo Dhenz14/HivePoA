@@ -2906,6 +2906,65 @@ export async function registerRoutes(
     }
   });
 
+  // POST /api/p2p/report — Client reports P2P session stats on cleanup (no auth, rate limited by IP)
+  const p2pReportLimiter = new Map<string, number[]>();
+  app.post("/api/p2p/report", async (req, res) => {
+    try {
+      // Simple rate limit: max 30 reports per minute per IP
+      const ip = req.ip || "unknown";
+      const now = Date.now();
+      const recent = (p2pReportLimiter.get(ip) || []).filter(t => now - t < 60000);
+      if (recent.length >= 30) {
+        res.status(429).json({ error: "Too many requests" });
+        return;
+      }
+      recent.push(now);
+      p2pReportLimiter.set(ip, recent);
+
+      const { peerId, videoCid, bytesUploaded, bytesDownloaded, p2pRatio, hiveUsername } = req.body;
+      if (!peerId || !videoCid) {
+        res.status(400).json({ error: "peerId and videoCid required" });
+        return;
+      }
+
+      await storage.createP2pContribution({
+        peerId,
+        videoCid,
+        hiveUsername: hiveUsername || null,
+        bytesShared: bytesUploaded || 0,
+        segmentsShared: Math.floor((bytesUploaded || 0) / 65536),
+        sessionDurationSec: 0,
+        p2pRatio: p2pRatio || 0,
+      });
+
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // GET /api/p2p/popular — Returns CIDs with most active peers (for desktop agent auto-pin)
+  app.get("/api/p2p/popular", async (req, res) => {
+    try {
+      const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+      const rooms = await storage.getActiveP2pRooms();
+
+      const popular = rooms
+        .filter(r => (r.activePeers || 0) > 0)
+        .sort((a, b) => (b.activePeers || 0) - (a.activePeers || 0))
+        .slice(0, limit)
+        .map(r => ({
+          cid: r.videoCid,
+          activePeers: r.activePeers,
+          totalBytesShared: r.totalBytesShared,
+        }));
+
+      res.json(popular);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // ============================================================
   // Phase 7: Hybrid Encoding API
   // ============================================================
