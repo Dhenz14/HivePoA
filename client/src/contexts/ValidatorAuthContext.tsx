@@ -116,6 +116,13 @@ export function ValidatorAuthProvider({ children }: { children: ReactNode }) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
       setUser(validatorUser);
 
+      // Sync username to desktop agent if it's running (fire-and-forget)
+      fetch("http://127.0.0.1:5111/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hiveUsername: data.username }),
+      }).catch(() => {});
+
       return { success: true };
     } catch (error) {
       return { success: false, error: "Network error" };
