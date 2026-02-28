@@ -45,6 +45,8 @@ export async function addIndexes(): Promise<void> {
     // Storage Nodes
     `CREATE INDEX IF NOT EXISTS idx_storage_nodes_hive_username ON storage_nodes (hive_username)`,
     `CREATE INDEX IF NOT EXISTS idx_storage_nodes_status ON storage_nodes (status)`,
+    `CREATE INDEX IF NOT EXISTS idx_storage_nodes_reputation ON storage_nodes (reputation DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_storage_nodes_last_seen ON storage_nodes (last_seen DESC)`,
 
     // Encoding Jobs
     `CREATE INDEX IF NOT EXISTS idx_encoding_jobs_status ON encoding_jobs (status)`,

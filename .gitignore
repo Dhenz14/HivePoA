@@ -8,5 +8,7 @@ vite.config.ts.*
 .env
 *.log
 desktop-agent/dist
+desktop-agent/build
 desktop-agent/release
+desktop-agent/kubo-bin
 out

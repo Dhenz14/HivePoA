@@ -61,10 +61,17 @@ describe("createRandomHash", () => {
 });
 
 describe("getIntFromHash", () => {
-  it("returns 1 for length <= 7", () => {
-    expect(getIntFromHash("abcdef", 7)).toBe(1);
-    expect(getIntFromHash("abcdef", 5)).toBe(1);
-    expect(getIntFromHash("abcdef", 0)).toBe(1);
+  it("returns 0 for length <= 1", () => {
+    expect(getIntFromHash("abcdef", 1)).toBe(0);
+    expect(getIntFromHash("abcdef", 0)).toBe(0);
+  });
+
+  it("returns valid index for small lengths (2-7)", () => {
+    for (let len = 2; len <= 7; len++) {
+      const idx = getIntFromHash("abcdef", len);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      expect(idx).toBeLessThan(len);
+    }
   });
 
   it("is deterministic: same hash + length = same index", () => {

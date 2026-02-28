@@ -5,9 +5,11 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Upload, File, Search, Copy, CheckCircle2, Clock, ShieldCheck, AlertCircle, Users, Coins, AlertTriangle, XCircle, Ban, Wifi, Network, Film, Cpu, Hash, Globe, X, Trash2, Pin, Settings, Download, Loader2 } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Upload, File, Search, Copy, CheckCircle2, Clock, ShieldCheck, AlertCircle, Users, Coins, AlertTriangle, XCircle, Ban, Wifi, Network, Film, Cpu, Hash, Globe, X, Trash2, Pin, Settings, Download, Loader2, Monitor } from "lucide-react";
 import { useState, useRef } from "react";
 import { useToast } from "@/hooks/use-toast";
+import { useDesktopAgent } from "@/hooks/use-desktop-agent";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Progress } from "@/components/ui/progress";
@@ -18,12 +20,14 @@ import { api, UserSettings } from "@/lib/api";
 export default function Storage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  
+  const { check: checkAgent } = useDesktopAgent();
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'pinning' | 'complete'>('idle');
   const [uploadProgress, setUploadProgress] = useState(0);
   const [fileSearch, setFileSearch] = useState("");
   const [filePage, setFilePage] = useState(1);
+  const [showAgentPrompt, setShowAgentPrompt] = useState(false);
   const FILES_PER_PAGE = 20;
 
   // Fetch files from API with pagination
@@ -130,7 +134,12 @@ export default function Storage() {
     }
   };
 
-  const handleUpload = () => {
+  const handleUpload = async () => {
+    const running = await checkAgent();
+    if (!running) {
+      setShowAgentPrompt(true);
+      return;
+    }
     fileInputRef.current?.click();
   };
 
@@ -727,6 +736,39 @@ export default function Storage() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={showAgentPrompt} onOpenChange={setShowAgentPrompt}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Monitor className="h-5 w-5 text-primary" />
+              Desktop Agent Required
+            </DialogTitle>
+            <DialogDescription>
+              The SPK Desktop Agent must be running to upload and pin content to your local IPFS node.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 pt-2">
+            <div className="rounded-lg border bg-muted/50 p-4 space-y-2 text-sm">
+              <p className="font-medium">The Desktop Agent:</p>
+              <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                <li>Runs a local IPFS node for content storage</li>
+                <li>Responds to Proof-of-Access challenges</li>
+                <li>Earns HBD rewards automatically</li>
+              </ul>
+            </div>
+            <div className="flex gap-3">
+              <Button variant="outline" className="flex-1" onClick={() => setShowAgentPrompt(false)}>
+                Cancel
+              </Button>
+              <Button className="flex-1" onClick={() => window.location.href = "/download"}>
+                <Download className="h-4 w-4 mr-2" />
+                Download Agent
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

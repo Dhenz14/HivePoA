@@ -128,7 +128,8 @@ export interface IStorage {
   createStorageNode(node: InsertStorageNode): Promise<StorageNode>;
   updateStorageNodeReputation(id: string, reputation: number, status: string, consecutiveFails?: number): Promise<void>;
   updateNodeEarnings(id: string, hbdAmount: number): Promise<void>;
-  
+  updateStorageNodeLastSeen(id: string): Promise<void>;
+
   // Files
   getFile(id: string): Promise<File | undefined>;
   getFileByCid(cid: string): Promise<File | undefined>;
@@ -372,9 +373,15 @@ export class DatabaseStorage implements IStorage {
 
   async updateNodeEarnings(id: string, hbdAmount: number): Promise<void> {
     await db.update(storageNodes)
-      .set({ 
-        totalEarnedHbd: sql`COALESCE(${storageNodes.totalEarnedHbd}, 0) + ${hbdAmount}` 
+      .set({
+        totalEarnedHbd: sql`COALESCE(${storageNodes.totalEarnedHbd}, 0) + ${hbdAmount}`
       })
+      .where(eq(storageNodes.id, id));
+  }
+
+  async updateStorageNodeLastSeen(id: string): Promise<void> {
+    await db.update(storageNodes)
+      .set({ lastSeen: new Date() })
       .where(eq(storageNodes.id, id));
   }
 

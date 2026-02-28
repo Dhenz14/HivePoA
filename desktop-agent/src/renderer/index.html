@@ -104,6 +104,9 @@
       outline: none;
       border-color: #00d4aa;
     }
+    .config-section label + input {
+      margin-bottom: 10px;
+    }
     button {
       background: #00d4aa;
       color: #1a1a2e;
@@ -126,6 +129,34 @@
       border-radius: 6px;
       margin-top: 10px;
     }
+    .storage-bar-container {
+      width: 100%;
+      height: 8px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 4px;
+      overflow: hidden;
+      margin-top: 10px;
+    }
+    .storage-bar {
+      height: 100%;
+      background: #00d4aa;
+      border-radius: 4px;
+      transition: width 0.3s ease;
+    }
+    .storage-bar.warning { background: #ffaa00; }
+    .storage-bar.critical { background: #ff4444; }
+    .hint {
+      font-size: 12px;
+      color: #666;
+      margin-top: 8px;
+    }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      color: #888;
+      margin-top: 5px;
+    }
   </style>
 </head>
 <body>
@@ -135,6 +166,7 @@
       <p>Decentralized Storage Node</p>
     </header>
 
+    <!-- IPFS Status -->
     <div class="status-card">
       <h2>IPFS Status</h2>
       <div class="status-indicator">
@@ -144,6 +176,26 @@
       <div class="peer-id" id="peerId">Loading...</div>
     </div>
 
+    <!-- P2P Network Status -->
+    <div class="status-card">
+      <h2>P2P Network</h2>
+      <div class="status-indicator">
+        <div class="status-dot" id="networkDot"></div>
+        <span id="networkText">Initializing...</span>
+      </div>
+      <div class="stat-grid" style="margin-top: 15px;">
+        <div class="stat-item">
+          <div class="label">Known Peers</div>
+          <div class="value" id="peerCount">0</div>
+        </div>
+        <div class="stat-item">
+          <div class="label">Validations Issued</div>
+          <div class="value" id="validationsIssued">0</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stats Grid -->
     <div class="stat-grid">
       <div class="stat-item">
         <div class="label">Total HBD Earned</div>
@@ -163,11 +215,52 @@
       </div>
     </div>
 
+    <!-- Storage Quota -->
+    <div class="status-card">
+      <h2>Storage</h2>
+      <div class="storage-bar-container">
+        <div class="storage-bar" id="storageBar" style="width: 0%"></div>
+      </div>
+      <div class="row">
+        <span id="storageUsed">0 B used</span>
+        <span id="storageMax">50 GB limit</span>
+      </div>
+      <div class="config-section" style="margin-top: 15px;">
+        <label for="storageMaxGB">Storage Limit (GB, 0 = 100GB)</label>
+        <input type="number" id="storageMaxGB" min="0" max="10000" step="10" placeholder="50">
+        <button id="saveStorage">Apply Storage Limit</button>
+      </div>
+    </div>
+
+    <!-- Bandwidth Limits -->
+    <div class="status-card config-section">
+      <h2>Bandwidth Limits</h2>
+      <label for="bandwidthUp">Upload Limit (KB/s, 0 = unlimited)</label>
+      <input type="number" id="bandwidthUp" min="0" step="100" placeholder="0">
+      <label for="bandwidthDown">Download Limit (KB/s, 0 = unlimited)</label>
+      <input type="number" id="bandwidthDown" min="0" step="100" placeholder="0">
+      <div class="hint">Adjusts IPFS connection limits. Changes require daemon restart.</div>
+      <button id="saveBandwidth">Apply Bandwidth Limits</button>
+    </div>
+
+    <!-- Hive Account Config -->
     <div class="status-card config-section">
       <h2>Hive Account</h2>
-      <label for="hiveUsername">Link your Hive account to receive HBD rewards</label>
+      <label for="hiveUsername">Hive Username</label>
       <input type="text" id="hiveUsername" placeholder="Enter your Hive username">
-      <button id="saveConfig">Save Configuration</button>
+      <label for="postingKey">Posting Key (encrypted locally)</label>
+      <input type="password" id="postingKey" placeholder="Enter your Hive posting key">
+      <div class="hint" id="keyStatus">Your key is encrypted with OS-level security and never leaves your device.</div>
+      <button type="button" id="saveConfig">Save & Connect to Network</button>
+    </div>
+
+    <!-- Validation Settings -->
+    <div class="status-card config-section">
+      <h2>Validation</h2>
+      <label><input type="checkbox" id="validatorEnabled" checked> Enable validation (challenge other nodes)</label>
+      <label for="challengeInterval">Challenge Interval (minutes)</label>
+      <input type="number" id="challengeInterval" min="1" max="60" value="5">
+      <button type="button" id="saveValidation">Apply</button>
     </div>
   </div>
 

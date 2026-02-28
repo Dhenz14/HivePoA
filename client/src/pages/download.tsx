@@ -2,181 +2,210 @@ import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Download, Monitor, Apple, Terminal, CheckCircle2, ExternalLink, Loader2, AlertCircle } from "lucide-react";
+import { Download, Monitor, Apple, Terminal, CheckCircle2, Loader2, HardDrive, Shield, Zap, Clock } from "lucide-react";
 
 type Platform = "windows" | "macos" | "macos-arm" | "linux" | "unknown";
 
-interface DownloadInfo {
+interface PlatformInfo {
   platform: Platform;
   label: string;
   icon: React.ReactNode;
   patterns: string[];
   description: string;
+  installSteps: string[];
 }
 
-const DOWNLOADS: Record<Platform, DownloadInfo> = {
+const PLATFORMS: Record<Exclude<Platform, "unknown">, PlatformInfo> = {
   windows: {
     platform: "windows",
     label: "Windows",
-    icon: <Monitor className="h-6 w-6" />,
-    patterns: ["win.zip", "windows.zip", ".exe", "Setup.exe"],
-    description: "Windows 10/11 (64-bit) - One-click installer",
+    icon: <Monitor className="h-8 w-8" />,
+    patterns: ["setup", ".exe"],
+    description: "Windows 10/11 (64-bit)",
+    installSteps: [
+      "Run the downloaded .exe installer",
+      "Click \"Install\" when prompted",
+      "The app appears in your system tray",
+      "Enter your Hive username and posting key to join the P2P network",
+    ],
   },
   macos: {
     platform: "macos",
-    label: "macOS",
-    icon: <Apple className="h-6 w-6" />,
-    patterns: ["mac.tar.gz", "mac.zip", "macos.tar.gz", ".dmg"],
-    description: "macOS 10.15+",
+    label: "macOS (Intel)",
+    icon: <Apple className="h-8 w-8" />,
+    patterns: [".dmg", "mac.tar.gz", "mac.zip"],
+    description: "macOS 10.15+ (Intel)",
+    installSteps: [
+      "Open the downloaded .dmg file",
+      "Drag the app to Applications",
+      "Launch from Applications folder",
+      "Look for the icon in your menu bar",
+    ],
   },
   "macos-arm": {
     platform: "macos-arm",
     label: "macOS (Apple Silicon)",
-    icon: <Apple className="h-6 w-6" />,
+    icon: <Apple className="h-8 w-8" />,
     patterns: ["arm64.dmg", "arm.dmg", "arm64.tar.gz"],
-    description: "macOS 11+ (M1/M2/M3)",
+    description: "macOS 11+ (M1/M2/M3/M4)",
+    installSteps: [
+      "Open the downloaded .dmg file",
+      "Drag the app to Applications",
+      "Launch from Applications folder",
+      "Look for the icon in your menu bar",
+    ],
   },
   linux: {
     platform: "linux",
     label: "Linux",
-    icon: <Terminal className="h-6 w-6" />,
-    patterns: ["linux.tar.gz", "linux.zip", ".AppImage", ".deb"],
-    description: "Linux (64-bit) - Double-click to run",
-  },
-  unknown: {
-    platform: "unknown",
-    label: "Unknown",
-    icon: <Download className="h-6 w-6" />,
-    patterns: [],
-    description: "",
+    icon: <Terminal className="h-8 w-8" />,
+    patterns: [".AppImage", ".deb", "linux.tar.gz"],
+    description: "Linux (64-bit)",
+    installSteps: [
+      "Make the file executable: chmod +x",
+      "Double-click the AppImage to run",
+      "Or install the .deb package",
+      "Look for the icon in your system tray",
+    ],
   },
 };
 
-const GITHUB_REPO = "Dhenz14/spknetworkpoa";
-const GITHUB_RELEASES_URL = `https://github.com/${GITHUB_REPO}/releases`;
-const GITHUB_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
-
-interface GitHubAsset {
+interface DownloadFile {
   name: string;
-  browser_download_url: string;
   size: number;
+  sizeFormatted: string;
+  url: string;
 }
 
-interface GitHubRelease {
-  tag_name: string;
-  name: string;
-  assets: GitHubAsset[];
-  html_url: string;
+interface DownloadListResponse {
+  files: DownloadFile[];
+  version: string | null;
 }
 
 function detectPlatform(): Platform {
   if (typeof navigator === "undefined") return "unknown";
-  
+
   const ua = navigator.userAgent.toLowerCase();
   const platform = (navigator as any).userAgentData?.platform?.toLowerCase() || navigator.platform?.toLowerCase() || "";
-  
-  if (platform.includes("win") || ua.includes("windows")) {
-    return "windows";
-  }
-  
+
+  if (platform.includes("win") || ua.includes("windows")) return "windows";
+
   if (platform.includes("mac") || ua.includes("macintosh")) {
     if (ua.includes("arm") || (navigator as any).userAgentData?.architecture === "arm") {
       return "macos-arm";
     }
     return "macos";
   }
-  
-  if (platform.includes("linux") || ua.includes("linux")) {
-    return "linux";
-  }
-  
+
+  if (platform.includes("linux") || ua.includes("linux")) return "linux";
+
   return "unknown";
 }
 
-function findAssetForPlatform(assets: GitHubAsset[], info: DownloadInfo): GitHubAsset | null {
+function findFileForPlatform(files: DownloadFile[], info: PlatformInfo): DownloadFile | null {
   for (const pattern of info.patterns) {
-    const asset = assets.find(a => a.name.toLowerCase().includes(pattern.toLowerCase()));
-    if (asset) return asset;
+    const file = files.find(f => f.name.toLowerCase().includes(pattern.toLowerCase()));
+    if (file) return file;
   }
   return null;
 }
 
-function formatSize(bytes: number): string {
-  const mb = bytes / (1024 * 1024);
-  return `${mb.toFixed(1)} MB`;
+function findPortableFile(files: DownloadFile[]): DownloadFile | null {
+  return files.find(f => f.name.toLowerCase().includes("portable") && f.name.toLowerCase().endsWith(".exe")) || null;
 }
 
-function DownloadCard({ 
-  info, 
-  recommended, 
-  asset,
-  releaseAvailable 
-}: { 
-  info: DownloadInfo; 
+function PlatformDownloadCard({
+  info,
+  file,
+  altFile,
+  recommended,
+  expanded,
+  onToggle,
+}: {
+  info: PlatformInfo;
+  file: DownloadFile | null;
+  altFile?: DownloadFile | null;
   recommended: boolean;
-  asset: GitHubAsset | null;
-  releaseAvailable: boolean;
+  expanded: boolean;
+  onToggle: () => void;
 }) {
-  const handleDownload = () => {
-    if (asset) {
-      window.open(asset.browser_download_url, "_blank");
-    } else {
-      window.open(GITHUB_RELEASES_URL, "_blank");
-    }
-  };
-
   return (
-    <Card 
-      data-testid={`download-card-${info.platform}`}
-      className={`relative transition-all hover:border-primary/50 ${recommended ? "border-primary ring-2 ring-primary/20" : ""}`}
+    <Card
+      className={`relative transition-all duration-200 hover:shadow-lg ${
+        recommended
+          ? "border-primary ring-2 ring-primary/20 shadow-md"
+          : "hover:border-primary/40"
+      }`}
     >
       {recommended && (
-        <Badge className="absolute -top-2 left-4 bg-primary">Recommended for you</Badge>
+        <Badge className="absolute -top-2.5 left-4 bg-primary text-primary-foreground shadow-sm">
+          Detected — your platform
+        </Badge>
       )}
-      <CardHeader className="pb-2">
-        <div className="flex items-center gap-3">
-          {info.icon}
-          <div>
-            <CardTitle className="text-lg">{info.label}</CardTitle>
-            <CardDescription>
+      <CardHeader className="pb-3">
+        <div className="flex items-center gap-4">
+          <div className={`p-3 rounded-xl ${recommended ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"}`}>
+            {info.icon}
+          </div>
+          <div className="flex-1">
+            <CardTitle className="text-xl">{info.label}</CardTitle>
+            <CardDescription className="text-sm">
               {info.description}
-              {asset && <span className="ml-2 text-xs">({formatSize(asset.size)})</span>}
+              {file && <span className="ml-2 font-medium">({file.sizeFormatted})</span>}
             </CardDescription>
           </div>
         </div>
       </CardHeader>
-      <CardContent>
-        {releaseAvailable && asset ? (
-          <Button 
-            data-testid={`download-button-${info.platform}`}
-            onClick={handleDownload}
-            className="w-full"
-            variant={recommended ? "default" : "outline"}
-          >
-            <Download className="mr-2 h-4 w-4" />
-            Download
-          </Button>
-        ) : releaseAvailable ? (
-          <Button 
-            data-testid={`download-button-${info.platform}`}
-            onClick={handleDownload}
-            className="w-full"
-            variant="outline"
-            disabled
-          >
-            <AlertCircle className="mr-2 h-4 w-4" />
+      <CardContent className="space-y-3">
+        {file ? (
+          <a href={file.url} download className="block">
+            <Button
+              className="w-full h-12 text-base font-semibold"
+              variant={recommended ? "default" : "outline"}
+              size="lg"
+            >
+              <Download className="mr-2 h-5 w-5" />
+              Download {info.label}
+            </Button>
+          </a>
+        ) : (
+          <Button className="w-full h-12" variant="outline" size="lg" disabled>
             Not available yet
           </Button>
-        ) : (
-          <Button 
-            data-testid={`download-button-${info.platform}`}
-            onClick={handleDownload}
-            className="w-full"
-            variant="outline"
-          >
-            <ExternalLink className="mr-2 h-4 w-4" />
-            View on GitHub
-          </Button>
+        )}
+
+        {altFile && (
+          <a href={altFile.url} download className="block">
+            <Button
+              className="w-full h-9 text-sm"
+              variant="ghost"
+              size="sm"
+            >
+              <Download className="mr-2 h-4 w-4" />
+              Portable version ({altFile.sizeFormatted}) — no install needed
+            </Button>
+          </a>
+        )}
+
+        <button
+          type="button"
+          onClick={onToggle}
+          className="text-xs text-muted-foreground hover:text-foreground transition-colors w-full text-center"
+        >
+          {expanded ? "Hide" : "Show"} install instructions
+        </button>
+
+        {expanded && (
+          <ol className="space-y-1.5 text-sm text-muted-foreground pl-1">
+            {info.installSteps.map((step, i) => (
+              <li key={i} className="flex items-start gap-2">
+                <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-muted text-xs font-medium shrink-0 mt-0.5">
+                  {i + 1}
+                </span>
+                <span>{step}</span>
+              </li>
+            ))}
+          </ol>
         )}
       </CardContent>
     </Card>
@@ -185,195 +214,175 @@ function DownloadCard({
 
 export default function DownloadPage() {
   const [detectedPlatform, setDetectedPlatform] = useState<Platform>("unknown");
-  const [release, setRelease] = useState<GitHubRelease | null>(null);
+  const [downloads, setDownloads] = useState<DownloadListResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [expandedPlatform, setExpandedPlatform] = useState<Platform | null>(null);
 
   useEffect(() => {
     setDetectedPlatform(detectPlatform());
-    
-    fetch(GITHUB_API_URL)
-      .then(res => {
-        if (res.status === 404) {
-          return null;
-        }
-        if (!res.ok) throw new Error("Failed to fetch release");
-        return res.json();
-      })
+
+    fetch("/api/downloads/list")
+      .then(res => res.json())
       .then(data => {
-        setRelease(data);
+        setDownloads(data);
         setLoading(false);
       })
       .catch(err => {
-        console.error("Failed to fetch release:", err);
-        setError(err.message);
+        console.error("Failed to fetch downloads:", err);
+        setDownloads({ files: [], version: null });
         setLoading(false);
       });
   }, []);
 
   const features = [
-    "One-click install - IPFS auto-initializes",
-    "Runs 24/7 in system tray",
-    "Earn HBD rewards through Proof of Access",
-    "Auto-detected by the web app",
-    "No technical setup required",
+    {
+      icon: <Zap className="h-5 w-5" />,
+      title: "Earn HBD Rewards",
+      description: "Automatically earn Hive-Backed Dollars by storing and serving content through Proof of Access challenges.",
+    },
+    {
+      icon: <HardDrive className="h-5 w-5" />,
+      title: "Bundled IPFS Node",
+      description: "No setup required — the agent includes a fully configured IPFS daemon that starts automatically.",
+    },
+    {
+      icon: <Shield className="h-5 w-5" />,
+      title: "Configurable Limits",
+      description: "Control your bandwidth usage and storage allocation. Set it and forget it — runs silently in system tray.",
+    },
+    {
+      icon: <Clock className="h-5 w-5" />,
+      title: "24/7 Passive Income",
+      description: "Once running, the agent discovers peers, validates storage, and earns rewards — fully decentralized.",
+    },
   ];
 
-  const getAssetForPlatform = (platform: Platform) => {
-    if (!release?.assets) return null;
-    return findAssetForPlatform(release.assets, DOWNLOADS[platform]);
+  const getFileForPlatform = (platform: Platform): DownloadFile | null => {
+    if (!downloads?.files.length || platform === "unknown") return null;
+    return findFileForPlatform(downloads.files, PLATFORMS[platform]);
   };
 
+  const hasAnyDownloads = downloads && downloads.files.length > 0;
+
+  const platformOrder: Exclude<Platform, "unknown">[] = detectedPlatform !== "unknown"
+    ? [detectedPlatform as Exclude<Platform, "unknown">, ...Object.keys(PLATFORMS).filter(p => p !== detectedPlatform) as Exclude<Platform, "unknown">[]]
+    : Object.keys(PLATFORMS) as Exclude<Platform, "unknown">[];
+
   return (
-    <div className="container max-w-4xl py-8 space-y-8">
+    <div className="container max-w-5xl py-8 space-y-10">
+      {/* Hero */}
       <div className="text-center space-y-4">
-        <h1 className="text-4xl font-bold tracking-tight">SPK Desktop Agent</h1>
-        <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
-          Run a 24/7 IPFS node and earn HBD rewards. Download, install, and start earning.
+        <h1 className="text-4xl font-bold tracking-tight">
+          SPK Desktop Agent
+        </h1>
+        <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
+          Run a fully decentralized IPFS storage node. Earn HBD rewards through peer-to-peer Proof of Access — no central server needed.
         </p>
+        {downloads?.version && (
+          <Badge variant="secondary" className="text-sm px-3 py-1">
+            v{downloads.version}
+          </Badge>
+        )}
       </div>
 
-      <Card className="bg-primary/5 border-primary/20">
-        <CardContent className="pt-6">
-          <div className="grid md:grid-cols-2 gap-6">
-            <div>
-              <h3 className="font-semibold mb-3">What you get:</h3>
-              <ul className="space-y-2">
-                {features.map((feature, i) => (
-                  <li key={i} className="flex items-start gap-2 text-sm">
-                    <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                    <span>{feature}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <div className="flex flex-col justify-center items-center text-center">
-              <div className="text-6xl mb-2">🌐</div>
-              <p className="text-sm text-muted-foreground">
-                Join thousands of nodes powering decentralized storage
-              </p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {!release && !loading && (
-        <Card className="border-amber-500/50 bg-amber-500/5">
-          <CardContent className="pt-6">
-            <div className="flex items-start gap-3">
-              <AlertCircle className="h-5 w-5 text-amber-500 mt-0.5" />
-              <div>
-                <h3 className="font-semibold text-amber-600">Coming Soon</h3>
-                <p className="text-sm text-muted-foreground mt-1">
-                  The desktop agent is currently being built. Check the GitHub releases page for updates, 
-                  or star the repository to get notified when it's ready.
-                </p>
-                <a 
-                  href={GITHUB_RELEASES_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 mt-3 text-sm text-primary hover:underline"
-                >
-                  View GitHub Releases
-                  <ExternalLink className="h-3 w-3" />
-                </a>
+      {/* Features grid */}
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {features.map((feature, i) => (
+          <Card key={i} className="bg-card/50">
+            <CardContent className="pt-5 pb-4 space-y-2">
+              <div className="inline-flex items-center justify-center w-10 h-10 rounded-lg bg-primary/10 text-primary">
+                {feature.icon}
               </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+              <h3 className="font-semibold text-sm">{feature.title}</h3>
+              <p className="text-xs text-muted-foreground leading-relaxed">{feature.description}</p>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
 
-      <div className="space-y-4">
-        <div className="flex items-center justify-center gap-2">
-          <h2 className="text-2xl font-semibold text-center">Download for your platform</h2>
+      {/* Download section */}
+      <div className="space-y-5">
+        <div className="flex items-center justify-center gap-3">
+          <h2 className="text-2xl font-semibold text-center">Download</h2>
           {loading && <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />}
         </div>
-        
-        {release && (
-          <p className="text-center text-sm text-muted-foreground">
-            Latest release: <span className="font-medium">{release.tag_name}</span>
-          </p>
+
+        {!loading && !hasAnyDownloads && (
+          <Card className="border-amber-500/30 bg-amber-500/5">
+            <CardContent className="pt-5 pb-4">
+              <div className="flex items-start gap-3">
+                <div className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-amber-500/10 text-amber-500 shrink-0">
+                  <Download className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-amber-600">Builds Coming Soon</h3>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Pre-built installers for all platforms will be available here shortly.
+                    The desktop agent source code is ready — builds are being finalized.
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         )}
-        
+
         <div className="grid md:grid-cols-2 gap-4">
-          {detectedPlatform !== "unknown" && (
-            <DownloadCard 
-              info={DOWNLOADS[detectedPlatform]} 
-              recommended={true}
-              asset={getAssetForPlatform(detectedPlatform)}
-              releaseAvailable={!!release}
+          {platformOrder.map((platform) => (
+            <PlatformDownloadCard
+              key={platform}
+              info={PLATFORMS[platform]}
+              file={getFileForPlatform(platform)}
+              altFile={platform === "windows" ? findPortableFile(downloads?.files || []) : null}
+              recommended={platform === detectedPlatform}
+              expanded={expandedPlatform === platform}
+              onToggle={() => setExpandedPlatform(expandedPlatform === platform ? null : platform)}
             />
-          )}
-          
-          {Object.values(DOWNLOADS)
-            .filter(d => d.platform !== "unknown" && d.platform !== detectedPlatform)
-            .map(info => (
-              <DownloadCard 
-                key={info.platform} 
-                info={info} 
-                recommended={false}
-                asset={getAssetForPlatform(info.platform)}
-                releaseAvailable={!!release}
-              />
-            ))}
+          ))}
         </div>
       </div>
 
+      {/* How it works */}
       <Card>
         <CardHeader>
-          <CardTitle>Installation Instructions</CardTitle>
+          <CardTitle className="text-lg">How it works</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid md:grid-cols-3 gap-4 text-sm">
-            <div className="space-y-2">
-              <h4 className="font-semibold flex items-center gap-2">
-                <Monitor className="h-4 w-4" /> Windows
-              </h4>
-              <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
-                <li>Run the .exe installer</li>
-                <li>Click "Install" when prompted</li>
-                <li>Find the app in Start Menu or Desktop</li>
-                <li>Look for the icon in your system tray</li>
-              </ol>
-            </div>
-            <div className="space-y-2">
-              <h4 className="font-semibold flex items-center gap-2">
-                <Apple className="h-4 w-4" /> macOS
-              </h4>
-              <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
-                <li>Open the .dmg file</li>
-                <li>Drag the app to Applications</li>
-                <li>Launch from Applications folder</li>
-                <li>Look for the icon in your menu bar</li>
-              </ol>
-            </div>
-            <div className="space-y-2">
-              <h4 className="font-semibold flex items-center gap-2">
-                <Terminal className="h-4 w-4" /> Linux
-              </h4>
-              <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
-                <li>Make file executable (chmod +x)</li>
-                <li>Double-click the .AppImage</li>
-                <li>Or run from terminal</li>
-                <li>Look for the icon in your system tray</li>
-              </ol>
-            </div>
+        <CardContent>
+          <div className="grid sm:grid-cols-4 gap-6 text-center">
+            {[
+              { step: "1", title: "Install", desc: "Download and run the installer for your platform" },
+              { step: "2", title: "Configure", desc: "Enter your Hive username, posting key, and set bandwidth/storage limits" },
+              { step: "3", title: "Run", desc: "The agent discovers peers via Hive blockchain and joins the P2P network" },
+              { step: "4", title: "Earn", desc: "Pass Proof of Access challenges to earn HBD rewards" },
+            ].map((item) => (
+              <div key={item.step} className="space-y-2">
+                <div className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-primary text-primary-foreground font-bold text-lg mx-auto">
+                  {item.step}
+                </div>
+                <h4 className="font-semibold text-sm">{item.title}</h4>
+                <p className="text-xs text-muted-foreground">{item.desc}</p>
+              </div>
+            ))}
           </div>
         </CardContent>
       </Card>
 
-      <div className="text-center space-y-2">
-        <a 
-          href={GITHUB_RELEASES_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-primary transition-colors"
-          data-testid="link-all-releases"
-        >
-          View all releases on GitHub
-          <ExternalLink className="h-3 w-3" />
-        </a>
-        <p className="text-xs text-muted-foreground">
+      {/* Requirements */}
+      <div className="text-center space-y-3">
+        <h3 className="font-semibold text-sm text-muted-foreground uppercase tracking-wider">System Requirements</h3>
+        <div className="flex flex-wrap justify-center gap-3 text-sm text-muted-foreground">
+          {[
+            "2 GB RAM",
+            "50 GB free disk space (configurable)",
+            "Stable internet connection",
+            "Windows 10+, macOS 10.15+, or Linux",
+          ].map((req, i) => (
+            <span key={i} className="flex items-center gap-1.5">
+              <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
+              {req}
+            </span>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground pt-2">
           Open source under GPL-3.0 license
         </p>
       </div>

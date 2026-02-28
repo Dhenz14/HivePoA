@@ -70,8 +70,8 @@ export const POA_CONFIG = {
   BLOCK_CACHE_TTL_MS: 3600000,
   BLOCK_CACHE_MAX_SIZE: 1000,
 
-  // Timeouts
-  CHALLENGE_TIMEOUT_MS: 2000,
+  // Timeouts — must exceed anti-cheat window (25s) to give agents time to compute proofs
+  CHALLENGE_TIMEOUT_MS: 30_000,
 };
 
 // LRU Cache with TTL for block CIDs
@@ -492,11 +492,19 @@ export class PoAEngine {
   }
 
   private async executeChallenge(
-    challengeId: string, 
-    node: any, 
-    file: any, 
+    challengeId: string,
+    node: any,
+    file: any,
     salt: string
   ) {
+    // AGENT-WS MODE: If node is connected via WebSocket, use that channel
+    const { agentWSManager } = await import("./agent-ws-manager");
+    if (agentWSManager.isAgentConnected(node.id)) {
+      logPoA.info(`[PoA] AGENT-WS challenge → node=${node.hiveUsername || node.id} file=${file.cid?.substring(0, 12)}...`);
+      await this.processAgentWSChallenge(challengeId, node, file, salt);
+      return;
+    }
+
     // LIVE MODE: If node has an endpoint, always use live validation
     if (node.endpoint) {
       logPoA.info(`[PoA] LIVE challenge → node=${node.hiveUsername || node.id} file=${file.cid?.substring(0, 12)}...`);
@@ -507,6 +515,81 @@ export class PoAEngine {
     } else {
       logPoA.info(`[PoA] SPK challenge → node=${node.hiveUsername || node.id} file=${file.cid?.substring(0, 12)}...`);
       await this.processSPKChallenge(challengeId, node.id, file.id, file.cid, salt);
+    }
+  }
+
+  /**
+   * Challenge a desktop agent over its persistent WebSocket connection.
+   * The agent computes the proof locally and sends it back on the same WS.
+   */
+  private async processAgentWSChallenge(
+    challengeId: string,
+    node: any,
+    file: any,
+    salt: string
+  ): Promise<void> {
+    const { agentWSManager } = await import("./agent-ws-manager");
+    const startTime = Date.now();
+
+    try {
+      const result = await agentWSManager.challengeAgent(
+        node.id,
+        file.cid,
+        salt,
+        this.config.validatorUsername,
+        POA_CONFIG.CHALLENGE_TIMEOUT_MS
+      );
+
+      // Use server-measured elapsed time (don't trust agent-reported timing)
+      const serverElapsed = Date.now() - startTime;
+
+      if (result.status === "timeout") {
+        await this.recordChallengeResult(challengeId, node.id, file.id, "TIMEOUT", "fail", serverElapsed);
+        return;
+      }
+
+      if (result.status !== "success") {
+        await this.recordChallengeResult(challengeId, node.id, file.id, result.error || "VALIDATION_FAILED", "fail", serverElapsed);
+        return;
+      }
+
+      // Anti-cheat timing check (25s max — proves data was pre-stored)
+      // Uses server-side measurement to prevent agents from lying about elapsed time
+      if (serverElapsed >= 25_000) {
+        logPoA.info(`[PoA] TIMING FAIL: ${node.hiveUsername} took ${serverElapsed}ms server-side (>25s limit)`);
+        await this.recordChallengeResult(challengeId, node.id, file.id, "TOO_SLOW", "fail", serverElapsed);
+        return;
+      }
+
+      // Verify proof hash independently
+      let blockCids = this.blocksCache.get(file.cid);
+      if (!blockCids) {
+        blockCids = await storage.getFileRefs(file.cid) ?? undefined;
+        if (!blockCids) {
+          try {
+            blockCids = await this.ipfsClient.refs(file.cid);
+            await storage.saveFileRefs(file.cid, blockCids);
+          } catch {
+            blockCids = [];
+          }
+        }
+        if (blockCids && blockCids.length > 0) {
+          this.blocksCache.set(file.cid, blockCids);
+        }
+      }
+
+      const expectedProofHash = await createProofHash(this.ipfsClient, salt, file.cid, blockCids || []);
+
+      if (result.proofHash && result.proofHash === expectedProofHash) {
+        logPoA.info(`[PoA] AGENT-WS PASSED: ${node.hiveUsername} (${serverElapsed}ms)`);
+        await this.recordChallengeResult(challengeId, node.id, file.id, result.proofHash, "success", serverElapsed);
+      } else {
+        logPoA.info(`[PoA] AGENT-WS FAILED: proof mismatch for ${node.hiveUsername}`);
+        await this.recordChallengeResult(challengeId, node.id, file.id, "PROOF_MISMATCH", "fail", serverElapsed);
+      }
+    } catch (err) {
+      logPoA.error({ err }, "Agent WS challenge error");
+      await this.recordChallengeResult(challengeId, node.id, file.id, "ERROR", "fail", Date.now() - startTime);
     }
   }
 

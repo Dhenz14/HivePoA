@@ -13,10 +13,13 @@ import { autoPinService } from "./services/auto-pin-service";
 import { beneficiaryService } from "./services/beneficiary-service";
 import { ipfsGateway } from "./services/ipfs-gateway";
 import { p2pSignaling } from "./p2p-signaling";
+import { agentWSManager } from "./services/agent-ws-manager";
 import { WebSocketServer } from "ws";
 import { insertFileSchema, insertValidatorBlacklistSchema, insertEncodingJobSchema, insertEncoderNodeSchema } from "@shared/schema";
 import { z } from "zod";
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 import { getIPFSClient } from "./services/ipfs-client";
 import { logRoutes, logWS, logEncoding, logWoT } from "./logger";
 import { createProofHash } from "./services/poa-crypto";
@@ -296,6 +299,22 @@ export async function registerRoutes(
 
   setupHeartbeat(validateWss, "Validate");
 
+  // Desktop Agent WebSocket for auto-registration and PoA challenges
+  const agentWss = new WebSocketServer({ noServer: true });
+  const AGENT_MAX_CONNECTIONS = 200;
+
+  agentWss.on("connection", (ws: any) => {
+    if (agentWss.clients.size > AGENT_MAX_CONNECTIONS) {
+      ws.close(1013, "Max agent connections reached");
+      return;
+    }
+    ws.isAlive = true;
+    ws.on("pong", () => { ws.isAlive = true; });
+    agentWSManager.handleConnection(ws);
+  });
+
+  setupHeartbeat(agentWss, "Agent");
+
   // Handle WebSocket upgrades manually for multiple paths
   httpServer.on("upgrade", (request, socket, head) => {
     const pathname = new URL(request.url || "", `http://${request.headers.host}`).pathname;
@@ -311,6 +330,10 @@ export async function registerRoutes(
     } else if (pathname === "/validate") {
       validateWss.handleUpgrade(request, socket, head, (ws) => {
         validateWss.emit("connection", ws, request);
+      });
+    } else if (pathname === "/ws/agent") {
+      agentWss.handleUpgrade(request, socket, head, (ws) => {
+        agentWss.emit("connection", ws, request);
       });
     } else {
       socket.destroy();
@@ -1117,6 +1140,14 @@ export async function registerRoutes(
     } catch (error: any) {
       res.status(400).json({ error: error.message });
     }
+  });
+
+  // Connected desktop agents monitoring
+  app.get("/api/agents/connected", async (req, res) => {
+    res.json({
+      count: agentWSManager.getConnectedAgentCount(),
+      agents: agentWSManager.getConnectedAgents(),
+    });
   });
 
   // Storage Nodes API
@@ -3539,6 +3570,92 @@ export async function registerRoutes(
       res.status(500).json({ error: "Failed to revoke vouch" });
     }
   });
+
+  // ===== Desktop Agent Downloads =====
+
+  const DOWNLOADS_DIR = path.resolve(process.cwd(), "desktop-agent", "build");
+  const ALLOWED_EXTENSIONS = [".exe", ".dmg", ".AppImage", ".deb", ".rpm", ".zip", ".tar.gz"];
+
+  // GET /api/downloads/list — List available installer files
+  app.get("/api/downloads/list", (_req, res) => {
+    try {
+      if (!fs.existsSync(DOWNLOADS_DIR)) {
+        res.json({ files: [], version: null });
+        return;
+      }
+
+      const allFiles = fs.readdirSync(DOWNLOADS_DIR);
+      const installerFiles = allFiles
+        .filter(name => {
+          const lower = name.toLowerCase();
+          return ALLOWED_EXTENSIONS.some(ext => lower.endsWith(ext.toLowerCase()));
+        })
+        .map(name => {
+          const filePath = path.join(DOWNLOADS_DIR, name);
+          const stats = fs.statSync(filePath);
+          return {
+            name,
+            size: stats.size,
+            sizeFormatted: formatFileSize(stats.size),
+            url: `/api/downloads/file/${encodeURIComponent(name)}`,
+          };
+        });
+
+      // Extract version from installer file names (e.g., "SPK Desktop Agent Setup 1.0.7.exe")
+      let version: string | null = null;
+      for (const f of installerFiles) {
+        const m = f.name.match(/(\d+\.\d+\.\d+)/);
+        if (m) { version = m[1]; break; }
+      }
+
+      res.json({ files: installerFiles, version });
+    } catch (error) {
+      logRoutes.error({ err: error }, "Failed to list downloads");
+      res.status(500).json({ error: "Failed to list downloads" });
+    }
+  });
+
+  // GET /api/downloads/file/:filename — Serve an installer file
+  app.get("/api/downloads/file/:filename", (req, res) => {
+    const { filename } = req.params;
+    const decodedName = decodeURIComponent(filename);
+
+    // Security: prevent path traversal
+    if (decodedName.includes("..") || decodedName.includes("/") || decodedName.includes("\\")) {
+      res.status(400).json({ error: "Invalid filename" });
+      return;
+    }
+
+    // Only allow whitelisted extensions
+    const lower = decodedName.toLowerCase();
+    if (!ALLOWED_EXTENSIONS.some(ext => lower.endsWith(ext.toLowerCase()))) {
+      res.status(403).json({ error: "File type not allowed" });
+      return;
+    }
+
+    const filePath = path.join(DOWNLOADS_DIR, decodedName);
+
+    if (!fs.existsSync(filePath)) {
+      res.status(404).json({ error: "File not found" });
+      return;
+    }
+
+    const stat = fs.statSync(filePath);
+    res.setHeader("Content-Length", stat.size);
+    res.setHeader("Content-Disposition", `attachment; filename="${decodedName}"`);
+    res.setHeader("Content-Type", "application/octet-stream");
+
+    const stream = fs.createReadStream(filePath);
+    stream.pipe(res);
+  });
+
+  function formatFileSize(bytes: number): string {
+    if (bytes === 0) return "0 B";
+    const k = 1024;
+    const sizes = ["B", "KB", "MB", "GB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+  }
 
   return httpServer;
 }

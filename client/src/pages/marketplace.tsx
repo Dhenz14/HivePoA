@@ -6,8 +6,10 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Files, Gem, TrendingUp, Pin, Search, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
+import { useDesktopAgent } from "@/hooks/use-desktop-agent";
+import { Files, Gem, TrendingUp, Pin, Search, ArrowUpDown, ArrowUp, ArrowDown, Download, Monitor } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { motion } from "framer-motion";
@@ -74,10 +76,12 @@ type SortDirection = "asc" | "desc";
 
 export default function Marketplace() {
   const { toast } = useToast();
+  const { check: checkAgent } = useDesktopAgent();
   const [searchQuery, setSearchQuery] = useState("");
   const [rarityFilter, setRarityFilter] = useState<"all" | "rare" | "very_rare">("all");
   const [sortField, setSortField] = useState<SortField>("roiScore");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const [showAgentPrompt, setShowAgentPrompt] = useState(false);
 
   const { data: files = [] } = useQuery({
     queryKey: ["files", "marketplace"],
@@ -142,7 +146,12 @@ export default function Marketplace() {
     }
   };
 
-  const handlePinNow = (file: MarketplaceFile) => {
+  const handlePinNow = async (file: MarketplaceFile) => {
+    const running = await checkAgent();
+    if (!running) {
+      setShowAgentPrompt(true);
+      return;
+    }
     toast({
       title: "Pin Initiated",
       description: `Started pinning "${file.fileName}" (${truncateCid(file.cid)})`,
@@ -581,6 +590,39 @@ export default function Marketplace() {
           </Table>
         </CardContent>
       </Card>
+
+      <Dialog open={showAgentPrompt} onOpenChange={setShowAgentPrompt}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Monitor className="h-5 w-5 text-primary" />
+              Desktop Agent Required
+            </DialogTitle>
+            <DialogDescription>
+              The SPK Desktop Agent must be running to pin content to your local IPFS node and earn HBD rewards.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 pt-2">
+            <div className="rounded-lg border bg-muted/50 p-4 space-y-2 text-sm">
+              <p className="font-medium">The Desktop Agent:</p>
+              <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                <li>Runs a local IPFS node for content storage</li>
+                <li>Responds to Proof-of-Access challenges</li>
+                <li>Earns HBD rewards automatically</li>
+              </ul>
+            </div>
+            <div className="flex gap-3">
+              <Button variant="outline" className="flex-1" onClick={() => setShowAgentPrompt(false)}>
+                Cancel
+              </Button>
+              <Button className="flex-1" onClick={() => window.location.href = "/download"}>
+                <Download className="h-4 w-4 mr-2" />
+                Download Agent
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

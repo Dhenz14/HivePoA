@@ -7,7 +7,9 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
-import { Play, Pin, Search, Eye, User, TrendingUp, Sparkles, Loader2, CheckCircle2 } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Play, Pin, Search, Eye, User, TrendingUp, Sparkles, Loader2, CheckCircle2, Download, Monitor } from "lucide-react";
+import { useDesktopAgent } from "@/hooks/use-desktop-agent";
 
 interface Video {
   id: string;
@@ -203,8 +205,10 @@ export default function Browse() {
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState("trending");
   const [pinJobs, setPinJobs] = useState<Record<string, PinJob>>({});
+  const [showAgentPrompt, setShowAgentPrompt] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { isRunning: agentRunning, check: checkAgent } = useDesktopAgent();
 
   const trendingQuery = useQuery<VideoResponse>({
     queryKey: ["/api/threespeak/trending"],
@@ -306,7 +310,12 @@ export default function Browse() {
     },
   });
 
-  const handlePin = (video: Video) => {
+  const handlePin = async (video: Video) => {
+    const running = await checkAgent();
+    if (!running) {
+      setShowAgentPrompt(true);
+      return;
+    }
     pinMutation.mutate(video);
   };
 
@@ -428,6 +437,39 @@ export default function Browse() {
           </ul>
         </CardContent>
       </Card>
+
+      <Dialog open={showAgentPrompt} onOpenChange={setShowAgentPrompt}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Monitor className="h-5 w-5 text-primary" />
+              Desktop Agent Required
+            </DialogTitle>
+            <DialogDescription>
+              The SPK Desktop Agent must be running to pin content to your local IPFS node and earn HBD rewards.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 pt-2">
+            <div className="rounded-lg border bg-muted/50 p-4 space-y-2 text-sm">
+              <p className="font-medium">The Desktop Agent:</p>
+              <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                <li>Runs a local IPFS node for content storage</li>
+                <li>Responds to Proof-of-Access challenges</li>
+                <li>Earns HBD rewards automatically</li>
+              </ul>
+            </div>
+            <div className="flex gap-3">
+              <Button variant="outline" className="flex-1" onClick={() => setShowAgentPrompt(false)}>
+                Cancel
+              </Button>
+              <Button className="flex-1" onClick={() => window.location.href = "/download"}>
+                <Download className="h-4 w-4 mr-2" />
+                Download Agent
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

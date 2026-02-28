@@ -1,7 +1,7 @@
 const path = require('path');
 
 module.exports = {
-  mode: process.env.NODE_ENV === 'production' ? 'production' : 'development',
+  mode: 'production',
   entry: './src/main/index.ts',
   target: 'electron-main',
   output: {
@@ -25,6 +25,11 @@ module.exports = {
     __filename: false,
   },
   externals: {
+    'electron': 'commonjs electron',
     'electron-store': 'commonjs electron-store',
+    'ws': 'commonjs ws',
+    'bufferutil': 'commonjs bufferutil',
+    'utf-8-validate': 'commonjs utf-8-validate',
+    '@hiveio/dhive': 'commonjs @hiveio/dhive',
   },
 };

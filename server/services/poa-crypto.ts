@@ -32,17 +32,17 @@ export function createSaltWithEntropy(hiveBlockHash: string): string {
 }
 
 export function getIntFromHash(hash: string, length: number): number {
-  if (length <= 7) {
-    return 1;
+  if (length <= 1) {
+    return 0;
   }
-  
+
   let h = 2166136261;
   for (let i = 0; i < hash.length; i++) {
     h ^= hash.charCodeAt(i);
     h = Math.imul(h, 16777619);
     h = h >>> 0;
   }
-  
+
   return h % length;
 }
 

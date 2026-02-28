@@ -10,6 +10,7 @@ export class KuboManager {
   private config: ConfigStore;
   private ipfsPath: string;
   private repoPath: string;
+  private usingExternal = false;
 
   constructor(config: ConfigStore) {
     this.config = config;
@@ -47,6 +48,13 @@ export class KuboManager {
     console.log(`[Kubo] Using binary: ${this.ipfsPath}`);
     console.log(`[Kubo] Repo path: ${this.repoPath}`);
 
+    // Check if an IPFS daemon is already running on port 5001
+    if (await this.detectExternalDaemon()) {
+      console.log('[Kubo] External IPFS daemon detected on port 5001 — using existing daemon');
+      this.usingExternal = true;
+      return;
+    }
+
     // Initialize repo if needed
     if (!fs.existsSync(path.join(this.repoPath, 'config'))) {
       console.log('[Kubo] Initializing IPFS repository...');
@@ -56,6 +64,18 @@ export class KuboManager {
     // Start the daemon
     console.log('[Kubo] Starting IPFS daemon...');
     await this.startDaemon();
+  }
+
+  private async detectExternalDaemon(): Promise<boolean> {
+    try {
+      const axios = require('axios');
+      const response = await axios.post(`${this.getApiUrl()}/api/v0/id`, null, { timeout: 3000 });
+      if (response.data?.ID) {
+        console.log(`[Kubo] Found external daemon with peer ID: ${response.data.ID}`);
+        return true;
+      }
+    } catch {}
+    return false;
   }
 
   private async initRepo(): Promise<void> {
@@ -111,11 +131,136 @@ export class KuboManager {
         },
       };
 
+      // Set default storage quota
+      if (!config.Datastore) config.Datastore = {};
+      config.Datastore.StorageMax = '50GB';
+
       fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
       console.log('[Kubo] Desktop configuration applied');
     } catch (error) {
       console.error('[Kubo] Failed to configure:', error);
     }
+  }
+
+  /**
+   * Apply bandwidth limits by adjusting Swarm.ConnMgr connection counts.
+   * ~5 KB/s per connection as rough estimate.
+   * Returns true if IPFS config changed (restart needed).
+   */
+  applyBandwidthConfig(bandwidthLimitUp: number, bandwidthLimitDown: number): boolean {
+    const configPath = path.join(this.repoPath, 'config');
+    if (!fs.existsSync(configPath)) return false;
+
+    try {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      const oldConnMgr = JSON.stringify(config.Swarm?.ConnMgr || {});
+
+      if (bandwidthLimitUp === 0 && bandwidthLimitDown === 0) {
+        config.Swarm = { ...config.Swarm, ConnMgr: { LowWater: 50, HighWater: 200, GracePeriod: '20s' } };
+      } else {
+        const effectiveLimit = Math.min(
+          bandwidthLimitUp || Infinity,
+          bandwidthLimitDown || Infinity
+        );
+        const maxConns = Math.max(10, Math.floor(effectiveLimit / 5));
+        config.Swarm = {
+          ...config.Swarm,
+          ConnMgr: {
+            LowWater: Math.max(5, Math.floor(maxConns * 0.25)),
+            HighWater: maxConns,
+            GracePeriod: '20s',
+          },
+        };
+      }
+
+      const newConnMgr = JSON.stringify(config.Swarm.ConnMgr);
+      if (oldConnMgr === newConnMgr) return false;
+
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      console.log('[Kubo] Bandwidth config applied:', config.Swarm.ConnMgr);
+      return true;
+    } catch (error) {
+      console.error('[Kubo] Failed to apply bandwidth config:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Apply storage quota by setting Datastore.StorageMax in IPFS config.
+   * Returns true if config changed (restart needed).
+   */
+  applyStorageQuota(storageMaxGB: number): boolean {
+    const configPath = path.join(this.repoPath, 'config');
+    if (!fs.existsSync(configPath)) return false;
+
+    try {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      const newMax = storageMaxGB === 0 ? '100GB' : `${storageMaxGB}GB`;
+
+      if (!config.Datastore) config.Datastore = {};
+      const oldMax = config.Datastore.StorageMax;
+      if (oldMax === newMax) return false;
+
+      config.Datastore.StorageMax = newMax;
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      console.log(`[Kubo] Storage quota set to ${newMax}`);
+      return true;
+    } catch (error) {
+      console.error('[Kubo] Failed to apply storage quota:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Restart the IPFS daemon (stop + start). Used after config changes.
+   */
+  async restart(): Promise<void> {
+    if (this.usingExternal) {
+      console.log('[Kubo] Using external daemon — skipping restart');
+      return;
+    }
+    console.log('[Kubo] Restarting daemon for config change...');
+    await this.stop();
+    await this.startDaemon();
+    console.log('[Kubo] Daemon restarted successfully');
+  }
+
+  /**
+   * Get storage usage info: current usage vs configured limit.
+   */
+  async getStorageInfo(): Promise<{ usedBytes: number; maxBytes: number; usedFormatted: string; maxFormatted: string; percentage: number }> {
+    const stats = await this.getStats();
+    const usedBytes = stats?.repoSize || 0;
+
+    let maxBytes = 50 * 1024 * 1024 * 1024; // 50GB default
+    const configPath = path.join(this.repoPath, 'config');
+    try {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      const storageMax = config.Datastore?.StorageMax || '50GB';
+      const match = storageMax.match(/^(\d+)(GB|MB|TB)$/i);
+      if (match) {
+        const val = parseInt(match[1]);
+        const unit = match[2].toUpperCase();
+        const multiplier = unit === 'TB' ? 1024 * 1024 * 1024 * 1024 : unit === 'GB' ? 1024 * 1024 * 1024 : 1024 * 1024;
+        maxBytes = val * multiplier;
+      }
+    } catch {}
+
+    return {
+      usedBytes,
+      maxBytes,
+      usedFormatted: this.formatBytes(usedBytes),
+      maxFormatted: this.formatBytes(maxBytes),
+      percentage: maxBytes > 0 ? Math.round((usedBytes / maxBytes) * 100) : 0,
+    };
+  }
+
+  private formatBytes(bytes: number): string {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   }
 
   private async startDaemon(): Promise<void> {
@@ -161,10 +306,15 @@ export class KuboManager {
   }
 
   async stop(): Promise<void> {
+    if (this.usingExternal) {
+      console.log('[Kubo] Using external daemon — not stopping');
+      return;
+    }
+
     if (this.process) {
       console.log('[Kubo] Stopping daemon...');
       this.process.kill('SIGTERM');
-      
+
       await new Promise<void>((resolve) => {
         const timeout = setTimeout(() => {
           this.process?.kill('SIGKILL');
@@ -176,13 +326,13 @@ export class KuboManager {
           resolve();
         });
       });
-      
+
       this.process = null;
     }
   }
 
   isRunning(): boolean {
-    return this.process !== null;
+    return this.process !== null || this.usingExternal;
   }
 
   getApiUrl(): string {
