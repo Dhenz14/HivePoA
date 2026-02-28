@@ -1,6 +1,6 @@
 {
   "name": "spk-desktop-agent",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "SPK Network Desktop Agent - Earn HBD by providing IPFS storage",
   "homepage": "https://github.com/Dhenz14/HivePoA",
   "main": "./dist/main/index.js",

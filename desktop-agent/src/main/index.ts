@@ -11,6 +11,18 @@ import { PubSubBridge } from './pubsub';
 import { ChallengeHandler, ChallengeMessage, ChallengeResponse } from './challenge-handler';
 import { LocalValidator } from './validator';
 
+// ─── Global error handlers — prevent silent crashes ─────────────────────────
+process.on('uncaughtException', (error) => {
+  console.error('[SPK] Uncaught exception:', error);
+  try {
+    dialog.showErrorBox('SPK Desktop Agent', `Unexpected error: ${error.message}\n\nThe app will try to continue.`);
+  } catch {}
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[SPK] Unhandled rejection:', reason);
+});
+
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let kuboManager: KuboManager;
@@ -199,6 +211,22 @@ async function initialize(): Promise<void> {
     await kuboManager.start();
     updateTrayMenu('Running');
     console.log('[SPK] IPFS daemon started successfully');
+
+    // Auto-restart Kubo if it crashes unexpectedly
+    kuboManager.onExit(() => {
+      console.log('[SPK] Kubo exited unexpectedly, attempting restart in 5s...');
+      updateTrayMenu('IPFS Restarting...');
+      setTimeout(async () => {
+        try {
+          await kuboManager.start();
+          updateTrayMenu('Running');
+          console.log('[SPK] Kubo restarted successfully');
+        } catch (err) {
+          console.error('[SPK] Kubo restart failed:', err);
+          updateTrayMenu('IPFS Error');
+        }
+      }, 5000);
+    });
   } catch (error) {
     console.error('[SPK] Failed to start IPFS:', error);
     updateTrayMenu('Error');
@@ -218,6 +246,14 @@ async function initialize(): Promise<void> {
     await initializeP2P();
   } else {
     await initializeLegacy();
+  }
+
+  // Auto-open Keychain login if no username configured (first launch experience)
+  if (!configStore.getConfig().hiveUsername) {
+    console.log('[SPK] No Hive username configured — opening Keychain auth in browser');
+    const port = configStore.getConfig().apiPort || 5111;
+    shell.openExternal(`http://127.0.0.1:${port}/auth/keychain`);
+    mainWindow?.show();
   }
 
   // Check for updates after startup

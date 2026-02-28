@@ -11,6 +11,8 @@ export class KuboManager {
   private ipfsPath: string;
   private repoPath: string;
   private usingExternal = false;
+  private exitCallback: (() => void) | null = null;
+  private intentionalStop = false;
 
   constructor(config: ConfigStore) {
     this.config = config;
@@ -264,6 +266,7 @@ export class KuboManager {
   }
 
   private async startDaemon(): Promise<void> {
+    this.intentionalStop = false;
     return new Promise((resolve, reject) => {
       this.process = spawn(this.ipfsPath, ['daemon', '--enable-gc'], {
         env: { ...process.env, IPFS_PATH: this.repoPath },
@@ -294,6 +297,10 @@ export class KuboManager {
       this.process.on('exit', (code) => {
         console.log(`[Kubo] Process exited with code ${code}`);
         this.process = null;
+        // Notify crash recovery if this wasn't an intentional stop
+        if (!this.intentionalStop && started && this.exitCallback) {
+          this.exitCallback();
+        }
       });
 
       // Timeout after 30 seconds
@@ -305,6 +312,11 @@ export class KuboManager {
     });
   }
 
+  /** Register a callback fired when the daemon exits unexpectedly (not via stop()). */
+  onExit(callback: () => void): void {
+    this.exitCallback = callback;
+  }
+
   async stop(): Promise<void> {
     if (this.usingExternal) {
       console.log('[Kubo] Using external daemon — not stopping');
@@ -312,6 +324,7 @@ export class KuboManager {
     }
 
     if (this.process) {
+      this.intentionalStop = true;
       console.log('[Kubo] Stopping daemon...');
       this.process.kill('SIGTERM');
 

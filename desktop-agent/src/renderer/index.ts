@@ -212,6 +212,18 @@ async function updateUI(): Promise<void> {
       usernameInput.value = status.config.hiveUsername;
     }
 
+    // Signed-in banner
+    const signedInBanner = document.getElementById('signedInBanner');
+    const signedInText = document.getElementById('signedInText');
+    if (signedInBanner && signedInText) {
+      if (status.config.hiveUsername) {
+        signedInBanner.style.display = 'flex';
+        signedInText.textContent = `Signed in as @${status.config.hiveUsername}`;
+      } else {
+        signedInBanner.style.display = 'none';
+      }
+    }
+
     // P2P Network status
     const networkDot = document.getElementById('networkDot');
     const networkText = document.getElementById('networkText');
@@ -231,9 +243,12 @@ async function updateUI(): Promise<void> {
       } else if (net.hasPostingKey && status.config.hiveUsername) {
         networkDot?.classList.remove('running');
         if (networkText) networkText.textContent = 'Scanning for peers...';
+      } else if (status.config.hiveUsername && !net.hasPostingKey) {
+        networkDot?.classList.remove('running');
+        if (networkText) networkText.textContent = 'Set posting key to join P2P network';
       } else {
         networkDot?.classList.remove('running');
-        if (networkText) networkText.textContent = 'Set Hive username & posting key to join network';
+        if (networkText) networkText.textContent = 'Sign in with Hive Keychain to get started';
       }
 
       // Posting key status

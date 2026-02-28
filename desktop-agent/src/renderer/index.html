@@ -246,6 +246,11 @@
     <!-- Hive Account Config -->
     <div class="status-card config-section">
       <h2>Hive Account</h2>
+      <!-- Signed-in indicator (shown when username is set) -->
+      <div id="signedInBanner" style="display:none; background:rgba(0,212,170,0.1); border:1px solid rgba(0,212,170,0.3); border-radius:8px; padding:12px; margin-bottom:15px; display:flex; align-items:center; gap:10px;">
+        <div style="width:10px; height:10px; border-radius:50%; background:#00d4aa; box-shadow:0 0 8px #00d4aa; flex-shrink:0;"></div>
+        <span id="signedInText" style="font-size:14px; font-weight:600; color:#00d4aa;"></span>
+      </div>
       <div id="keychainAuthStatus" style="display:none; background:rgba(0,212,170,0.1); border:1px solid rgba(0,212,170,0.3); border-radius:8px; padding:12px; margin-bottom:15px; font-size:13px; color:#00d4aa;"></div>
       <button type="button" id="keychainLogin" style="background:#00d4aa; color:#1a1a2e; width:100%; margin-bottom:12px;">Login with Hive Keychain</button>
       <div class="hint" style="margin-bottom:15px; margin-top:0;">Opens your browser. No private keys needed.</div>

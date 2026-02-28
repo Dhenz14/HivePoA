@@ -21,6 +21,16 @@ interface ValidatorAuthContextType {
 const ValidatorAuthContext = createContext<ValidatorAuthContextType | null>(null);
 
 const STORAGE_KEY = "spk_validator_session";
+const DESKTOP_AGENT_URL = "http://127.0.0.1:5111";
+
+/** Sync username to desktop agent if it's running (fire-and-forget) */
+function syncToDesktopAgent(username: string): void {
+  fetch(`${DESKTOP_AGENT_URL}/api/config`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ hiveUsername: username }),
+  }).catch(() => {});
+}
 
 async function validateSession(username: string, sessionToken: string): Promise<ValidatorUser | null> {
   try {
@@ -63,6 +73,7 @@ export function ValidatorAuthProvider({ children }: { children: ReactNode }) {
             const validatedUser = await validateSession(session.user.username, session.user.sessionToken);
             if (validatedUser) {
               setUser(validatedUser);
+              syncToDesktopAgent(validatedUser.username);
             } else {
               localStorage.removeItem(STORAGE_KEY);
             }
@@ -113,12 +124,7 @@ export function ValidatorAuthProvider({ children }: { children: ReactNode }) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
       setUser(validatorUser);
 
-      // Sync username to desktop agent if it's running (fire-and-forget)
-      fetch("http://127.0.0.1:5111/api/config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hiveUsername: data.username }),
-      }).catch(() => {});
+      syncToDesktopAgent(data.username);
 
       return { success: true };
     } catch (error) {
