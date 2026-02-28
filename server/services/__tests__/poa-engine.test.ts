@@ -20,7 +20,7 @@ describe("POA_CONFIG constants", () => {
   });
 
   it("has valid reward multipliers", () => {
-    expect(POA_CONFIG.BASE_REWARD_HBD).toBeGreaterThan(0);
+    expect(POA_CONFIG.FALLBACK_REWARD_HBD).toBeGreaterThan(0);
     expect(POA_CONFIG.STREAK_BONUS_10).toBeGreaterThanOrEqual(1);
     expect(POA_CONFIG.STREAK_BONUS_50).toBeGreaterThan(POA_CONFIG.STREAK_BONUS_10);
     expect(POA_CONFIG.STREAK_BONUS_100).toBeGreaterThan(POA_CONFIG.STREAK_BONUS_50);
@@ -29,7 +29,7 @@ describe("POA_CONFIG constants", () => {
   it("has valid batch settings", () => {
     expect(POA_CONFIG.PROOF_BATCH_THRESHOLD).toBeGreaterThanOrEqual(1);
     expect(POA_CONFIG.MIN_BATCH_PAYOUT_HBD).toBeGreaterThan(0);
-    expect(POA_CONFIG.MIN_BATCH_PAYOUT_HBD).toBeLessThan(POA_CONFIG.BASE_REWARD_HBD * POA_CONFIG.PROOF_BATCH_THRESHOLD);
+    expect(POA_CONFIG.MIN_BATCH_PAYOUT_HBD).toBeLessThan(POA_CONFIG.FALLBACK_REWARD_HBD * POA_CONFIG.PROOF_BATCH_THRESHOLD);
   });
 
   it("has valid cooldown values", () => {
@@ -195,18 +195,18 @@ describe("Reputation Calculation Logic", () => {
 
 describe("Reward Calculation Logic", () => {
   it("base reward with no bonuses", () => {
-    const reward = POA_CONFIG.BASE_REWARD_HBD * 1 * 1; // rarity=1, streak=1
-    expect(reward).toBe(POA_CONFIG.BASE_REWARD_HBD);
+    const reward = POA_CONFIG.FALLBACK_REWARD_HBD * 1 * 1; // rarity=1, streak=1
+    expect(reward).toBe(POA_CONFIG.FALLBACK_REWARD_HBD);
   });
 
   it("rarity multiplier decreases with replication", () => {
-    const reward1 = POA_CONFIG.BASE_REWARD_HBD * (1 / 1); // 1 replica
-    const reward5 = POA_CONFIG.BASE_REWARD_HBD * (1 / 5); // 5 replicas
+    const reward1 = POA_CONFIG.FALLBACK_REWARD_HBD * (1 / 1); // 1 replica
+    const reward5 = POA_CONFIG.FALLBACK_REWARD_HBD * (1 / 5); // 5 replicas
     expect(reward1).toBeGreaterThan(reward5);
   });
 
   it("streak bonus increases reward at thresholds", () => {
-    const base = POA_CONFIG.BASE_REWARD_HBD;
+    const base = POA_CONFIG.FALLBACK_REWARD_HBD;
     const rewardStreak9 = base * 1.0;  // Below 10
     const rewardStreak10 = base * POA_CONFIG.STREAK_BONUS_10;
     const rewardStreak50 = base * POA_CONFIG.STREAK_BONUS_50;

@@ -54,7 +54,7 @@ export class LocalValidator {
     pubsub: PubSubBridge,
     kuboApiUrl: string,
     myUsername: string,
-    challengeIntervalMs: number = 300000,
+    challengeIntervalMs: number = 7200000, // 2 hours (was 5 min)
     broadcastResults: boolean = true
   ) {
     this.hive = hive;
@@ -73,8 +73,8 @@ export class LocalValidator {
     // Get initial block hash
     await this.updateBlockHash();
 
-    // Refresh block hash every 60 seconds (was 30s — reduces API calls by half)
-    this.blockHashTimer = setInterval(() => this.updateBlockHash(), 60000);
+    // Refresh block hash every 5 minutes (challenges are 2h apart, no need to refresh often)
+    this.blockHashTimer = setInterval(() => this.updateBlockHash(), 300000);
 
     // Run first challenge after a short delay (let peer discovery populate)
     setTimeout(() => this.runChallengeRound(), 15000);

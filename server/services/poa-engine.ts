@@ -28,8 +28,9 @@ export const POA_CONFIG = {
   PROBATION_THRESHOLD: 30,
   CONSECUTIVE_FAIL_BAN: 3,
 
-  // Rewards
-  BASE_REWARD_HBD: 0.001,
+  // Rewards — contract-funded (rewardPerChallenge from storage contract)
+  // FALLBACK_REWARD_HBD used only for files without an active contract
+  FALLBACK_REWARD_HBD: 0.005,
   STREAK_BONUS_10: 1.1,
   STREAK_BONUS_50: 1.25,
   STREAK_BONUS_100: 1.5,
@@ -42,8 +43,8 @@ export const POA_CONFIG = {
 
   // Cooldown — environment-aware with env var overrides
   BAN_COOLDOWN_HOURS: 24,
-  NODE_FILE_COOLDOWN_MS: envInt("POA_NODE_FILE_COOLDOWN_MS", 60_000, 14_400_000),     // dev: 1 min, prod: 4 hours
-  NODE_COOLDOWN_MS: envInt("POA_NODE_COOLDOWN_MS", 30_000, 1_800_000),                // dev: 30s, prod: 30 min
+  NODE_FILE_COOLDOWN_MS: envInt("POA_NODE_FILE_COOLDOWN_MS", 60_000, 43_200_000),    // dev: 1 min, prod: 12 hours
+  NODE_COOLDOWN_MS: envInt("POA_NODE_COOLDOWN_MS", 30_000, 7_200_000),               // dev: 30s, prod: 2 hours
 
   // Trust-based cooldown multipliers
   TRUST_TIER_NEW: 50,
@@ -51,11 +52,11 @@ export const POA_CONFIG = {
   COOLDOWN_MULTIPLIER_NEW: 0.5,
   COOLDOWN_MULTIPLIER_ESTABLISHED: 2,
 
-  // Challenge batching
-  CHALLENGES_PER_ROUND: 3,
+  // Challenge batching — 5 per round, 6 rounds/day = 30 challenges/day (was 144)
+  CHALLENGES_PER_ROUND: 5,
 
-  // Micropayment batching (SPK 1.0 spec: 10 proofs = 1 payout)
-  PROOF_BATCH_THRESHOLD: 10,
+  // Micropayment batching — reduced threshold since challenges are less frequent
+  PROOF_BATCH_THRESHOLD: 5,
   MIN_BATCH_PAYOUT_HBD: 0.001, // Don't issue payouts below dust threshold
 
   // Spending safety limits
@@ -63,8 +64,9 @@ export const POA_CONFIG = {
   MAX_DAILY_SPEND_HBD: 50.0,    // Max total spend per 24 hours
   MIN_BALANCE_RESERVE_HBD: 1.0, // Keep at least this much in the wallet
 
-  // Challenge interval — env var override with smart defaults
-  DEFAULT_CHALLENGE_INTERVAL_MS: envInt("POA_CHALLENGE_INTERVAL_MS", 30_000, 1_800_000), // dev: 30s, prod: 30 min
+  // Challenge interval — 4 hours production (was 30 min), 2 min dev (was 30s)
+  // Reduces Hive API load by ~77%: ~36 calls/day vs ~158
+  DEFAULT_CHALLENGE_INTERVAL_MS: envInt("POA_CHALLENGE_INTERVAL_MS", 120_000, 14_400_000), // dev: 2 min, prod: 4 hours
 
   // Cache
   BLOCK_CACHE_TTL_MS: 3600000,
@@ -164,6 +166,9 @@ export class PoAEngine {
   private dailySpendHbd: number = 0;
   private dailySpendResetAt: number = Date.now() + 86400000;
   private flushingNodes: Set<string> = new Set(); // Mutex: nodes currently being flushed
+
+  // Contract references: map challengeId → contract for reward calculation
+  private challengeContracts: Map<string, any> = new Map();
 
   constructor(config?: Partial<PoAConfig>) {
     this.config = {
@@ -410,8 +415,36 @@ export class PoAEngine {
     return nodes.filter(node => !this.isNodeOnCooldown(node.id, node.reputation));
   }
 
+  /**
+   * Sweep contract lifecycle: mark expired and budget-exhausted contracts.
+   * Runs at the start of each challenge round.
+   */
+  private async sweepContractLifecycle(): Promise<void> {
+    try {
+      // Mark time-expired contracts
+      const expired = await storage.getExpiredContracts();
+      for (const contract of expired) {
+        await storage.updateStorageContractStatus(contract.id, 'expired');
+        const remaining = parseFloat(contract.hbdBudget) - parseFloat(contract.hbdSpent);
+        logPoA.info(`[PoA] Contract ${contract.id} expired (CID: ${contract.fileCid.substring(0, 12)}..., remaining: ${remaining.toFixed(3)} HBD)`);
+      }
+
+      // Mark budget-exhausted contracts
+      const exhausted = await storage.getExhaustedContracts();
+      for (const contract of exhausted) {
+        await storage.updateStorageContractStatus(contract.id, 'completed');
+        logPoA.info(`[PoA] Contract ${contract.id} completed — budget fully spent (CID: ${contract.fileCid.substring(0, 12)}...)`);
+      }
+    } catch (err) {
+      logPoA.error({ err }, "Failed to sweep contract lifecycle");
+    }
+  }
+
   private async runChallenge() {
     if (!this.validatorId) return;
+
+    // Sweep expired and exhausted contracts before selecting challenges
+    await this.sweepContractLifecycle();
 
     // Get only eligible nodes (excludes blacklisted ones)
     let nodes = await storage.getEligibleNodesForValidator(this.validatorId);
@@ -424,12 +457,20 @@ export class PoAEngine {
       return;
     }
 
+    // CONTRACT-FUNDED: Prefer files with active, funded contracts
+    const activeContracts = await storage.getActiveContractsForChallenge();
+    const contractCids = new Set(activeContracts.map(c => c.fileCid));
+
     const allFiles = await storage.getAllFiles();
     // Only challenge files that have PoA enabled (real CIDs that exist)
-    const files = allFiles.filter(f => f.poaEnabled === true);
-    if (files.length === 0) return;
+    const poaFiles = allFiles.filter(f => f.poaEnabled === true);
+    if (poaFiles.length === 0) return;
 
-    // OPTIMIZATION: Batch 3-5 challenges per round
+    // Prioritize contract-funded files, but allow unfunded files as fallback
+    const fundedFiles = poaFiles.filter(f => contractCids.has(f.cid));
+    const files = fundedFiles.length > 0 ? fundedFiles : poaFiles;
+
+    // OPTIMIZATION: Batch 5 challenges per round (was 3)
     const batchSize = Math.min(
       POA_CONFIG.CHALLENGES_PER_ROUND,
       nodes.length,
@@ -444,9 +485,9 @@ export class PoAEngine {
       // Also filter out nodes already challenged this round
       const availableNodes = nodes.filter(n => !challengedNodes.has(n.id));
       if (availableNodes.length === 0) break;
-      
+
       const selectedNode = this.selectWeightedNode(availableNodes);
-      
+
       // Find a file that hasn't been challenged with this node recently
       let selectedFile = this.selectWeightedFile(files);
       let attempts = 0;
@@ -454,20 +495,24 @@ export class PoAEngine {
         selectedFile = this.selectWeightedFile(files);
         attempts++;
       }
-      
+
+      // Look up contract for this file's CID (for reward calculation)
+      const contract = activeContracts.find(c => c.fileCid === selectedFile.cid);
+
       // Mark node as challenged this round
       challengedNodes.add(selectedNode.id);
-      
+
       // Record cooldown
       this.recordChallengeCooldown(selectedNode.id, selectedFile.id);
 
       // OPTIMIZATION: Add Hive block hash entropy to salt
       const salt = createSaltWithEntropy(this.currentHiveBlockHash);
-      const challengeData = JSON.stringify({ 
-        salt, 
+      const challengeData = JSON.stringify({
+        salt,
         cid: selectedFile.cid,
         method: this.config.useMockMode ? "simulation" : "spk-poa",
         blockHash: this.currentHiveBlockHash.slice(0, 16), // Include for verification
+        contractId: contract?.id || null,
       });
 
       const challengePromise = (async () => {
@@ -480,8 +525,8 @@ export class PoAEngine {
           result: null,
           latencyMs: null,
         });
-        
-        await this.executeChallenge(challenge.id, selectedNode, selectedFile, salt);
+
+        await this.executeChallenge(challenge.id, selectedNode, selectedFile, salt, contract);
       })();
 
       challengePromises.push(challengePromise);
@@ -495,25 +540,31 @@ export class PoAEngine {
     challengeId: string,
     node: any,
     file: any,
-    salt: string
+    salt: string,
+    contract?: any
   ) {
+    // Store contract reference for reward calculation in handleChallengeResult
+    if (contract) {
+      this.challengeContracts.set(challengeId, contract);
+    }
+
     // AGENT-WS MODE: If node is connected via WebSocket, use that channel
     const { agentWSManager } = await import("./agent-ws-manager");
     if (agentWSManager.isAgentConnected(node.id)) {
-      logPoA.info(`[PoA] AGENT-WS challenge → node=${node.hiveUsername || node.id} file=${file.cid?.substring(0, 12)}...`);
+      logPoA.info(`[PoA] AGENT-WS challenge → node=${node.hiveUsername || node.id} file=${file.cid?.substring(0, 12)}... contract=${contract?.id || 'none'}`);
       await this.processAgentWSChallenge(challengeId, node, file, salt);
       return;
     }
 
     // LIVE MODE: If node has an endpoint, always use live validation
     if (node.endpoint) {
-      logPoA.info(`[PoA] LIVE challenge → node=${node.hiveUsername || node.id} file=${file.cid?.substring(0, 12)}...`);
+      logPoA.info(`[PoA] LIVE challenge → node=${node.hiveUsername || node.id} file=${file.cid?.substring(0, 12)}... contract=${contract?.id || 'none'}`);
       await this.processSPKChallenge(challengeId, node.id, file.id, file.cid, salt);
     } else if (this.config.useMockMode) {
       logPoA.info(`[PoA] SIMULATION challenge → node=${node.hiveUsername || node.id} (no endpoint, mock mode)`);
       await this.processSimulatedChallenge(challengeId, node.id, file.id, salt);
     } else {
-      logPoA.info(`[PoA] SPK challenge → node=${node.hiveUsername || node.id} file=${file.cid?.substring(0, 12)}...`);
+      logPoA.info(`[PoA] SPK challenge → node=${node.hiveUsername || node.id} file=${file.cid?.substring(0, 12)}... contract=${contract?.id || 'none'}`);
       await this.processSPKChallenge(challengeId, node.id, file.id, file.cid, salt);
     }
   }
@@ -896,6 +947,9 @@ export class PoAEngine {
     }
 
     if (result === "fail") {
+      // Clean up contract reference on failure
+      this.challengeContracts.delete(challengeId);
+
       await storage.createHiveTransaction({
         type: "spk_reputation_slash",
         fromUser: this.config.validatorUsername,
@@ -909,12 +963,16 @@ export class PoAEngine {
         blockNumber: Math.floor(Date.now() / 1000),
       });
     } else {
-      // OPTIMIZATION: Rarity-based reward multiplier
+      // CONTRACT-FUNDED REWARDS: Use contract's rewardPerChallenge if available
+      const contract = this.challengeContracts.get(challengeId);
+      const contractReward = contract ? parseFloat(contract.rewardPerChallenge) : 0;
+      const baseReward = contractReward > 0 ? contractReward : POA_CONFIG.FALLBACK_REWARD_HBD;
+
+      // Rarity-based reward multiplier
       const replicationCount = file?.replicationCount || 1;
-      const baseReward = POA_CONFIG.BASE_REWARD_HBD;
       const rarityMultiplier = 1 / Math.max(1, replicationCount);
 
-      // OPTIMIZATION: Streak bonus for consistent performance
+      // Streak bonus for consistent performance
       let streakBonus = 1.0;
       if (newStreak >= 100) {
         streakBonus = POA_CONFIG.STREAK_BONUS_100;
@@ -926,6 +984,16 @@ export class PoAEngine {
 
       const reward = baseReward * rarityMultiplier * streakBonus;
 
+      // Deduct from contract budget if contract-funded
+      if (contract) {
+        const deducted = await storage.updateStorageContractSpent(contract.id, reward);
+        if (!deducted) {
+          logPoA.warn(`[PoA] Contract ${contract.id} budget exhausted during reward for ${node.hiveUsername}`);
+          // Budget exhausted — mark completed, but still pay this last reward
+          await storage.updateStorageContractStatus(contract.id, 'completed');
+        }
+      }
+
       // Update file earnings immediately (internal accounting)
       if (file) {
         await storage.updateFileEarnings(fileId, reward);
@@ -934,9 +1002,11 @@ export class PoAEngine {
       // Update node total earnings immediately (internal accounting)
       await storage.updateNodeEarnings(nodeId, reward);
 
-      // MICROPAYMENT BATCHING: Accumulate rewards, payout at threshold
-      // SPK 1.0 spec: 10 proofs = 1 combined Hive transaction (reduces chain bloat by ~90%)
+      // MICROPAYMENT BATCHING: Accumulate rewards, payout at threshold (5 proofs = 1 Hive tx)
       await this.accumulateProofReward(nodeId, node.hiveUsername, cid, reward, newStreak, rarityMultiplier, streakBonus);
+
+      // Clean up contract reference
+      this.challengeContracts.delete(challengeId);
     }
   }
 

@@ -165,6 +165,7 @@ export const storageContracts = pgTable("storage_contracts", {
   status: text("status").notNull().default("pending"), // pending, active, completed, expired, cancelled
   hbdBudget: text("hbd_budget").notNull().default("0"), // HBD allocated for storage
   hbdSpent: text("hbd_spent").notNull().default("0"), // HBD paid out so far
+  rewardPerChallenge: text("reward_per_challenge").notNull().default("0.005"), // HBD paid per successful PoA proof
   validatorApprovalAt: timestamp("validator_approval_at"),
   startsAt: timestamp("starts_at").notNull().defaultNow(),
   expiresAt: timestamp("expires_at").notNull(),

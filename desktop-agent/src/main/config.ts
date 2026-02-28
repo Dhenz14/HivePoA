@@ -62,7 +62,7 @@ export class ConfigStore {
       serverUrl: this.store.get('serverUrl', 'http://localhost:5000') as string,
       p2pMode: this.store.get('p2pMode', true) as boolean,
       validatorEnabled: this.store.get('validatorEnabled', true) as boolean,
-      challengeIntervalMs: this.store.get('challengeIntervalMs', 300000) as number,
+      challengeIntervalMs: this.store.get('challengeIntervalMs', 7200000) as number, // 2 hours (was 5 min)
       minPeerReputation: this.store.get('minPeerReputation', 25) as number,
       autoPinPopular: this.store.get('autoPinPopular', true) as boolean,
       autoPinMaxGB: this.store.get('autoPinMaxGB', 10) as number,

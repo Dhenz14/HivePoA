@@ -148,6 +148,34 @@ function paginatedResponse<T>(data: T[], total: number, page: number, limit: num
   return { data, pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
 }
 
+/** Enrich a storage contract with computed budget fields */
+function enrichContractResponse(contract: any) {
+  const budget = parseFloat(contract.hbdBudget || '0');
+  const spent = parseFloat(contract.hbdSpent || '0');
+  const remaining = Math.max(0, budget - spent);
+  const percentSpent = budget > 0 ? Math.min(100, (spent / budget) * 100) : 0;
+
+  // Estimate exhaustion date based on spending rate
+  let estimatedExhaustionDate: string | null = null;
+  if (budget > 0 && spent > 0 && contract.status === 'active') {
+    const contractAgeMs = Date.now() - new Date(contract.startsAt).getTime();
+    if (contractAgeMs > 0) {
+      const dailySpendRate = spent / (contractAgeMs / 86400000);
+      if (dailySpendRate > 0) {
+        const daysRemaining = remaining / dailySpendRate;
+        estimatedExhaustionDate = new Date(Date.now() + daysRemaining * 86400000).toISOString();
+      }
+    }
+  }
+
+  return {
+    ...contract,
+    remainingBudget: remaining.toFixed(3),
+    percentSpent: Math.round(percentSpent * 10) / 10,
+    estimatedExhaustionDate,
+  };
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -615,12 +643,12 @@ export async function registerRoutes(
   
   app.get("/api/contracts", async (req, res) => {
     const contracts = await storage.getAllStorageContracts();
-    res.json(contracts);
+    res.json(contracts.map(enrichContractResponse));
   });
 
   app.get("/api/contracts/active", async (req, res) => {
     const contracts = await storage.getActiveStorageContracts();
-    res.json(contracts);
+    res.json(contracts.map(enrichContractResponse));
   });
 
   app.get("/api/contracts/:id", async (req, res) => {
@@ -628,12 +656,204 @@ export async function registerRoutes(
     if (!contract) {
       return res.status(404).json({ error: "Contract not found" });
     }
-    res.json(contract);
+    res.json(enrichContractResponse(contract));
   });
 
   app.get("/api/contracts/:id/events", async (req, res) => {
     const events = await storage.getContractEvents(req.params.id);
     res.json(events);
+  });
+
+  // ============================================================
+  // Contract Creation, Funding & Cancellation
+  // ============================================================
+
+  /**
+   * Create a storage contract for a CID.
+   * Returns the contract with a depositMemo for Hive transfer.
+   */
+  app.post("/api/contracts/create", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        fileCid: z.string().min(1),
+        hbdBudget: z.string().regex(/^\d+\.?\d{0,3}$/, "Invalid HBD amount"),
+        durationDays: z.number().int().min(1).max(3650),
+        requestedReplication: z.number().int().min(1).max(20).optional(),
+      });
+      const data = schema.parse(req.body);
+      const username = req.authenticatedUser!;
+
+      // Verify CID exists in files table
+      const file = await storage.getFileByCid(data.fileCid);
+      if (!file) {
+        return res.status(404).json({ error: "File CID not found — upload the file first" });
+      }
+
+      const budget = parseFloat(data.hbdBudget);
+      if (budget <= 0) {
+        return res.status(400).json({ error: "Budget must be greater than 0" });
+      }
+
+      // Calculate suggested rewardPerChallenge based on budget and duration
+      // Estimate ~1 challenge per 3 days per CID (conservative)
+      const estimatedChallenges = Math.max(1, Math.floor(data.durationDays / 3));
+      const rewardPerChallenge = Math.max(0.001, budget / estimatedChallenges);
+
+      const expiresAt = new Date(Date.now() + data.durationDays * 24 * 60 * 60 * 1000);
+
+      const contract = await storage.createStorageContract({
+        fileId: file.id,
+        fileCid: data.fileCid,
+        uploaderUsername: username,
+        requestedReplication: data.requestedReplication || 3,
+        actualReplication: 0,
+        status: 'pending',
+        hbdBudget: budget.toFixed(3),
+        hbdSpent: '0',
+        rewardPerChallenge: rewardPerChallenge.toFixed(4),
+        startsAt: new Date(),
+        expiresAt,
+      });
+
+      // Create contract event
+      await storage.createContractEvent({
+        contractId: contract.id,
+        eventType: 'created',
+        payload: JSON.stringify({
+          budget: data.hbdBudget,
+          durationDays: data.durationDays,
+          rewardPerChallenge: rewardPerChallenge.toFixed(4),
+          estimatedChallenges,
+        }),
+      });
+
+      const depositMemo = `hivepoa:contract:${contract.id}`;
+
+      res.json({
+        ...contract,
+        depositMemo,
+        estimatedChallenges,
+        estimatedRewardPerChallenge: rewardPerChallenge.toFixed(4),
+      });
+    } catch (error: any) {
+      logRoutes.error({ err: error }, "Failed to create contract");
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  /**
+   * Fund a contract by verifying a Hive HBD transfer.
+   * Activates the contract after verifying the deposit.
+   */
+  app.post("/api/contracts/:id/fund", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        txHash: z.string().min(1),
+      });
+      const data = schema.parse(req.body);
+      const username = req.authenticatedUser!;
+
+      const contract = await storage.getStorageContract(req.params.id);
+      if (!contract) {
+        return res.status(404).json({ error: "Contract not found" });
+      }
+      if (contract.uploaderUsername !== username) {
+        return res.status(403).json({ error: "Not the contract owner" });
+      }
+      if (contract.status !== 'pending') {
+        return res.status(400).json({ error: `Contract is already ${contract.status}` });
+      }
+
+      // Verify the Hive transfer
+      const { createHiveClient } = await import("./services/hive-client");
+      const hiveClient = createHiveClient();
+      const transfer = await hiveClient.verifyTransfer(data.txHash);
+
+      if (!transfer) {
+        return res.status(400).json({ error: "Transaction not found on Hive blockchain" });
+      }
+
+      // Validate transfer details
+      const transferAmount = parseFloat(transfer.amount);
+      const requiredAmount = parseFloat(contract.hbdBudget);
+      if (transferAmount < requiredAmount) {
+        return res.status(400).json({
+          error: `Insufficient transfer: ${transfer.amount} sent, ${contract.hbdBudget} HBD required`,
+        });
+      }
+
+      // Record the deposit
+      await storage.createWalletDeposit({
+        fromUsername: transfer.from,
+        hbdAmount: transferAmount.toFixed(3),
+        memo: transfer.memo,
+        txHash: data.txHash,
+        purpose: 'storage',
+        processed: true,
+      });
+
+      // Activate the contract
+      await storage.updateStorageContractStatus(contract.id, 'active');
+
+      await storage.createContractEvent({
+        contractId: contract.id,
+        eventType: 'activated',
+        payload: JSON.stringify({
+          txHash: data.txHash,
+          amount: transfer.amount,
+          from: transfer.from,
+        }),
+      });
+
+      const updatedContract = await storage.getStorageContract(contract.id);
+      res.json(updatedContract);
+    } catch (error: any) {
+      logRoutes.error({ err: error }, "Failed to fund contract");
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  /**
+   * Cancel a contract (owner only).
+   */
+  app.post("/api/contracts/:id/cancel", requireAuth, async (req, res) => {
+    try {
+      const username = req.authenticatedUser!;
+
+      const contract = await storage.getStorageContract(req.params.id);
+      if (!contract) {
+        return res.status(404).json({ error: "Contract not found" });
+      }
+      if (contract.uploaderUsername !== username) {
+        return res.status(403).json({ error: "Not the contract owner" });
+      }
+      if (contract.status !== 'pending' && contract.status !== 'active') {
+        return res.status(400).json({ error: `Cannot cancel a ${contract.status} contract` });
+      }
+
+      const remainingBudget = parseFloat(contract.hbdBudget) - parseFloat(contract.hbdSpent);
+
+      await storage.updateStorageContractStatus(contract.id, 'cancelled');
+
+      await storage.createContractEvent({
+        contractId: contract.id,
+        eventType: 'cancelled',
+        payload: JSON.stringify({
+          cancelledBy: username,
+          remainingBudget: remainingBudget.toFixed(3),
+          hbdSpent: contract.hbdSpent,
+        }),
+      });
+
+      res.json({
+        success: true,
+        contractId: contract.id,
+        remainingBudget: remainingBudget.toFixed(3),
+      });
+    } catch (error: any) {
+      logRoutes.error({ err: error }, "Failed to cancel contract");
+      res.status(400).json({ error: error.message });
+    }
   });
 
   // ============================================================

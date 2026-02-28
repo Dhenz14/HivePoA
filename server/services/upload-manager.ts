@@ -86,8 +86,12 @@ export class UploadManager {
       });
     }
 
-    // Create storage contract
+    // Create storage contract with calculated reward per challenge
     const durationDays = params.durationDays || 30;
+    const budget = parseFloat(params.hbdBudget || '0');
+    const estimatedChallenges = Math.max(1, Math.floor(durationDays / 3));
+    const rewardPerChallenge = budget > 0 ? Math.max(0.001, budget / estimatedChallenges) : 0.005;
+
     const contract = await storage.createStorageContract({
       fileId: file.id,
       fileCid: params.expectedCid,
@@ -95,8 +99,9 @@ export class UploadManager {
       requestedReplication: params.replicationCount || 3,
       actualReplication: 0,
       status: 'pending',
-      hbdBudget: params.hbdBudget || '0',
+      hbdBudget: budget > 0 ? budget.toFixed(3) : '0',
       hbdSpent: '0',
+      rewardPerChallenge: rewardPerChallenge.toFixed(4),
       startsAt: new Date(),
       expiresAt: new Date(Date.now() + durationDays * 24 * 60 * 60 * 1000),
     });

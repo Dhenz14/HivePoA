@@ -90,6 +90,40 @@ export class HiveClient {
     };
   }
 
+  /**
+   * Verify a Hive transfer transaction by looking up its transaction ID.
+   * Returns transfer details if found, null if not found or not a transfer.
+   */
+  async verifyTransfer(txHash: string): Promise<{
+    from: string;
+    to: string;
+    amount: string;
+    memo: string;
+  } | null> {
+    try {
+      // dhive doesn't have a direct tx lookup — use condenser API
+      const result = await this.client.call("condenser_api", "get_transaction", [txHash]);
+      if (!result || !result.operations || result.operations.length === 0) {
+        return null;
+      }
+      // Find transfer operation in the transaction
+      for (const [opType, opData] of result.operations) {
+        if (opType === "transfer") {
+          return {
+            from: opData.from,
+            to: opData.to,
+            amount: opData.amount,
+            memo: opData.memo || "",
+          };
+        }
+      }
+      return null;
+    } catch (err) {
+      logHive.error({ err, txHash }, "Failed to verify transfer");
+      return null;
+    }
+  }
+
   async broadcastCustomJson(request: CustomJsonRequest): Promise<HiveTransaction> {
     if (!this.config.postingKey) {
       throw new Error("Posting key required for custom_json");
@@ -243,6 +277,22 @@ export class MockHiveClient {
       id: `mock_tx_${this.transactionCounter}`,
       blockNumber: Math.floor(Date.now() / 3000),
       timestamp: new Date(),
+    };
+  }
+
+  async verifyTransfer(txHash: string): Promise<{
+    from: string;
+    to: string;
+    amount: string;
+    memo: string;
+  } | null> {
+    logHive.info(`[Mock Hive] Verify transfer: ${txHash}`);
+    // In mock mode, accept any tx hash as valid
+    return {
+      from: "mock-depositor",
+      to: this.config.username,
+      amount: "10.000 HBD",
+      memo: `hivepoa:contract:mock`,
     };
   }
 

@@ -198,7 +198,11 @@ export interface IStorage {
   updateStorageContractCid(id: string, newCid: string): Promise<void>;
   getStorageContractsByFileId(fileId: string): Promise<StorageContract[]>;
   getExpiredContracts(): Promise<StorageContract[]>;
-  
+  getActiveContractsForChallenge(): Promise<StorageContract[]>;
+  updateStorageContractSpent(id: string, amount: number): Promise<boolean>;
+  getExhaustedContracts(): Promise<StorageContract[]>;
+  getActiveContractByCid(cid: string): Promise<StorageContract | undefined>;
+
   // Phase 1: Contract Events
   createContractEvent(event: InsertContractEvent): Promise<ContractEvent>;
   getContractEvents(contractId: string): Promise<ContractEvent[]>;
@@ -756,6 +760,64 @@ export class DatabaseStorage implements IStorage {
         eq(storageContracts.status, 'active'),
         lt(storageContracts.expiresAt, new Date())
       ));
+  }
+
+  /**
+   * Get contracts that are active, funded (spent < budget), and not expired.
+   * Used by PoA engine to select CIDs for challenge rounds.
+   */
+  async getActiveContractsForChallenge(): Promise<StorageContract[]> {
+    return await db.select().from(storageContracts)
+      .where(and(
+        eq(storageContracts.status, 'active'),
+        sql`CAST(${storageContracts.hbdSpent} AS DECIMAL) < CAST(${storageContracts.hbdBudget} AS DECIMAL)`,
+        sql`${storageContracts.expiresAt} > NOW()`
+      ))
+      .orderBy(sql`RANDOM()`);
+  }
+
+  /**
+   * Atomically deduct reward from contract budget.
+   * Returns true if deduction succeeded (budget not exceeded), false otherwise.
+   */
+  async updateStorageContractSpent(id: string, amount: number): Promise<boolean> {
+    const result = await db.update(storageContracts)
+      .set({
+        hbdSpent: sql`CAST(CAST(${storageContracts.hbdSpent} AS DECIMAL) + ${amount} AS TEXT)`,
+      })
+      .where(and(
+        eq(storageContracts.id, id),
+        sql`CAST(${storageContracts.hbdSpent} AS DECIMAL) + ${amount} <= CAST(${storageContracts.hbdBudget} AS DECIMAL)`
+      ))
+      .returning();
+    return result.length > 0;
+  }
+
+  /**
+   * Get contracts where hbdSpent >= hbdBudget (budget exhausted).
+   */
+  async getExhaustedContracts(): Promise<StorageContract[]> {
+    return await db.select().from(storageContracts)
+      .where(and(
+        eq(storageContracts.status, 'active'),
+        sql`CAST(${storageContracts.hbdSpent} AS DECIMAL) >= CAST(${storageContracts.hbdBudget} AS DECIMAL)`,
+        sql`CAST(${storageContracts.hbdBudget} AS DECIMAL) > 0`
+      ));
+  }
+
+  /**
+   * Get contract by CID (for PoA engine to look up reward).
+   */
+  async getActiveContractByCid(cid: string): Promise<StorageContract | undefined> {
+    const [contract] = await db.select().from(storageContracts)
+      .where(and(
+        eq(storageContracts.fileCid, cid),
+        eq(storageContracts.status, 'active'),
+        sql`CAST(${storageContracts.hbdSpent} AS DECIMAL) < CAST(${storageContracts.hbdBudget} AS DECIMAL)`,
+        sql`${storageContracts.expiresAt} > NOW()`
+      ))
+      .limit(1);
+    return contract || undefined;
   }
 
   // ============================================================
