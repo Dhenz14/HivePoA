@@ -179,6 +179,7 @@ export class ApiServer {
   // Keychain auth state
   private pendingChallenge: { token: string; expiresAt: number } | null = null;
   private verifyAttempts: { count: number; windowStart: number } = { count: 0, windowStart: 0 };
+  private sessions: Map<string, { username: string; expiresAt: number }> = new Map();
   private static readonly MAX_VERIFY_ATTEMPTS = 5;
   private static readonly VERIFY_WINDOW_MS = 60000;
   private static readonly CHALLENGE_TTL_MS = 60000;
@@ -706,6 +707,96 @@ export class ApiServer {
         res.status(500).json({ error: 'Verification failed. Try again.' });
       }
     });
+
+    // ─── Validator Login (for GitHub Pages static site) ──────────────────
+
+    this.app.post('/api/validator/login', async (req: Request, res: Response) => {
+      // Rate limit
+      const now = Date.now();
+      if (now - this.verifyAttempts.windowStart > ApiServer.VERIFY_WINDOW_MS) {
+        this.verifyAttempts = { count: 0, windowStart: now };
+      }
+      this.verifyAttempts.count++;
+      if (this.verifyAttempts.count > ApiServer.MAX_VERIFY_ATTEMPTS) {
+        return res.status(429).json({ error: 'Too many attempts. Wait 60 seconds.' });
+      }
+
+      const { username, signature, challenge } = req.body;
+      if (!username || !signature || !challenge) {
+        return res.status(400).json({ error: 'Missing username, signature, or challenge' });
+      }
+
+      // Validate challenge format: SPK-Login-{timestamp} or SPK-Validator-Login-{timestamp}
+      const match = challenge.match(/SPK-(?:Validator-)?Login-(\d+)/);
+      if (!match) {
+        return res.status(400).json({ error: 'Invalid challenge format' });
+      }
+      const challengeTime = parseInt(match[1], 10);
+      if (Date.now() - challengeTime > 5 * 60 * 1000) {
+        return res.status(400).json({ error: 'Challenge expired' });
+      }
+
+      try {
+        const hive = new AgentHiveClient({ username });
+        const valid = await hive.verifySignature(username, challenge, signature);
+        if (!valid) {
+          return res.status(401).json({ error: 'Invalid signature' });
+        }
+
+        // Generate session token
+        const sessionToken = crypto.randomBytes(32).toString('hex');
+        this.cleanExpiredSessions();
+        this.sessions.set(sessionToken, {
+          username,
+          expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+        });
+
+        // Store username in agent config
+        this.config.setConfig({ hiveUsername: username });
+        console.log(`[API] Validator login: ${username} verified successfully`);
+
+        res.json({
+          success: true,
+          username,
+          sessionToken,
+          isTopWitness: false,
+          isVouched: false,
+          witnessRank: null,
+        });
+      } catch (err: any) {
+        console.error('[API] Validator login error:', err.message);
+        res.status(500).json({ error: 'Authentication failed' });
+      }
+    });
+
+    this.app.post('/api/validator/validate-session', (req: Request, res: Response) => {
+      const { username, sessionToken } = req.body;
+      if (!username || !sessionToken) {
+        return res.status(400).json({ valid: false, error: 'Missing credentials' });
+      }
+
+      this.cleanExpiredSessions();
+      const session = this.sessions.get(sessionToken);
+      if (!session || session.username !== username || Date.now() > session.expiresAt) {
+        this.sessions.delete(sessionToken);
+        return res.status(401).json({ valid: false, error: 'Invalid or expired session' });
+      }
+
+      res.json({
+        valid: true,
+        username,
+        isTopWitness: false,
+        isVouched: false,
+        witnessRank: null,
+      });
+    });
+  }
+
+  private cleanExpiredSessions(): void {
+    const now = Date.now();
+    for (const [token, session] of this.sessions) {
+      if (now > session.expiresAt) this.sessions.delete(token);
+    }
   }
 
   setAgentWS(agentWS: AgentWSClient): void {
