@@ -40,6 +40,9 @@ export class LocalValidator {
   private blockHashTimer: NodeJS.Timeout | null = null;
   private currentBlockHash: string = '';
   private pendingChallenges: Map<string, PendingChallenge> = new Map(); // nonce → pending
+  private cachedPins: string[] = [];
+  private pinsCacheTime: number = 0;
+  private static readonly PIN_CACHE_TTL_MS = 300000; // 5 minutes
 
   private stats: ValidatorStats = {
     issued: 0,
@@ -237,22 +240,26 @@ export class LocalValidator {
     pending.resolve(response);
   }
 
-  /** Select a CID to challenge from our own pin list. */
+  /** Select a CID to challenge from our own pin list (cached for 5 minutes). */
   private async selectChallengeCid(): Promise<string | null> {
-    try {
-      const response = await axios.post(
-        `${this.kuboApiUrl}/api/v0/pin/ls?type=recursive`,
-        null,
-        { timeout: 5000 }
-      );
-      const pins = Object.keys(response.data.Keys || {});
-      if (pins.length === 0) return null;
-
-      // Select random CID from our pins
-      return pins[Math.floor(Math.random() * pins.length)];
-    } catch {
-      return null;
+    const now = Date.now();
+    if (this.cachedPins.length === 0 || now - this.pinsCacheTime > LocalValidator.PIN_CACHE_TTL_MS) {
+      try {
+        const response = await axios.post(
+          `${this.kuboApiUrl}/api/v0/pin/ls?type=recursive`,
+          null,
+          { timeout: 5000 }
+        );
+        this.cachedPins = Object.keys(response.data.Keys || {});
+        this.pinsCacheTime = now;
+      } catch {
+        // Use stale cache if available
+        if (this.cachedPins.length === 0) return null;
+      }
     }
+
+    if (this.cachedPins.length === 0) return null;
+    return this.cachedPins[Math.floor(Math.random() * this.cachedPins.length)];
   }
 
   /** Record and optionally broadcast a challenge result to Hive. */

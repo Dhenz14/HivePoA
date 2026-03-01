@@ -123,15 +123,19 @@ export class KuboManager {
       // Enable pubsub for real-time features
       config.Pubsub = { Enabled: true };
 
-      // Lower resource usage for desktop
+      // Lower resource usage for desktop — fewer connections = less CPU/bandwidth
       config.Swarm = {
         ...config.Swarm,
         ConnMgr: {
-          LowWater: 50,
-          HighWater: 200,
-          GracePeriod: '20s',
+          LowWater: 20,
+          HighWater: 50,
+          GracePeriod: '30s',
         },
       };
+
+      // DHT client mode — participate in DHT without serving queries to others
+      // Dramatically reduces CPU and network usage vs full DHT server
+      config.Routing = { ...config.Routing, Type: 'dhtclient' };
 
       // Set default storage quota
       if (!config.Datastore) config.Datastore = {};
@@ -158,7 +162,7 @@ export class KuboManager {
       const oldConnMgr = JSON.stringify(config.Swarm?.ConnMgr || {});
 
       if (bandwidthLimitUp === 0 && bandwidthLimitDown === 0) {
-        config.Swarm = { ...config.Swarm, ConnMgr: { LowWater: 50, HighWater: 200, GracePeriod: '20s' } };
+        config.Swarm = { ...config.Swarm, ConnMgr: { LowWater: 20, HighWater: 50, GracePeriod: '30s' } };
       } else {
         const effectiveLimit = Math.min(
           bandwidthLimitUp || Infinity,

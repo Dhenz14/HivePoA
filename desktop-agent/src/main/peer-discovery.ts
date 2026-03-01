@@ -33,6 +33,9 @@ export class PeerDiscovery {
   private announceInterval: NodeJS.Timeout | null = null;
   private kuboApiUrl: string = '';
   private myPeerId: string = '';
+  private connectQueue: string[] = [];
+  private activeConnects: number = 0;
+  private static readonly MAX_CONCURRENT_CONNECTS = 3;
 
   // Hive produces 1 block every 3 seconds → 20 blocks per minute
   // We scan every 60-90s (with jitter), so ~20-30 new blocks per scan
@@ -196,19 +199,29 @@ export class PeerDiscovery {
     }
   }
 
-  /** Try to connect to a peer via IPFS swarm (for PubSub reachability). */
-  private async connectToPeer(peerId: string): Promise<void> {
+  /** Queue a swarm connect to avoid CPU/network spikes from concurrent connections. */
+  private connectToPeer(peerId: string): void {
     if (!this.kuboApiUrl || !peerId) return;
+    this.connectQueue.push(peerId);
+    this.drainConnectQueue();
+  }
 
-    try {
-      await axios.post(
+  private async drainConnectQueue(): Promise<void> {
+    while (this.connectQueue.length > 0 && this.activeConnects < PeerDiscovery.MAX_CONCURRENT_CONNECTS) {
+      const peerId = this.connectQueue.shift()!;
+      this.activeConnects++;
+      axios.post(
         `${this.kuboApiUrl}/api/v0/swarm/connect?arg=/p2p/${peerId}`,
         null,
         { timeout: 10000 }
-      );
-      console.log(`[PeerDiscovery] Connected to peer ${peerId.slice(0, 12)}...`);
-    } catch {
-      // Connection failures are normal — peer may not be directly reachable
+      ).then(() => {
+        console.log(`[PeerDiscovery] Connected to peer ${peerId.slice(0, 12)}...`);
+      }).catch(() => {
+        // Connection failures are normal — peer may not be directly reachable
+      }).finally(() => {
+        this.activeConnects--;
+        this.drainConnectQueue();
+      });
     }
   }
 
