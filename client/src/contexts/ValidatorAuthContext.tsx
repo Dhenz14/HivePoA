@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
+import { getApiBase, hasBackend } from "@/lib/api-mode";
 
 interface ValidatorUser {
   username: string;
@@ -33,8 +34,9 @@ function syncToDesktopAgent(username: string): void {
 }
 
 async function validateSession(username: string, sessionToken: string): Promise<ValidatorUser | null> {
+  if (!hasBackend()) return null;
   try {
-    const response = await fetch("/api/validator/validate-session", {
+    const response = await fetch(`${getApiBase()}/api/validator/validate-session`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, sessionToken }),
@@ -92,7 +94,10 @@ export function ValidatorAuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (username: string, signature: string, challenge: string): Promise<{ success: boolean; error?: string }> => {
     try {
-      const response = await fetch("/api/validator/login", {
+      if (!hasBackend()) {
+        return { success: false, error: "Login requires the desktop agent or server to be running" };
+      }
+      const response = await fetch(`${getApiBase()}/api/validator/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, signature, challenge }),

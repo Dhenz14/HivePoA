@@ -8,6 +8,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
 import { cn } from "@/lib/utils";
+import { getApiBase } from "@/lib/api-mode";
 import { format } from "date-fns";
 
 interface WalletTransaction {
@@ -48,7 +49,7 @@ export default function Wallet() {
   const { data, isLoading, error } = useQuery<WalletData>({
     queryKey: ["wallet-user", walletUsername],
     queryFn: async () => {
-      const res = await fetch(`/api/wallet/user/${walletUsername}`);
+      const res = await fetch(`${getApiBase()}/api/wallet/user/${walletUsername}`);
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.error || "Failed to fetch wallet");

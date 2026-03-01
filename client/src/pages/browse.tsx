@@ -8,6 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { getApiBase } from "@/lib/api-mode";
 import { Play, Pin, Search, Eye, User, TrendingUp, Sparkles, Loader2, CheckCircle2, Download, Monitor } from "lucide-react";
 import { useDesktopAgent } from "@/hooks/use-desktop-agent";
 
@@ -221,7 +222,7 @@ export default function Browse() {
   const searchQueryResult = useQuery<VideoResponse>({
     queryKey: ["/api/threespeak/search", searchQuery],
     queryFn: async () => {
-      const res = await fetch(`/api/threespeak/search?q=${encodeURIComponent(searchQuery)}`);
+      const res = await fetch(`${getApiBase()}/api/threespeak/search?q=${encodeURIComponent(searchQuery)}`);
       return res.json();
     },
     enabled: activeTab === "search" && searchQuery.length > 0,
@@ -237,7 +238,7 @@ export default function Browse() {
     const interval = setInterval(async () => {
       for (const jobId of activeJobIds) {
         try {
-          const res = await fetch(`/api/pin/job/${jobId}`);
+          const res = await fetch(`${getApiBase()}/api/pin/job/${jobId}`);
           if (res.ok) {
             const job: PinJob = await res.json();
             setPinJobs(prev => ({ ...prev, [job.cid]: job }));
@@ -266,10 +267,10 @@ export default function Browse() {
 
   const pinMutation = useMutation({
     mutationFn: async (video: Video) => {
-      const res = await fetch("/api/threespeak/pin", {
+      const res = await fetch(`${getApiBase()}/api/threespeak/pin`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           ipfs: video.ipfs,
           title: video.title,
           author: video.author,

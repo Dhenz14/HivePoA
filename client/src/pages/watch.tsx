@@ -8,6 +8,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useDesktopAgent } from "@/hooks/use-desktop-agent";
 import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
 import { P2PVideoPlayer } from "@/components/video/P2PVideoPlayer";
+import { getApiBase } from "@/lib/api-mode";
 import {
   ArrowLeft,
   Pin,
@@ -100,7 +101,7 @@ export default function Watch() {
 
   const pinMutation = useMutation({
     mutationFn: async (video: Video) => {
-      const res = await fetch("/api/threespeak/pin", {
+      const res = await fetch(`${getApiBase()}/api/threespeak/pin`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

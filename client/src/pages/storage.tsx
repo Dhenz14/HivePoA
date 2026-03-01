@@ -16,6 +16,7 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, UserSettings } from "@/lib/api";
+import { getApiBase } from "@/lib/api-mode";
 
 const AGENT_URL = "http://127.0.0.1:5111";
 
@@ -233,7 +234,7 @@ export default function Storage() {
           } catch { /* ignore */ }
         }
 
-        const res = await fetch("/api/upload/simple", {
+        const res = await fetch(`${getApiBase()}/api/upload/simple`, {
           method: "POST",
           headers: {
             "Content-Type": "application/octet-stream",

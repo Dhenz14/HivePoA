@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "./use-toast";
+import { getApiBase, hasBackend } from "@/lib/api-mode";
 
 interface EarningsData {
   node: {
@@ -65,11 +66,11 @@ export function useAlerts(username: string = "demo_user", enabled: boolean = tru
   const { data: earningsData } = useQuery<EarningsData>({
     queryKey: ["earnings-dashboard", username],
     queryFn: async () => {
-      const res = await fetch(`/api/earnings/dashboard/${username}`);
+      const res = await fetch(`${getApiBase()}/api/earnings/dashboard/${username}`);
       if (!res.ok) throw new Error("Failed to fetch earnings");
       return res.json();
     },
-    enabled,
+    enabled: enabled && hasBackend(),
     refetchInterval: 5000,
   });
 

@@ -1,7 +1,9 @@
+import { getApiBase } from "./api-mode";
+
 /**
  * Node Configuration Manager
  * Manages connection settings for IPFS nodes - stored in localStorage
- * 
+ *
  * Modes:
  * - browser: In-browser Helia node (auto-starts, IndexedDB storage)
  * - local: External IPFS on localhost:5001
@@ -100,7 +102,7 @@ export async function testBackendIPFSConnection(): Promise<{
   error?: string;
 }> {
   try {
-    const response = await fetch("/api/ipfs/test-connection", {
+    const response = await fetch(`${getApiBase()}/api/ipfs/test-connection`, {
       method: "POST",
     });
     

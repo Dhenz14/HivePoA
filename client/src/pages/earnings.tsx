@@ -8,6 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 import { LineChart, Line, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer } from "recharts";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
+import { getApiBase } from "@/lib/api-mode";
 
 interface EarningsData {
   todayEarnings: number;
@@ -47,7 +48,7 @@ interface FileEarning {
 }
 
 async function fetchEarnings(username: string): Promise<EarningsData> {
-  const res = await fetch(`/api/earnings/dashboard/${username}`);
+  const res = await fetch(`${getApiBase()}/api/earnings/dashboard/${username}`);
   if (!res.ok) {
     return {
       todayEarnings: 0,
@@ -83,7 +84,7 @@ function generateEarningsHistory(weeklyTotal: number): { date: string; hbd: numb
 }
 
 async function fetchLiveChallenges(): Promise<ChallengeStats> {
-  const res = await fetch("/api/challenges/live?limit=20");
+  const res = await fetch(`${getApiBase()}/api/challenges/live?limit=20`);
   if (!res.ok) {
     return {
       successRateLastHour: 0,
@@ -129,7 +130,7 @@ function formatTimestamp(dateStr: string): string {
 }
 
 async function fetchFileEarnings(): Promise<FileEarning[]> {
-  const res = await fetch("/api/files/marketplace");
+  const res = await fetch(`${getApiBase()}/api/files/marketplace`);
   if (!res.ok) {
     return [];
   }
