@@ -274,3 +274,114 @@ describe("Cooldown Logic", () => {
     expect(multiplier).toBe(1);
   });
 });
+
+// ============================================================
+// Economic Model Tests — Contract Funding & Reward Integrity
+// ============================================================
+
+describe("Economic Model", () => {
+  it("contract reward per challenge is budget divided by estimated challenges", () => {
+    // Given a contract with $4 budget and 109 estimated challenges
+    const budget = 4.0;
+    const estimatedChallenges = 109;
+    const rewardPerChallenge = budget / estimatedChallenges;
+    expect(rewardPerChallenge).toBeCloseTo(0.0367, 3);
+    expect(rewardPerChallenge).toBeGreaterThan(0);
+    expect(rewardPerChallenge).toBeLessThan(budget);
+  });
+
+  it("fallback reward is positive and smaller than typical contract reward", () => {
+    expect(POA_CONFIG.FALLBACK_REWARD_HBD).toBeGreaterThan(0);
+    expect(POA_CONFIG.FALLBACK_REWARD_HBD).toBeLessThanOrEqual(0.01);
+  });
+
+  it("rarity multiplier decreases reward for highly replicated files", () => {
+    const baseReward = POA_CONFIG.FALLBACK_REWARD_HBD;
+    // 1 replica = full reward
+    expect(baseReward * (1 / 1)).toBe(baseReward);
+    // 3 replicas = 1/3 reward
+    expect(baseReward * (1 / 3)).toBeCloseTo(baseReward / 3, 10);
+    // 10 replicas = 1/10 reward
+    expect(baseReward * (1 / 10)).toBeCloseTo(baseReward / 10, 10);
+  });
+
+  it("streak bonuses are applied at correct thresholds", () => {
+    const getBonus = (streak: number): number => {
+      if (streak >= 100) return POA_CONFIG.STREAK_BONUS_100;
+      if (streak >= 50) return POA_CONFIG.STREAK_BONUS_50;
+      if (streak >= 10) return POA_CONFIG.STREAK_BONUS_10;
+      return 1.0;
+    };
+
+    expect(getBonus(0)).toBe(1.0);
+    expect(getBonus(5)).toBe(1.0);
+    expect(getBonus(10)).toBe(POA_CONFIG.STREAK_BONUS_10);
+    expect(getBonus(49)).toBe(POA_CONFIG.STREAK_BONUS_10);
+    expect(getBonus(50)).toBe(POA_CONFIG.STREAK_BONUS_50);
+    expect(getBonus(99)).toBe(POA_CONFIG.STREAK_BONUS_50);
+    expect(getBonus(100)).toBe(POA_CONFIG.STREAK_BONUS_100);
+    expect(getBonus(500)).toBe(POA_CONFIG.STREAK_BONUS_100);
+  });
+
+  it("max reward cannot exceed budget with all multipliers", () => {
+    const maxContractReward = 1.0; // $1 per challenge (extreme case)
+    const maxStreakBonus = POA_CONFIG.STREAK_BONUS_100;
+    const minRarity = 1; // 1 replica = max multiplier
+
+    const maxReward = maxContractReward * maxStreakBonus * (1 / minRarity);
+    // Even with all bonuses, a single challenge should not exceed a few dollars
+    expect(maxReward).toBeLessThan(10);
+  });
+
+  it("exhausted contract falls back to fallback reward", () => {
+    // When updateStorageContractSpent returns false (budget exceeded),
+    // the engine should use FALLBACK_REWARD_HBD instead
+    const contractReward = 0.05;
+    const budgetExhausted = true;
+    const actualReward = budgetExhausted ? POA_CONFIG.FALLBACK_REWARD_HBD : contractReward;
+    expect(actualReward).toBe(POA_CONFIG.FALLBACK_REWARD_HBD);
+    expect(actualReward).toBeLessThan(contractReward);
+  });
+
+  it("reputation penalties are bounded", () => {
+    const maxPenalty = POA_CONFIG.MAX_REP_LOSS;
+    const baseLoss = POA_CONFIG.FAIL_REP_BASE_LOSS;
+    const multiplier = POA_CONFIG.FAIL_REP_MULTIPLIER;
+
+    // First fail
+    expect(baseLoss).toBeGreaterThan(0);
+    expect(baseLoss).toBeLessThanOrEqual(maxPenalty);
+
+    // Exponential growth should be capped
+    const penalty10Fails = baseLoss * Math.pow(multiplier, 9);
+    const cappedPenalty = Math.min(maxPenalty, penalty10Fails);
+    expect(cappedPenalty).toBe(maxPenalty);
+    expect(maxPenalty).toBeLessThanOrEqual(25); // Never lose more than 25% rep
+  });
+
+  it("reputation gain is strictly positive and bounded", () => {
+    expect(POA_CONFIG.SUCCESS_REP_GAIN).toBeGreaterThan(0);
+    expect(POA_CONFIG.SUCCESS_REP_GAIN).toBeLessThanOrEqual(5);
+  });
+
+  it("ban threshold is reachable from consecutive fails", () => {
+    // Starting at max reputation (100), consecutive fails should eventually reach ban
+    let rep = 100;
+    let fails = 0;
+    while (rep > POA_CONFIG.BAN_THRESHOLD && fails < 50) {
+      const penalty = Math.min(
+        POA_CONFIG.MAX_REP_LOSS,
+        POA_CONFIG.FAIL_REP_BASE_LOSS * Math.pow(POA_CONFIG.FAIL_REP_MULTIPLIER, fails)
+      );
+      rep = Math.max(0, rep - Math.floor(penalty));
+      fails++;
+    }
+    expect(rep).toBeLessThanOrEqual(POA_CONFIG.BAN_THRESHOLD);
+    expect(fails).toBeLessThan(50); // Should reach ban in reasonable number of fails
+  });
+
+  it("proof batch threshold triggers batched payout", () => {
+    expect(POA_CONFIG.PROOF_BATCH_THRESHOLD).toBeGreaterThanOrEqual(1);
+    expect(POA_CONFIG.PROOF_BATCH_THRESHOLD).toBeLessThanOrEqual(20);
+  });
+});

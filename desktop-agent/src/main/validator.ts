@@ -42,6 +42,7 @@ export class LocalValidator {
   private myUsername: string;
   private challengeIntervalMs: number;
   private broadcastResults: boolean;
+  private requireSignedMessages: boolean;
 
   private challengeTimer: NodeJS.Timeout | null = null;
   private blockHashTimer: NodeJS.Timeout | null = null;
@@ -66,7 +67,8 @@ export class LocalValidator {
     kuboApiUrl: string,
     myUsername: string,
     challengeIntervalMs: number = 7200000, // 2 hours (was 5 min)
-    broadcastResults: boolean = true
+    broadcastResults: boolean = true,
+    requireSignedMessages: boolean = false
   ) {
     this.hive = hive;
     this.peerDiscovery = peerDiscovery;
@@ -75,6 +77,7 @@ export class LocalValidator {
     this.myUsername = myUsername;
     this.challengeIntervalMs = challengeIntervalMs;
     this.broadcastResults = broadcastResults;
+    this.requireSignedMessages = requireSignedMessages;
   }
 
   /** Start the validator engine. */
@@ -331,8 +334,16 @@ export class LocalValidator {
     const pending = this.pendingCommitments.get(response.nonce);
     if (!pending) return;
 
-    if (response.__signature) {
+    // SECURITY: Verify signature on commitment responses
+    if (response.__signature && response.__signerUsername) {
+      if (response.__signerUsername !== response.targetPeer) {
+        console.log(`[Validator] Commitment signature mismatch: signer=${response.__signerUsername} != peer=${response.targetPeer}`);
+        return; // Discard spoofed response
+      }
       console.log(`[Validator] Signed commitment response from ${response.targetPeer}`);
+    } else if (this.requireSignedMessages) {
+      console.log(`[Validator] Rejected unsigned commitment from ${response.targetPeer} (enforcement enabled)`);
+      return;
     }
 
     clearTimeout(pending.timeout);
@@ -348,9 +359,16 @@ export class LocalValidator {
     const pending = this.pendingChallenges.get(response.nonce);
     if (!pending) return; // No matching pending challenge (already timed out or not ours)
 
-    // SECURITY: Log signature status (full async verification deferred to protocol v2)
-    if (response.__signature) {
+    // SECURITY: Verify signature on challenge responses
+    if (response.__signature && response.__signerUsername) {
+      if (response.__signerUsername !== response.targetPeer) {
+        console.log(`[Validator] Response signature mismatch: signer=${response.__signerUsername} != peer=${response.targetPeer}`);
+        return; // Discard spoofed response
+      }
       console.log(`[Validator] Signed response from ${response.targetPeer}`);
+    } else if (this.requireSignedMessages) {
+      console.log(`[Validator] Rejected unsigned response from ${response.targetPeer} (enforcement enabled)`);
+      return;
     } else {
       console.log(`[Validator] Unsigned response from ${response.targetPeer} (legacy)`);
     }

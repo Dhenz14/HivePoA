@@ -114,12 +114,14 @@ async function initializeP2P(): Promise<void> {
     return;
   }
 
-  const postingKey = configStore.getPostingKey();
+  // SECURITY: Use on-demand key retrieval — plaintext key only exists in memory briefly
+  // during signing/broadcasting, not permanently held in the AgentHiveClient instance
+  const hasKey = configStore.hasPostingKey();
 
-  // Initialize Hive client
+  // Initialize Hive client with on-demand key callback
   hiveClient = new AgentHiveClient({
     username: cfg.hiveUsername,
-    postingKey: postingKey || undefined,
+    getPostingKey: () => configStore.getPostingKey(),
   });
 
   // Get peer ID from IPFS
@@ -169,7 +171,8 @@ async function initializeP2P(): Promise<void> {
       kuboManager.getApiUrl(),
       cfg.hiveUsername,
       cfg.challengeIntervalMs,
-      !!postingKey // Only broadcast if posting key is available
+      hasKey, // Only broadcast if posting key is available
+      cfg.requireSignedMessages
     );
     await validator.start();
   }
@@ -314,6 +317,9 @@ app.whenReady().then(async () => {
     const port = configStore?.getConfig().apiPort || 5111;
     await shell.openExternal(`http://127.0.0.1:${port}/auth/keychain`);
   });
+
+  // SECURITY: Expose local auth token to renderer via IPC (required for mutation endpoints)
+  ipcMain.handle('get-api-auth-token', () => apiServer?.getAuthToken());
 
   try {
     createTray();

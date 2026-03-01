@@ -147,6 +147,22 @@ export interface ChallengeResult {
   errorMessage?: string;
 }
 
+/**
+ * Compute a deterministic hash of a file's block list for the two-phase commitment protocol.
+ * The commitment proves the agent has the data locally (block list is fast to compute
+ * from local storage, but too slow to fetch from the IPFS network within the 2s window).
+ */
+export async function computeBlockListHash(
+  ipfs: IPFSClient,
+  cid: string
+): Promise<{ blockCount: number; blockListHash: string }> {
+  const blockCids = await ipfs.refs(cid);
+  const blockCount = blockCids.length;
+  const sorted = [...blockCids].sort();
+  const blockListHash = hashString(sorted.join(':') + ':' + cid);
+  return { blockCount, blockListHash };
+}
+
 export async function verifyProofResponse(
   ipfs: IPFSClient,
   challengeHash: string,

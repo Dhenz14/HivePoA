@@ -18,6 +18,7 @@ export interface AgentConfig {
   validatorEnabled: boolean;  // Whether this node validates other peers
   challengeIntervalMs: number; // How often to challenge peers (ms)
   minPeerReputation: number;  // Minimum Hive reputation to accept peer
+  requireSignedMessages: boolean; // Reject unsigned PubSub challenges/responses (enforce after network migration)
   // Auto-pin popular content
   autoPinPopular: boolean;    // Auto-pin popular content from network
   autoPinMaxGB: number;       // Max storage for auto-pinned content (GB)
@@ -64,6 +65,7 @@ export class ConfigStore {
       validatorEnabled: this.store.get('validatorEnabled', true) as boolean,
       challengeIntervalMs: this.store.get('challengeIntervalMs', 7200000) as number, // 2 hours (was 5 min)
       minPeerReputation: this.store.get('minPeerReputation', 25) as number,
+      requireSignedMessages: this.store.get('requireSignedMessages', false) as boolean,
       autoPinPopular: this.store.get('autoPinPopular', true) as boolean,
       autoPinMaxGB: this.store.get('autoPinMaxGB', 10) as number,
     };

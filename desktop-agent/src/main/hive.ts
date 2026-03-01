@@ -15,6 +15,10 @@ export interface AgentHiveConfig {
   nodes?: string[];
   username: string;
   postingKey?: string;
+  /** On-demand key retrieval callback — preferred over storing key in memory permanently.
+   *  When provided, the plaintext key is only decrypted briefly for each signing/broadcast operation
+   *  and is eligible for GC immediately after, reducing the attack surface window. */
+  getPostingKey?: () => string | null;
 }
 
 /**
@@ -50,6 +54,19 @@ export class AgentHiveClient {
       failoverThreshold: 2,  // switch node after 2 failures
       rebrandedApi: true,
     });
+  }
+
+  /**
+   * SECURITY: Retrieve posting key on-demand.
+   * Prefers the getPostingKey() callback (decrypts from OS keystore each time)
+   * over the static postingKey field (held in memory permanently).
+   * This minimizes the window where the plaintext key exists in memory.
+   */
+  private getKey(): string | null {
+    if (this.config.getPostingKey) {
+      return this.config.getPostingKey();
+    }
+    return this.config.postingKey || null;
   }
 
   /** Wait if we're in backoff, and rate-limit calls. */
@@ -118,7 +135,7 @@ export class AgentHiveClient {
       console.error('[Hive] Failed to get block hash:', err);
       // SECURITY: Use HMAC with local secret instead of predictable SHA256(timestamp)
       const nodeCrypto = require('crypto');
-      const secret = this.config.postingKey || this.fallbackSecret;
+      const secret = this.getKey() || this.fallbackSecret;
       return nodeCrypto.createHmac('sha256', secret)
         .update(`fallback-${Date.now()}-${nodeCrypto.randomBytes(8).toString('hex')}`)
         .digest('hex');
@@ -255,7 +272,8 @@ export class AgentHiveClient {
 
   /** Broadcast a custom_json operation (requires posting key + sufficient RC). */
   async broadcastCustomJson(id: string, json: object): Promise<string | null> {
-    if (!this.config.postingKey) {
+    const postingKey = this.getKey();
+    if (!postingKey) {
       console.log('[Hive] No posting key configured, skipping broadcast');
       return null;
     }
@@ -279,7 +297,7 @@ export class AgentHiveClient {
         },
       ];
 
-      const key = PrivateKey.fromString(this.config.postingKey);
+      const key = PrivateKey.fromString(postingKey);
       const result = await this.client.broadcast.sendOperations([op], key);
       this.onSuccess();
       console.log(`[Hive] Broadcast ${id}: block ${result.block_num}`);
@@ -361,9 +379,10 @@ export class AgentHiveClient {
    * Returns the signature string, or null if no posting key is configured.
    */
   signMessage(message: string): string | null {
-    if (!this.config.postingKey) return null;
+    const postingKey = this.getKey();
+    if (!postingKey) return null;
     try {
-      const key = PrivateKey.fromString(this.config.postingKey);
+      const key = PrivateKey.fromString(postingKey);
       const hash = cryptoUtils.sha256(message);
       return key.sign(hash).toString();
     } catch (err: any) {
@@ -374,7 +393,7 @@ export class AgentHiveClient {
 
   /** Check if the client has a posting key configured. */
   hasPostingKey(): boolean {
-    return !!this.config.postingKey;
+    return !!this.getKey();
   }
 
   /** Get the configured username. */

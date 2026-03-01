@@ -2,7 +2,7 @@ import { storage } from "../storage";
 import { logPoA } from "../logger";
 import crypto from "crypto";
 import { getIPFSClient, IPFSClient } from "./ipfs-client";
-import { createProofHash, createRandomHash, createSaltWithEntropy } from "./poa-crypto";
+import { createProofHash, createRandomHash, createSaltWithEntropy, computeBlockListHash } from "./poa-crypto";
 import { createSPKClient, MockSPKPoAClient, SPKPoAClient } from "./spk-poa-client";
 import { createHiveClient, HiveClient, MockHiveClient } from "./hive-client";
 
@@ -606,6 +606,18 @@ export class PoAEngine {
    * Challenge a desktop agent over its persistent WebSocket connection.
    * The agent computes the proof locally and sends it back on the same WS.
    */
+  /**
+   * Two-phase challenge for WebSocket-connected desktop agents.
+   *
+   * Phase 1 (Commitment, 2s): Send CID only — agent must respond with block count
+   * and block list hash. Proves data is stored locally (too slow to fetch from network).
+   *
+   * Phase 2 (Challenge, 25s): Send salt — agent computes full proof hash.
+   * Server verifies both commitment and proof independently.
+   *
+   * Backward compat: If commitment times out (agent runs old version), falls back
+   * to single-phase challenge automatically.
+   */
   private async processAgentWSChallenge(
     challengeId: string,
     node: any,
@@ -616,6 +628,40 @@ export class PoAEngine {
     const startTime = Date.now();
 
     try {
+      // ── Phase 1: Commitment (2s timeout) ──────────────────────────────
+      const commitResult = await agentWSManager.requestCommitment(node.id, file.cid, 2000);
+      const commitElapsed = Date.now() - startTime;
+
+      let commitmentVerified = false;
+
+      if (commitResult.status === "success") {
+        // Verify commitment against our own block list
+        try {
+          const ourCommitment = await computeBlockListHash(this.ipfsClient, file.cid);
+          if (commitResult.blockListHash === ourCommitment.blockListHash &&
+              commitResult.blockCount === ourCommitment.blockCount) {
+            commitmentVerified = true;
+            logPoA.info(`[PoA] Phase 1 PASSED: ${node.hiveUsername} commitment verified (${commitElapsed}ms)`);
+          } else {
+            logPoA.info(`[PoA] Phase 1 FAILED: ${node.hiveUsername} commitment mismatch (blocks: ${commitResult.blockCount} vs ${ourCommitment.blockCount})`);
+            await this.recordChallengeResult(challengeId, node.id, file.id, "COMMITMENT_MISMATCH", "fail", commitElapsed);
+            return;
+          }
+        } catch {
+          // Can't verify commitment (our IPFS issue) — proceed to phase 2
+          logPoA.info(`[PoA] Phase 1: Can't verify commitment locally, proceeding to phase 2`);
+        }
+      } else if (commitResult.status === "fail") {
+        logPoA.info(`[PoA] Phase 1 FAILED: ${node.hiveUsername} reported error: ${commitResult.error}`);
+        await this.recordChallengeResult(challengeId, node.id, file.id, "COMMITMENT_FAIL", "fail", commitElapsed);
+        return;
+      } else {
+        // Commitment timeout — agent may be running old version, fall back to single-phase
+        logPoA.info(`[PoA] Phase 1: ${node.hiveUsername} did not respond (v1 fallback)`);
+      }
+
+      // ── Phase 2: Challenge (same as v1) ───────────────────────────────
+      const phase2Start = Date.now();
       const result = await agentWSManager.challengeAgent(
         node.id,
         file.cid,
@@ -625,23 +671,23 @@ export class PoAEngine {
       );
 
       // Use server-measured elapsed time (don't trust agent-reported timing)
-      const serverElapsed = Date.now() - startTime;
+      const serverElapsed = Date.now() - phase2Start;
+      const totalElapsed = Date.now() - startTime;
 
       if (result.status === "timeout") {
-        await this.recordChallengeResult(challengeId, node.id, file.id, "TIMEOUT", "fail", serverElapsed);
+        await this.recordChallengeResult(challengeId, node.id, file.id, "TIMEOUT", "fail", totalElapsed);
         return;
       }
 
       if (result.status !== "success") {
-        await this.recordChallengeResult(challengeId, node.id, file.id, result.error || "VALIDATION_FAILED", "fail", serverElapsed);
+        await this.recordChallengeResult(challengeId, node.id, file.id, result.error || "VALIDATION_FAILED", "fail", totalElapsed);
         return;
       }
 
       // Anti-cheat timing check (25s max — proves data was pre-stored)
-      // Uses server-side measurement to prevent agents from lying about elapsed time
       if (serverElapsed >= 25_000) {
         logPoA.info(`[PoA] TIMING FAIL: ${node.hiveUsername} took ${serverElapsed}ms server-side (>25s limit)`);
-        await this.recordChallengeResult(challengeId, node.id, file.id, "TOO_SLOW", "fail", serverElapsed);
+        await this.recordChallengeResult(challengeId, node.id, file.id, "TOO_SLOW", "fail", totalElapsed);
         return;
       }
 
@@ -665,11 +711,12 @@ export class PoAEngine {
       const expectedProofHash = await createProofHash(this.ipfsClient, salt, file.cid, blockCids || []);
 
       if (result.proofHash && result.proofHash === expectedProofHash) {
-        logPoA.info(`[PoA] AGENT-WS PASSED: ${node.hiveUsername} (${serverElapsed}ms)`);
-        await this.recordChallengeResult(challengeId, node.id, file.id, result.proofHash, "success", serverElapsed);
+        const phase = commitmentVerified ? 'v2' : 'v1-fallback';
+        logPoA.info(`[PoA] AGENT-WS PASSED [${phase}]: ${node.hiveUsername} (${totalElapsed}ms)`);
+        await this.recordChallengeResult(challengeId, node.id, file.id, result.proofHash, "success", totalElapsed);
       } else {
         logPoA.info(`[PoA] AGENT-WS FAILED: proof mismatch for ${node.hiveUsername}`);
-        await this.recordChallengeResult(challengeId, node.id, file.id, "PROOF_MISMATCH", "fail", serverElapsed);
+        await this.recordChallengeResult(challengeId, node.id, file.id, "PROOF_MISMATCH", "fail", totalElapsed);
       }
     } catch (err) {
       logPoA.error({ err }, "Agent WS challenge error");

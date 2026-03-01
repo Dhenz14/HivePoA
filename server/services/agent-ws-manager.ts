@@ -20,6 +20,10 @@ class AgentWSManager {
     resolve: (result: any) => void;
     timeout: NodeJS.Timeout;
   }> = new Map();
+  private pendingCommitments: Map<string, {
+    resolve: (result: any) => void;
+    timeout: NodeJS.Timeout;
+  }> = new Map();
 
   async handleConnection(ws: WebSocket): Promise<void> {
     let registered = false;
@@ -44,6 +48,10 @@ class AgentWSManager {
             this.handleProofResponse(message);
           } else {
             logWS.warn("ProofResponse missing CID or Hash fields, dropping");
+          }
+        } else if (message.type === "CommitmentResponse") {
+          if (typeof message.CID === "string") {
+            this.handleCommitmentResponse(message);
           }
         } else if (message.type === "SendCIDS") {
           logWS.debug({ parts: message.part }, "Received CID list from agent");
@@ -203,6 +211,65 @@ class AgentWSManager {
     }
 
     logWS.debug({ cid: message.CID }, "Received ProofResponse with no matching pending challenge");
+  }
+
+  private handleCommitmentResponse(message: any): void {
+    const key = `commitment:${message.nodeId || ''}:${message.CID}`;
+
+    // Search pendingCommitments for matching key
+    const entries = Array.from(this.pendingCommitments.entries());
+    for (const [pendingKey, pending] of entries) {
+      if (pendingKey.endsWith(`:${message.CID}`)) {
+        clearTimeout(pending.timeout);
+        this.pendingCommitments.delete(pendingKey);
+        pending.resolve({
+          status: message.Status === "Success" ? "success" : "fail",
+          blockCount: message.blockCount || 0,
+          blockListHash: message.blockListHash || "",
+          elapsed: message.elapsed || 0,
+          error: message.error,
+        });
+        return;
+      }
+    }
+
+    logWS.debug({ cid: message.CID }, "Received CommitmentResponse with no matching pending commitment");
+  }
+
+  /**
+   * Request a two-phase commitment from a connected agent (phase 1).
+   * The agent must respond with block count + block list hash within the timeout.
+   * Fast if data is local, too slow if fetching from IPFS network.
+   */
+  async requestCommitment(
+    nodeId: string,
+    cid: string,
+    timeoutMs: number = 2000
+  ): Promise<{ status: "success" | "fail" | "timeout"; blockCount?: number; blockListHash?: string; elapsed: number; error?: string }> {
+    const agent = this.agents.get(nodeId);
+    if (!agent || agent.ws.readyState !== WebSocket.OPEN) {
+      return { status: "fail", elapsed: 0, error: "AGENT_NOT_CONNECTED" };
+    }
+
+    const commitKey = `commitment:${nodeId}:${cid}`;
+    if (this.pendingCommitments.has(commitKey)) {
+      return { status: "fail", elapsed: 0, error: "DUPLICATE_COMMITMENT" };
+    }
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        this.pendingCommitments.delete(commitKey);
+        resolve({ status: "timeout", elapsed: timeoutMs });
+      }, timeoutMs);
+
+      this.pendingCommitments.set(commitKey, { resolve, timeout });
+
+      agent.ws.send(JSON.stringify({
+        type: "RequestCommitment",
+        CID: cid,
+        Status: "Pending",
+      }));
+    });
   }
 
   /**

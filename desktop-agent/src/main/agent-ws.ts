@@ -3,7 +3,7 @@ import axios from 'axios';
 import { EventEmitter } from 'events';
 import { KuboManager } from './kubo';
 import { ConfigStore } from './config';
-import { computeProofHash, getBlockCids, hashFile, hashString, getIntFromHash } from './poa-crypto';
+import { computeProofHash, getBlockCids, computeBlockListHash, hashFile, hashString, getIntFromHash } from './poa-crypto';
 
 export class AgentWSClient extends EventEmitter {
   private ws: WebSocket | null = null;
@@ -128,6 +128,10 @@ export class AgentWSClient extends EventEmitter {
         await this.handleChallenge(message);
         break;
 
+      case 'RequestCommitment':
+        await this.handleCommitment(message);
+        break;
+
       case 'error':
         console.error(`[AgentWS] Server error: ${message.message}`);
         break;
@@ -189,6 +193,50 @@ export class AgentWSClient extends EventEmitter {
       this.config.recordChallenge(false, 0);
     } finally {
       this.activeChallenges = Math.max(0, this.activeChallenges - 1);
+    }
+  }
+
+  /** Handle a two-phase commitment request (phase 1) — prove data is stored locally. */
+  private async handleCommitment(request: { CID: string }): Promise<void> {
+    const { CID: cid } = request;
+    console.log(`[AgentWS] Commitment request received: CID=${cid}`);
+
+    const startTime = Date.now();
+    const COMMITMENT_TIMEOUT = 1800; // 1.8s — 200ms buffer for 2s server-side limit
+
+    try {
+      const kuboApiUrl = this.kubo.getApiUrl();
+      const commitPromise = computeBlockListHash(kuboApiUrl, cid);
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('COMMITMENT_TIMEOUT')), COMMITMENT_TIMEOUT);
+      });
+
+      const result = await Promise.race([commitPromise, timeoutPromise]);
+      const elapsed = Date.now() - startTime;
+
+      console.log(`[AgentWS] Commitment computed in ${elapsed}ms: ${result.blockCount} blocks`);
+
+      this.ws?.send(JSON.stringify({
+        type: 'CommitmentResponse',
+        CID: cid,
+        Status: 'Success',
+        blockCount: result.blockCount,
+        blockListHash: result.blockListHash,
+        elapsed,
+      }));
+    } catch (err: any) {
+      const elapsed = Date.now() - startTime;
+      console.error(`[AgentWS] Commitment failed: ${err.message}`);
+
+      this.ws?.send(JSON.stringify({
+        type: 'CommitmentResponse',
+        CID: cid,
+        Status: 'Fail',
+        blockCount: 0,
+        blockListHash: '',
+        error: err.message,
+        elapsed,
+      }));
     }
   }
 

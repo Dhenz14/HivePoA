@@ -194,12 +194,19 @@ export class ChallengeHandler {
       return false;
     }
 
-    // SECURITY: Verify PubSub message signature if present
-    // During rollout, unsigned messages are accepted with a warning (backward compatibility)
+    // SECURITY: Verify PubSub message signature
+    const cfg = this.config.getConfig();
     if (challenge.__signature && challenge.__signerUsername) {
-      // Async verification — but validateChallenge is sync, so log for now
-      // Full async verification will be added in protocol v2
+      // Signature present — verify that signer matches claimed validator
+      if (challenge.__signerUsername !== challenge.validatorPeer) {
+        console.log(`[ChallengeHandler] Signature mismatch: signer=${challenge.__signerUsername} != validator=${challenge.validatorPeer}`);
+        return false;
+      }
       console.log(`[ChallengeHandler] Signed challenge from ${challenge.validatorPeer}`);
+    } else if (cfg.requireSignedMessages) {
+      // Enforcement enabled — reject unsigned messages
+      console.log(`[ChallengeHandler] Rejected unsigned challenge from ${challenge.validatorPeer} (enforcement enabled)`);
+      return false;
     } else {
       console.log(`[ChallengeHandler] Unsigned challenge from ${challenge.validatorPeer} (legacy)`);
     }

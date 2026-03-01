@@ -1,5 +1,24 @@
 const API_URL = 'http://127.0.0.1:5111';
 
+// Auth token for mutation endpoints — fetched from main process via IPC on startup
+let localAuthToken: string | null = null;
+
+async function fetchAuthToken(): Promise<void> {
+  try {
+    localAuthToken = await (window as any).spkAgent?.getAuthToken() || null;
+  } catch {
+    localAuthToken = null;
+  }
+}
+
+function mutationHeaders(): HeadersInit {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (localAuthToken) {
+    headers['Authorization'] = `Bearer ${localAuthToken}`;
+  }
+  return headers;
+}
+
 interface StatusResponse {
   running: boolean;
   peerId: string | null;
@@ -78,7 +97,7 @@ async function saveConfig(): Promise<void> {
     // Save username
     await fetch(`${API_URL}/api/config`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: mutationHeaders(),
       body: JSON.stringify({ hiveUsername: username }),
     });
 
@@ -86,7 +105,7 @@ async function saveConfig(): Promise<void> {
     if (postingKey) {
       await fetch(`${API_URL}/api/hive/posting-key`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: mutationHeaders(),
         body: JSON.stringify({ key: postingKey }),
       });
       postingKeyInput.value = ''; // Clear after saving
@@ -107,7 +126,7 @@ async function saveBandwidth(): Promise<void> {
   try {
     const response = await fetch(`${API_URL}/api/config`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: mutationHeaders(),
       body: JSON.stringify({ bandwidthLimitUp, bandwidthLimitDown }),
     });
     const data = await response.json();
@@ -130,7 +149,7 @@ async function saveStorage(): Promise<void> {
   try {
     const response = await fetch(`${API_URL}/api/config`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: mutationHeaders(),
       body: JSON.stringify({ storageMaxGB }),
     });
     const data = await response.json();
@@ -155,7 +174,7 @@ async function saveValidation(): Promise<void> {
   try {
     await fetch(`${API_URL}/api/config`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: mutationHeaders(),
       body: JSON.stringify({ validatorEnabled, challengeIntervalMs }),
     });
     alert('Validation settings applied!');
@@ -371,7 +390,10 @@ async function keychainLogin(): Promise<void> {
   }, 2000);
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  // Fetch auth token from main process before any mutation calls
+  await fetchAuthToken();
+
   document.getElementById('saveConfig')?.addEventListener('click', saveConfig);
   document.getElementById('saveBandwidth')?.addEventListener('click', saveBandwidth);
   document.getElementById('saveStorage')?.addEventListener('click', saveStorage);

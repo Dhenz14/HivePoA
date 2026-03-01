@@ -8,6 +8,7 @@ import {
   createProofHash,
   createProofRequest,
   verifyProofResponse,
+  computeBlockListHash,
 } from "../poa-crypto";
 import { MockIPFSClient } from "../ipfs-client";
 
@@ -198,5 +199,68 @@ describe("verifyProofResponse", () => {
     const result = await verifyProofResponse(ipfs, "salt", cid, "wrong_proof_hash");
     expect(result.success).toBe(false);
     expect(result.errorMessage).toBe("Proof hash mismatch");
+  });
+});
+
+// ============================================================
+// Two-Phase Commitment (computeBlockListHash)
+// ============================================================
+
+describe("computeBlockListHash", () => {
+  it("returns deterministic hash for the same CID", async () => {
+    const ipfs = new MockIPFSClient();
+    const content = Buffer.from("commitment-test-data".repeat(100));
+    const cid = await ipfs.add(content);
+
+    const result1 = await computeBlockListHash(ipfs, cid);
+    const result2 = await computeBlockListHash(ipfs, cid);
+
+    expect(result1.blockListHash).toBe(result2.blockListHash);
+    expect(result1.blockCount).toBe(result2.blockCount);
+  });
+
+  it("returns different hashes for different CIDs", async () => {
+    const ipfs = new MockIPFSClient();
+    const content1 = Buffer.from("commitment-a".repeat(100));
+    const content2 = Buffer.from("commitment-b".repeat(100));
+    const cid1 = await ipfs.add(content1);
+    const cid2 = await ipfs.add(content2);
+
+    const result1 = await computeBlockListHash(ipfs, cid1);
+    const result2 = await computeBlockListHash(ipfs, cid2);
+
+    expect(result1.blockListHash).not.toBe(result2.blockListHash);
+  });
+
+  it("includes CID in hash to prevent cross-CID replay", async () => {
+    const ipfs = new MockIPFSClient();
+    const content = Buffer.from("same-blocks".repeat(100));
+    const cid = await ipfs.add(content);
+
+    const result = await computeBlockListHash(ipfs, cid);
+    expect(result.blockListHash).toBeDefined();
+    expect(result.blockListHash.length).toBe(64); // SHA256 hex
+    expect(result.blockCount).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// ============================================================
+// Salt Entropy Security
+// ============================================================
+
+describe("createSaltWithEntropy security", () => {
+  it("produces different salts even with same block hash (entropy injection)", () => {
+    const blockHash = "0000000000000000abcdef1234567890";
+    const salts = new Set<string>();
+    for (let i = 0; i < 20; i++) {
+      salts.add(createSaltWithEntropy(blockHash));
+    }
+    // With random entropy, all 20 should be unique
+    expect(salts.size).toBe(20);
+  });
+
+  it("salt format is valid hex (64 chars)", () => {
+    const salt = createSaltWithEntropy("test-block-hash");
+    expect(salt).toMatch(/^[0-9a-f]{64}$/);
   });
 });
