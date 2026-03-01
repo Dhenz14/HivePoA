@@ -85,9 +85,35 @@ export class PubSubBridge {
             // Decode base64 data
             const decoded = Buffer.from(raw.data || '', 'base64').toString('utf-8');
 
+            // SECURITY: Reject oversized messages (64KB limit)
+            if (decoded.length > 65536) {
+              console.log('[PubSub] Message too large, discarding');
+              continue;
+            }
+
+            // Parse signed envelope format or legacy raw JSON
+            let msgData: string;
+            try {
+              const parsed = JSON.parse(decoded);
+              if (parsed.payload && typeof parsed.payload === 'string') {
+                // Signed envelope format: { payload, signature?, signerUsername?, timestamp }
+                const innerData = JSON.parse(parsed.payload);
+                if (parsed.signature) {
+                  innerData.__signature = parsed.signature;
+                  innerData.__signerUsername = parsed.signerUsername || '';
+                }
+                msgData = JSON.stringify(innerData);
+              } else {
+                // Legacy unsigned format
+                msgData = decoded;
+              }
+            } catch {
+              msgData = decoded;
+            }
+
             const msg: PubSubMessage = {
               from: raw.from || '',
-              data: decoded,
+              data: msgData,
               seqno: seqno,
               topicIDs: raw.topicIDs || [topic],
             };
@@ -136,14 +162,35 @@ export class PubSubBridge {
 
   /**
    * Publish a message to an IPFS PubSub topic.
+   * If a signer callback is provided, wraps the message in a signed envelope
+   * for authentication (prevents spoofing of validator/peer identity).
    */
-  async publish(topic: string, data: object): Promise<boolean> {
+  async publish(
+    topic: string,
+    data: object,
+    signer?: (payload: string) => string | null
+  ): Promise<boolean> {
     try {
-      const jsonStr = JSON.stringify(data);
+      const payload = JSON.stringify(data);
+      let publishData: string;
+
+      if (signer) {
+        // Signed envelope format
+        const signature = signer(payload);
+        const envelope: any = { payload, timestamp: Date.now() };
+        if (signature) {
+          envelope.signature = signature;
+          envelope.signerUsername = (data as any).validatorPeer || (data as any).targetPeer || '';
+        }
+        publishData = JSON.stringify(envelope);
+      } else {
+        publishData = payload;
+      }
+
       // Kubo expects the data as a URL-encoded form parameter
       await axios.post(
         `${this.kuboApiUrl}/api/v0/pubsub/pub`,
-        `arg=${encodeURIComponent(topic)}&arg=${encodeURIComponent(jsonStr)}`,
+        `arg=${encodeURIComponent(topic)}&arg=${encodeURIComponent(publishData)}`,
         {
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           timeout: 10000,

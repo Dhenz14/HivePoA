@@ -38,6 +38,13 @@ interface SignalingMessage {
   payload?: any;
 }
 
+// Validation: peerId must be alphanumeric (base58/base32), max 100 chars
+const PEER_ID_REGEX = /^[a-zA-Z0-9]{1,100}$/;
+
+function isValidPeerId(peerId: string): boolean {
+  return typeof peerId === 'string' && PEER_ID_REGEX.test(peerId);
+}
+
 export class P2PSignalingServer {
   private wss: WebSocketServer | null = null;
   private rooms: Map<string, Room> = new Map();
@@ -45,22 +52,65 @@ export class P2PSignalingServer {
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private statsInterval: ReturnType<typeof setInterval> | null = null;
 
+  // Rate limiting: track messages per socket
+  private socketMessageCounts: Map<WebSocket, { count: number; resetAt: number }> = new Map();
+  private static readonly MAX_MESSAGES_PER_SOCKET_PER_MINUTE = 120;
+  private rateLimitCleanupInterval: ReturnType<typeof setInterval> | null = null;
+
   init(wss: WebSocketServer) {
     this.wss = wss;
 
     wss.on('connection', (ws: WebSocket) => {
       ws.on('message', (data) => this.handleMessage(ws, data.toString()));
-      ws.on('close', () => this.handleDisconnect(ws));
+      ws.on('close', () => {
+        this.handleDisconnect(ws);
+        this.socketMessageCounts.delete(ws);
+      });
       ws.on('error', (err) => logP2P.error({ err }, 'P2P Signaling WebSocket error'));
     });
 
     this.heartbeatInterval = setInterval(() => this.cleanupStaleConnections(), 30000);
     this.statsInterval = setInterval(() => this.persistNetworkStats(), 60000);
+    this.rateLimitCleanupInterval = setInterval(() => this.cleanupRateLimits(), 60000);
 
     logP2P.info('[P2P Signaling] Server initialized');
   }
 
+  /** Check and enforce per-socket rate limit. Returns true if allowed. */
+  private checkRateLimit(ws: WebSocket): boolean {
+    const now = Date.now();
+    let entry = this.socketMessageCounts.get(ws);
+    if (!entry || now >= entry.resetAt) {
+      entry = { count: 0, resetAt: now + 60000 };
+      this.socketMessageCounts.set(ws, entry);
+    }
+    entry.count++;
+    return entry.count <= P2PSignalingServer.MAX_MESSAGES_PER_SOCKET_PER_MINUTE;
+  }
+
+  /** Clean up stale rate limit entries. */
+  private cleanupRateLimits(): void {
+    const now = Date.now();
+    this.socketMessageCounts.forEach((entry, ws) => {
+      if (now >= entry.resetAt) {
+        this.socketMessageCounts.delete(ws);
+      }
+    });
+  }
+
   private async handleMessage(ws: WebSocket, rawData: string) {
+    // Rate limit check
+    if (!this.checkRateLimit(ws)) {
+      this.sendError(ws, 'Rate limited — too many messages');
+      return;
+    }
+
+    // Message size limit (16KB)
+    if (rawData.length > 16384) {
+      this.sendError(ws, 'Message too large');
+      return;
+    }
+
     let message: SignalingMessage;
     try {
       message = JSON.parse(rawData);
@@ -95,6 +145,12 @@ export class P2PSignalingServer {
   private async handleJoin(ws: WebSocket, message: SignalingMessage) {
     if (!message.videoCid || !message.peerId) {
       this.sendError(ws, 'Missing videoCid or peerId');
+      return;
+    }
+
+    // Validate peerId format (prevents injection and excessive memory use)
+    if (!isValidPeerId(message.peerId)) {
+      this.sendError(ws, 'Invalid peerId format');
       return;
     }
 
@@ -221,8 +277,8 @@ export class P2PSignalingServer {
       return;
     }
 
-    if (!message.targetPeerId) {
-      this.sendError(ws, 'Missing targetPeerId');
+    if (!message.targetPeerId || !isValidPeerId(message.targetPeerId)) {
+      this.sendError(ws, 'Missing or invalid targetPeerId');
       return;
     }
 
@@ -383,9 +439,13 @@ export class P2PSignalingServer {
     if (this.statsInterval) {
       clearInterval(this.statsInterval);
     }
+    if (this.rateLimitCleanupInterval) {
+      clearInterval(this.rateLimitCleanupInterval);
+    }
     this.peersBySocket.forEach((_, ws) => ws.close());
     this.rooms.clear();
     this.peersBySocket.clear();
+    this.socketMessageCounts.clear();
   }
 }
 

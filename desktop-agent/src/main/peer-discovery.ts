@@ -37,6 +37,11 @@ export class PeerDiscovery {
   private activeConnects: number = 0;
   private static readonly MAX_CONCURRENT_CONNECTS = 3;
 
+  // Sybil resistance: cache account verification results
+  private verifiedAccounts: Map<string, { verified: boolean; checkedAt: number }> = new Map();
+  private static readonly ACCOUNT_CACHE_TTL_MS = 3600000; // 1 hour
+  private static readonly MIN_ACCOUNT_AGE_DAYS = 7;
+
   // Hive produces 1 block every 3 seconds → 20 blocks per minute
   // We scan every 60-90s (with jitter), so ~20-30 new blocks per scan
   private static readonly MAX_BLOCKS_PER_SCAN = 30;
@@ -194,8 +199,69 @@ export class PeerDiscovery {
     if (!existing) {
       console.log(`[PeerDiscovery] New peer: ${hiveUsername} (${peer.peerId.slice(0, 12)}...)`);
 
+      // Sybil resistance: verify account age and reputation for new peers
+      this.verifyAccount(hiveUsername).catch(() => {});
+
       // Try to connect to the new peer via IPFS swarm
       this.connectToPeer(peer.peerId);
+    }
+  }
+
+  /**
+   * Sybil resistance: verify a Hive account meets minimum requirements.
+   * - Account must be at least 7 days old (prevents mass account creation)
+   * - Account reputation must meet minimum threshold
+   * Results are cached for 1 hour. On API failure, peer is kept (fail-open).
+   */
+  private async verifyAccount(username: string): Promise<void> {
+    const cached = this.verifiedAccounts.get(username);
+    if (cached && Date.now() - cached.checkedAt < PeerDiscovery.ACCOUNT_CACHE_TTL_MS) {
+      if (!cached.verified) {
+        this.peers.delete(username);
+        console.log(`[PeerDiscovery] Rejected peer ${username} (cached: failed verification)`);
+      }
+      return;
+    }
+
+    try {
+      const account = await this.hive.getAccount(username);
+      if (!account) {
+        this.verifiedAccounts.set(username, { verified: false, checkedAt: Date.now() });
+        this.peers.delete(username);
+        console.log(`[PeerDiscovery] Rejected peer ${username} — account not found`);
+        return;
+      }
+
+      // Check account age (created field is ISO timestamp)
+      const createdDate = new Date(account.created);
+      const ageDays = (Date.now() - createdDate.getTime()) / (1000 * 60 * 60 * 24);
+      if (ageDays < PeerDiscovery.MIN_ACCOUNT_AGE_DAYS) {
+        this.verifiedAccounts.set(username, { verified: false, checkedAt: Date.now() });
+        this.peers.delete(username);
+        console.log(`[PeerDiscovery] Rejected peer ${username} — account too new (${Math.floor(ageDays)} days, need ${PeerDiscovery.MIN_ACCOUNT_AGE_DAYS})`);
+        return;
+      }
+
+      // Check reputation
+      const cfg = this.config.getConfig();
+      const reputation = await this.hive.getReputationScore(username);
+      if (reputation < cfg.minPeerReputation) {
+        this.verifiedAccounts.set(username, { verified: false, checkedAt: Date.now() });
+        this.peers.delete(username);
+        console.log(`[PeerDiscovery] Rejected peer ${username} — reputation ${reputation} below minimum ${cfg.minPeerReputation}`);
+        return;
+      }
+
+      // Update peer's stored reputation
+      const peer = this.peers.get(username);
+      if (peer) {
+        peer.reputation = reputation;
+      }
+
+      this.verifiedAccounts.set(username, { verified: true, checkedAt: Date.now() });
+    } catch (err: any) {
+      // Fail-open: keep the peer on API failure (don't block due to temporary Hive API issues)
+      console.log(`[PeerDiscovery] Account verification deferred for ${username}: ${err.message}`);
     }
   }
 

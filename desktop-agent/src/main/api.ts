@@ -6,6 +6,7 @@ import { app as electronApp } from 'electron';
 import { KuboManager } from './kubo';
 import { ConfigStore, AgentConfig } from './config';
 import { AgentHiveClient } from './hive';
+import { isValidCid } from './poa-crypto';
 import type { AgentWSClient } from './agent-ws';
 import type { PeerDiscovery } from './peer-discovery';
 import type { LocalValidator } from './validator';
@@ -184,6 +185,9 @@ export class ApiServer {
   private static readonly VERIFY_WINDOW_MS = 60000;
   private static readonly CHALLENGE_TTL_MS = 60000;
 
+  // Local auth token — generated at startup, required for mutation endpoints
+  private localAuthToken: string = crypto.randomBytes(32).toString('hex');
+
   constructor(kubo: KuboManager, config: ConfigStore) {
     this.kubo = kubo;
     this.config = config;
@@ -193,10 +197,26 @@ export class ApiServer {
     this.setupRoutes();
   }
 
+  /** Get the local auth token (for IPC to Electron renderer or web client) */
+  getAuthToken(): string {
+    return this.localAuthToken;
+  }
+
+  /** Middleware: require local auth token for mutation endpoints */
+  private requireLocalAuth = (req: Request, res: Response, next: express.NextFunction): void => {
+    const auth = req.headers.authorization;
+    if (!auth || auth !== `Bearer ${this.localAuthToken}`) {
+      res.status(401).json({ error: 'Unauthorized — local auth token required' });
+      return;
+    }
+    next();
+  };
+
   private setupMiddleware(): void {
     this.app.use(express.json());
 
-    // CORS — allow localhost origins, GitHub Pages, and file:// (Electron renderer sends null origin)
+    // CORS — allow localhost origins and GitHub Pages only
+    // SECURITY: reject 'null' origin (sent by file:// and sandboxed iframes — CSRF vector)
     const allowedOrigins = [
       'http://localhost:3000',
       'http://localhost:5000',
@@ -208,9 +228,13 @@ export class ApiServer {
     ];
     this.app.use((req, res, next) => {
       const origin = req.headers.origin;
-      if (!origin || origin === 'null' || allowedOrigins.includes(origin)) {
-        res.header('Access-Control-Allow-Origin', origin || '*');
+      if (origin && allowedOrigins.includes(origin)) {
+        // Known origin — allow with credentials
+        res.header('Access-Control-Allow-Origin', origin);
+        res.header('Access-Control-Allow-Credentials', 'true');
       }
+      // No origin (same-origin, curl, server-to-server) — allowed but no CORS header
+      // Unknown origin or 'null' — no CORS header → browser blocks the response
       res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
       res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-File-Name');
       if (req.method === 'OPTIONS') {
@@ -265,7 +289,7 @@ export class ApiServer {
       res.json(this.config.getConfig());
     });
 
-    this.app.post('/api/config', async (req: Request, res: Response) => {
+    this.app.post('/api/config', this.requireLocalAuth, async (req: Request, res: Response) => {
       const {
         hiveUsername, autoStart, bandwidthLimitUp, bandwidthLimitDown,
         storageMaxGB, serverUrl, p2pMode, validatorEnabled, challengeIntervalMs,
@@ -338,10 +362,10 @@ export class ApiServer {
     });
 
     // Pin content
-    this.app.post('/api/pin', async (req: Request, res: Response) => {
+    this.app.post('/api/pin', this.requireLocalAuth, async (req: Request, res: Response) => {
       const { cid } = req.body;
-      if (!cid) {
-        return res.status(400).json({ error: 'CID required' });
+      if (!cid || !isValidCid(cid)) {
+        return res.status(400).json({ error: 'Valid CID required' });
       }
 
       try {
@@ -357,10 +381,10 @@ export class ApiServer {
     });
 
     // Unpin content
-    this.app.post('/api/unpin', async (req: Request, res: Response) => {
+    this.app.post('/api/unpin', this.requireLocalAuth, async (req: Request, res: Response) => {
       const { cid } = req.body;
-      if (!cid) {
-        return res.status(400).json({ error: 'CID required' });
+      if (!cid || !isValidCid(cid)) {
+        return res.status(400).json({ error: 'Valid CID required' });
       }
 
       try {
@@ -372,7 +396,7 @@ export class ApiServer {
     });
 
     // Upload file directly to IPFS (add + pin in one step)
-    this.app.post('/api/upload', express.raw({ type: '*/*', limit: '500mb' }), async (req: Request, res: Response) => {
+    this.app.post('/api/upload', this.requireLocalAuth, express.raw({ type: '*/*', limit: '500mb' }), async (req: Request, res: Response) => {
       const fileBuffer = req.body as Buffer;
       if (!fileBuffer || fileBuffer.length === 0) {
         return res.status(400).json({ error: 'No file data provided' });
@@ -423,7 +447,7 @@ export class ApiServer {
     });
 
     // PoA Challenge endpoint - validators call this (legacy HTTP mode)
-    this.app.post('/api/challenge', async (req: Request, res: Response) => {
+    this.app.post('/api/challenge', this.requireLocalAuth, async (req: Request, res: Response) => {
       const { cid, blockIndex, salt, validatorId } = req.body;
 
       if (!cid || blockIndex === undefined || !salt) {
@@ -509,14 +533,14 @@ export class ApiServer {
     });
 
     // Toggle validation
-    this.app.post('/api/validation/toggle', (req: Request, res: Response) => {
+    this.app.post('/api/validation/toggle', this.requireLocalAuth, (req: Request, res: Response) => {
       const { enabled } = req.body;
       this.config.setConfig({ validatorEnabled: !!enabled });
       res.json({ success: true, validatorEnabled: !!enabled });
     });
 
     // Posting key management
-    this.app.post('/api/hive/posting-key', (req: Request, res: Response) => {
+    this.app.post('/api/hive/posting-key', this.requireLocalAuth, (req: Request, res: Response) => {
       const { key } = req.body;
       if (!key || typeof key !== 'string') {
         return res.status(400).json({ error: 'Posting key required' });
@@ -525,7 +549,7 @@ export class ApiServer {
       res.json({ success: true, hasPostingKey: true });
     });
 
-    this.app.delete('/api/hive/posting-key', (req: Request, res: Response) => {
+    this.app.delete('/api/hive/posting-key', this.requireLocalAuth, (req: Request, res: Response) => {
       this.config.clearPostingKey();
       res.json({ success: true, hasPostingKey: false });
     });
@@ -536,7 +560,7 @@ export class ApiServer {
       res.json({ enabled: config.autoStart });
     });
 
-    this.app.post('/api/autostart', (req: Request, res: Response) => {
+    this.app.post('/api/autostart', this.requireLocalAuth, (req: Request, res: Response) => {
       const { enabled } = req.body;
       this.config.setConfig({ autoStart: enabled });
 

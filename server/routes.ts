@@ -137,6 +137,20 @@ function requireHiveUser(req: Request, res: Response, next: NextFunction): void 
   res.status(401).json({ error: "Authentication required — provide x-hive-username header or username in body" });
 }
 
+/** Parse and validate HBD amount string. Returns null if invalid. */
+function parseHbdAmount(value: string): number | null {
+  if (!value || typeof value !== 'string') return null;
+  const cleaned = value.replace(/\s*HBD\s*$/i, '').trim();
+  const num = parseFloat(cleaned);
+  if (!Number.isFinite(num) || num < 0 || num > 1_000_000) return null;
+  // Reject scientific notation tricks: ensure round-trip consistency
+  if (cleaned !== num.toString() && cleaned !== num.toFixed(3)) {
+    // Allow common formats like "1.000", "0.5", etc.
+    if (!/^\d+(\.\d{1,8})?$/.test(cleaned)) return null;
+  }
+  return num;
+}
+
 /** Parse pagination query params with safe defaults */
 function parsePagination(req: Request): { page: number; limit: number; offset: number } {
   const page = Math.max(1, parseInt(req.query.page as string) || 1);
@@ -343,9 +357,29 @@ export async function registerRoutes(
 
   setupHeartbeat(agentWss, "Agent");
 
+  // SECURITY: Allowed origins for browser-facing WebSocket connections
+  const allowedWsOrigins = new Set([
+    'http://localhost:3000',
+    'http://localhost:5000',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:5000',
+    'https://dhenz14.github.io',
+  ]);
+
   // Handle WebSocket upgrades manually for multiple paths
   httpServer.on("upgrade", (request, socket, head) => {
     const pathname = new URL(request.url || "", `http://${request.headers.host}`).pathname;
+    const origin = request.headers.origin;
+
+    // SECURITY: Validate origin for browser-facing WebSocket endpoints
+    if (pathname === "/ws" || pathname === "/p2p") {
+      if (origin && !allowedWsOrigins.has(origin)) {
+        logRoutes.warn({ origin, pathname }, 'Rejected WebSocket upgrade: invalid origin');
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+    }
 
     if (pathname === "/ws") {
       wss.handleUpgrade(request, socket, head, (ws) => {
@@ -533,7 +567,7 @@ export async function registerRoutes(
     res.json(recommendations);
   });
 
-  app.post("/api/cdn/heartbeat/:nodeId", async (req, res) => {
+  app.post("/api/cdn/heartbeat/:nodeId", requireAgentAuth, async (req, res) => {
     try {
       const schema = z.object({
         latency: z.number().nonnegative().optional(),
@@ -774,11 +808,36 @@ export async function registerRoutes(
       }
 
       // Validate transfer details
-      const transferAmount = parseFloat(transfer.amount);
-      const requiredAmount = parseFloat(contract.hbdBudget);
+      const transferAmount = parseHbdAmount(transfer.amount);
+      const requiredAmount = parseHbdAmount(contract.hbdBudget);
+      if (transferAmount === null || requiredAmount === null) {
+        return res.status(400).json({ error: "Invalid HBD amount format" });
+      }
       if (transferAmount < requiredAmount) {
         return res.status(400).json({
           error: `Insufficient transfer: ${transfer.amount} sent, ${contract.hbdBudget} HBD required`,
+        });
+      }
+
+      // SECURITY: Verify sender matches authenticated user
+      if (transfer.from !== username) {
+        return res.status(400).json({
+          error: `Transfer sender "${transfer.from}" doesn't match authenticated user "${username}"`,
+        });
+      }
+
+      // SECURITY: Verify recipient matches expected contract receiver
+      const expectedRecipient = process.env.HIVE_USERNAME || 'hivepoa';
+      if (transfer.to !== expectedRecipient) {
+        return res.status(400).json({
+          error: `Transfer recipient "${transfer.to}" doesn't match expected "${expectedRecipient}"`,
+        });
+      }
+
+      // SECURITY: Verify memo references this contract
+      if (!transfer.memo || !transfer.memo.includes(contract.id)) {
+        return res.status(400).json({
+          error: `Transfer memo doesn't reference contract ${contract.id}`,
         });
       }
 

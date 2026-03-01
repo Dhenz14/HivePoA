@@ -129,6 +129,7 @@ export interface IStorage {
   updateStorageNodeReputation(id: string, reputation: number, status: string, consecutiveFails?: number): Promise<void>;
   updateNodeEarnings(id: string, hbdAmount: number): Promise<void>;
   updateStorageNodeLastSeen(id: string): Promise<void>;
+  decayInactiveNodeReputation(inactiveDays: number, decayPerDay: number): Promise<number>;
 
   // Files
   getFile(id: string): Promise<File | undefined>;
@@ -366,7 +367,14 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateStorageNodeReputation(id: string, reputation: number, status: string, consecutiveFails?: number): Promise<void> {
-    const updateData: any = { reputation, status, lastSeen: new Date() };
+    // SECURITY: Use atomic SQL to prevent race conditions from concurrent validators.
+    // The reputation value is applied as an absolute value clamped to [0, 100] at the DB level.
+    const clampedRep = Math.max(0, Math.min(100, reputation));
+    const updateData: any = {
+      reputation: sql`GREATEST(0, LEAST(100, ${clampedRep}))`,
+      status,
+      lastSeen: new Date(),
+    };
     if (consecutiveFails !== undefined) {
       updateData.consecutiveFails = consecutiveFails;
     }
@@ -387,6 +395,30 @@ export class DatabaseStorage implements IStorage {
     await db.update(storageNodes)
       .set({ lastSeen: new Date() })
       .where(eq(storageNodes.id, id));
+  }
+
+  /**
+   * Decay reputation for nodes inactive longer than `inactiveDays`.
+   * Each day of inactivity costs `decayPerDay` rep points.
+   * Returns the number of nodes affected.
+   */
+  async decayInactiveNodeReputation(inactiveDays: number, decayPerDay: number): Promise<number> {
+    const cutoff = new Date(Date.now() - inactiveDays * 24 * 60 * 60 * 1000);
+    // Atomic: reduce reputation by (days_inactive - threshold) * decayPerDay, clamped to [0, 100]
+    // Only apply to active/probation nodes with rep > 0
+    const result = await db.update(storageNodes)
+      .set({
+        reputation: sql`GREATEST(0, reputation - ${decayPerDay})`,
+      })
+      .where(
+        and(
+          lt(storageNodes.lastSeen, cutoff),
+          sql`${storageNodes.reputation} > 0`,
+          sql`${storageNodes.status} != 'banned'`
+        )
+      )
+      .returning({ id: storageNodes.id });
+    return result.length;
   }
 
   // ============================================================

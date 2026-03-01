@@ -136,6 +136,7 @@ export interface PoAConfig {
 
 export class PoAEngine {
   private challengeInterval: NodeJS.Timeout | null = null;
+  private reputationDecayInterval: NodeJS.Timeout | null = null;
   private validatorId: string | null = null;
   private config: PoAConfig;
   private ipfsClient: IPFSClient;
@@ -256,6 +257,16 @@ export class PoAEngine {
     this.challengeInterval = setInterval(() => {
       this.runChallenge();
     }, this.config.challengeIntervalMs);
+
+    // Reputation decay: sweep inactive nodes every 24 hours
+    // Nodes inactive >7 days lose 1 rep point per day
+    const DECAY_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+    this.reputationDecayInterval = setInterval(() => {
+      this.sweepReputationDecay();
+    }, DECAY_INTERVAL_MS);
+
+    // Run initial decay sweep after 1 minute (let DB stabilize)
+    setTimeout(() => this.sweepReputationDecay(), 60000);
   }
 
   /**
@@ -300,9 +311,31 @@ export class PoAEngine {
       clearInterval(this.challengeInterval);
       this.challengeInterval = null;
     }
+    if (this.reputationDecayInterval) {
+      clearInterval(this.reputationDecayInterval);
+      this.reputationDecayInterval = null;
+    }
     if (this.spkClient) {
       this.spkClient.disconnect();
       this.spkClient = null;
+    }
+  }
+
+  /**
+   * Daily reputation decay sweep.
+   * Nodes inactive for more than 7 days lose 1 rep point per sweep (once per day).
+   * This prevents ghost nodes from maintaining high reputation without participating.
+   */
+  private async sweepReputationDecay(): Promise<void> {
+    try {
+      const INACTIVE_THRESHOLD_DAYS = 7;
+      const DECAY_PER_DAY = 1;
+      const affected = await storage.decayInactiveNodeReputation(INACTIVE_THRESHOLD_DAYS, DECAY_PER_DAY);
+      if (affected > 0) {
+        logPoA.info(`[PoA] Reputation decay: ${affected} inactive nodes penalized (-${DECAY_PER_DAY} rep)`);
+      }
+    } catch (err) {
+      logPoA.error({ err }, "Failed to run reputation decay sweep");
     }
   }
 
@@ -982,15 +1015,16 @@ export class PoAEngine {
         streakBonus = POA_CONFIG.STREAK_BONUS_10;
       }
 
-      const reward = baseReward * rarityMultiplier * streakBonus;
+      let reward = baseReward * rarityMultiplier * streakBonus;
 
       // Deduct from contract budget if contract-funded
       if (contract) {
         const deducted = await storage.updateStorageContractSpent(contract.id, reward);
         if (!deducted) {
           logPoA.warn(`[PoA] Contract ${contract.id} budget exhausted during reward for ${node.hiveUsername}`);
-          // Budget exhausted — mark completed, but still pay this last reward
           await storage.updateStorageContractStatus(contract.id, 'completed');
+          // SECURITY: Budget exhausted — fall back to minimal reward, don't overspend
+          reward = POA_CONFIG.FALLBACK_REWARD_HBD * rarityMultiplier * streakBonus;
         }
       }
 

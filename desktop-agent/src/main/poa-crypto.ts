@@ -35,6 +35,16 @@ export function createSaltWithEntropy(hiveBlockHash: string): string {
 }
 
 /**
+ * Validate CID format (CIDv0: Qm... or CIDv1: baf...).
+ * Prevents injection attacks when CIDs are passed to IPFS API URLs.
+ */
+const CID_REGEX = /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|baf[a-z2-7]{56,})$/;
+
+export function isValidCid(cid: string): boolean {
+  return typeof cid === 'string' && CID_REGEX.test(cid);
+}
+
+/**
  * FNV-1a hash — must match getIntFromHash() in server/services/poa-crypto.ts exactly.
  */
 export function getIntFromHash(hash: string, length: number): number {
@@ -138,6 +148,28 @@ export async function computeProofHash(
 
   // Final hash = SHA256(allBlockHashesConcatenated)
   return hashString(proofHashes.join(''));
+}
+
+/**
+ * Compute a commitment hash for the two-phase PoA protocol.
+ * Phase 1 (commitment): node proves it has the block list locally by returning
+ * a hash of the block CIDs. This is fast (~50ms) if data is pinned locally,
+ * but too slow (~seconds) if the node needs to fetch from the IPFS network.
+ *
+ * Returns { blockCount, blockListHash, blockCids } for the validator to cache.
+ */
+export async function computeBlockListHash(
+  kuboApiUrl: string,
+  cid: string
+): Promise<{ blockCount: number; blockListHash: string; blockCids: string[] }> {
+  const blockCids = await getBlockCids(kuboApiUrl, cid);
+  const blockCount = blockCids.length;
+
+  // Hash the sorted block CID list — deterministic regardless of refs order
+  const sorted = [...blockCids].sort();
+  const blockListHash = hashString(sorted.join(':') + ':' + cid);
+
+  return { blockCount, blockListHash, blockCids };
 }
 
 /**

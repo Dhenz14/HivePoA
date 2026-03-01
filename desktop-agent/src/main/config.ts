@@ -72,29 +72,31 @@ export class ConfigStore {
   /**
    * Store Hive posting key encrypted via OS credential store (DPAPI/Keychain/libsecret).
    * The raw key never touches disk in plaintext.
+   * SECURITY: Refuses to store if OS encryption is unavailable (no plaintext fallback).
    */
   setPostingKey(key: string): void {
-    if (safeStorage.isEncryptionAvailable()) {
-      const encrypted = safeStorage.encryptString(key);
-      this.store.set('encryptedPostingKey', encrypted.toString('base64'));
-    } else {
-      // Fallback: store as-is (warn user in UI)
-      console.warn('[Config] OS encryption unavailable — posting key stored without encryption');
-      this.store.set('encryptedPostingKey', Buffer.from(key).toString('base64'));
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error(
+        'OS encryption unavailable — cannot securely store posting key. ' +
+        'Ensure the system keychain/credential manager is accessible and restart the app.'
+      );
     }
+    const encrypted = safeStorage.encryptString(key);
+    this.store.set('encryptedPostingKey', encrypted.toString('base64'));
   }
 
   getPostingKey(): string | null {
     const stored = this.store.get('encryptedPostingKey') as string | undefined;
     if (!stored) return null;
 
+    if (!safeStorage.isEncryptionAvailable()) {
+      console.error('[Config] OS encryption unavailable — cannot decrypt posting key');
+      return null;
+    }
+
     try {
-      if (safeStorage.isEncryptionAvailable()) {
-        const encrypted = Buffer.from(stored, 'base64');
-        return safeStorage.decryptString(encrypted);
-      } else {
-        return Buffer.from(stored, 'base64').toString('utf-8');
-      }
+      const encrypted = Buffer.from(stored, 'base64');
+      return safeStorage.decryptString(encrypted);
     } catch (err) {
       console.error('[Config] Failed to decrypt posting key:', err);
       return null;

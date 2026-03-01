@@ -3,11 +3,12 @@ import axios from 'axios';
 import { AgentHiveClient } from './hive';
 import { PeerDiscovery, PeerInfo } from './peer-discovery';
 import { PubSubBridge } from './pubsub';
-import { ChallengeMessage, ChallengeResponse } from './challenge-handler';
-import { createSaltWithEntropy, verifyProof } from './poa-crypto';
+import { ChallengeMessage, ChallengeResponse, CommitmentRequest, CommitmentResponse } from './challenge-handler';
+import { createSaltWithEntropy, verifyProof, computeBlockListHash } from './poa-crypto';
 
 const CHALLENGE_TOPIC = 'hivepoa-challenges';
 const CHALLENGE_TIMEOUT_MS = 25000; // 25 second anti-cheat window
+const COMMITMENT_TIMEOUT_MS = 2000; // 2 second commitment window (proves local storage)
 
 export interface ValidatorStats {
   issued: number;
@@ -18,6 +19,12 @@ export interface ValidatorStats {
 
 interface PendingChallenge {
   resolve: (response: ChallengeResponse) => void;
+  timeout: NodeJS.Timeout;
+  startTime: number;
+}
+
+interface PendingCommitment {
+  resolve: (response: CommitmentResponse) => void;
   timeout: NodeJS.Timeout;
   startTime: number;
 }
@@ -40,6 +47,7 @@ export class LocalValidator {
   private blockHashTimer: NodeJS.Timeout | null = null;
   private currentBlockHash: string = '';
   private pendingChallenges: Map<string, PendingChallenge> = new Map(); // nonce → pending
+  private pendingCommitments: Map<string, PendingCommitment> = new Map(); // nonce → pending
   private cachedPins: string[] = [];
   private pinsCacheTime: number = 0;
   private static readonly PIN_CACHE_TTL_MS = 300000; // 5 minutes
@@ -107,11 +115,15 @@ export class LocalValidator {
       this.blockHashTimer = null;
     }
 
-    // Clear pending challenges
+    // Clear pending challenges and commitments
     for (const [nonce, pending] of this.pendingChallenges) {
       clearTimeout(pending.timeout);
     }
     this.pendingChallenges.clear();
+    for (const [nonce, pending] of this.pendingCommitments) {
+      clearTimeout(pending.timeout);
+    }
+    this.pendingCommitments.clear();
 
     console.log('[Validator] Stopped');
   }
@@ -131,7 +143,19 @@ export class LocalValidator {
     }
   }
 
-  /** Issue a challenge to a specific peer. */
+  /**
+   * Issue a two-phase challenge to a specific peer (protocol v2).
+   *
+   * Phase 1 (Commitment, 2s): Send CID only — peer must respond with block count
+   * and block list hash. This proves data is stored locally (fetching from IPFS
+   * network would take seconds, not milliseconds).
+   *
+   * Phase 2 (Challenge, 25s): Send salt — peer computes full proof hash.
+   * Validator verifies both the commitment and the proof independently.
+   *
+   * Backward compat: If commitment times out (peer runs old agent), falls back
+   * to single-phase v1 challenge automatically.
+   */
   private async challengePeer(peer: PeerInfo): Promise<void> {
     // Select a CID to challenge from our own pin list (we need the data to verify)
     const cid = await this.selectChallengeCid();
@@ -140,9 +164,83 @@ export class LocalValidator {
       return;
     }
 
-    // Generate challenge
+    this.stats.issued++;
+    const signer = (payload: string) => this.hive.signMessage(payload);
+
+    // ── Phase 1: Commitment ──────────────────────────────────────────────
+    const commitNonce = crypto.randomBytes(16).toString('hex');
+
+    const commitRequest: CommitmentRequest = {
+      type: 'commitment-request',
+      targetPeer: peer.hiveUsername,
+      validatorPeer: this.myUsername,
+      cid,
+      timestamp: Date.now(),
+      nonce: commitNonce,
+      protocolVersion: 2,
+    };
+
+    console.log(`[Validator] Phase 1: Commitment request to ${peer.hiveUsername} for CID ${cid.slice(0, 12)}...`);
+
+    // Set up commitment response handler
+    const commitPromise = new Promise<CommitmentResponse | null>((resolve) => {
+      const timeout = setTimeout(() => {
+        this.pendingCommitments.delete(commitNonce);
+        resolve(null); // Timeout → fall back to v1
+      }, COMMITMENT_TIMEOUT_MS);
+
+      this.pendingCommitments.set(commitNonce, {
+        resolve,
+        timeout,
+        startTime: Date.now(),
+      });
+    });
+
+    const commitPublished = await this.pubsub.publish(CHALLENGE_TOPIC, commitRequest, signer);
+    if (!commitPublished) {
+      this.pendingCommitments.delete(commitNonce);
+      console.error('[Validator] Failed to publish commitment request');
+      return;
+    }
+
+    const commitResponse = await commitPromise;
+
+    // Verify commitment if received
+    let commitmentVerified = false;
+    if (commitResponse && commitResponse.status === 'success') {
+      // Independently compute our own block list hash to compare
+      try {
+        const ourCommitment = await computeBlockListHash(this.kuboApiUrl, cid);
+        if (commitResponse.blockListHash === ourCommitment.blockListHash &&
+            commitResponse.blockCount === ourCommitment.blockCount) {
+          commitmentVerified = true;
+          console.log(`[Validator] Phase 1 PASSED: ${peer.hiveUsername} commitment verified (${commitResponse.elapsed}ms)`);
+        } else {
+          // Block list mismatch — peer has different/corrupted data
+          this.stats.failed++;
+          this.peerDiscovery.recordChallenge(peer.hiveUsername, false);
+          console.log(`[Validator] Phase 1 FAILED: ${peer.hiveUsername} commitment mismatch (blocks: ${commitResponse.blockCount} vs ${ourCommitment.blockCount})`);
+          await this.recordResult(peer, cid, false, '', commitResponse.elapsed);
+          return;
+        }
+      } catch (err: any) {
+        // Can't verify commitment (our IPFS issue) — proceed to phase 2 anyway
+        console.log(`[Validator] Phase 1: Can't verify commitment locally, proceeding to phase 2`);
+      }
+    } else if (commitResponse && commitResponse.status === 'fail') {
+      this.stats.failed++;
+      this.peerDiscovery.recordChallenge(peer.hiveUsername, false);
+      console.log(`[Validator] Phase 1 FAILED: ${peer.hiveUsername} reported error: ${commitResponse.error}`);
+      await this.recordResult(peer, cid, false, '', commitResponse.elapsed);
+      return;
+    } else {
+      // Commitment timeout — peer may be running old agent, fall back to v1
+      console.log(`[Validator] Phase 1: ${peer.hiveUsername} did not respond (v1 fallback)`);
+    }
+
+    // ── Phase 2: Challenge (same as v1) ─────────────────────────────────
     const salt = createSaltWithEntropy(this.currentBlockHash);
-    const nonce = crypto.randomBytes(16).toString('hex');
+    const challengeNonce = crypto.randomBytes(16).toString('hex');
 
     const challenge: ChallengeMessage = {
       type: 'challenge',
@@ -152,30 +250,28 @@ export class LocalValidator {
       salt,
       blockHash: this.currentBlockHash.slice(0, 16),
       timestamp: Date.now(),
-      nonce,
+      nonce: challengeNonce,
     };
 
-    this.stats.issued++;
-    console.log(`[Validator] Challenging ${peer.hiveUsername} for CID ${cid.slice(0, 12)}...`);
+    console.log(`[Validator] Phase 2: Challenge to ${peer.hiveUsername} for CID ${cid.slice(0, 12)}...`);
 
     // Set up response handler with timeout
     const responsePromise = new Promise<ChallengeResponse | null>((resolve) => {
       const timeout = setTimeout(() => {
-        this.pendingChallenges.delete(nonce);
+        this.pendingChallenges.delete(challengeNonce);
         resolve(null); // Timeout
       }, CHALLENGE_TIMEOUT_MS);
 
-      this.pendingChallenges.set(nonce, {
+      this.pendingChallenges.set(challengeNonce, {
         resolve,
         timeout,
         startTime: Date.now(),
       });
     });
 
-    // Publish challenge via PubSub
-    const published = await this.pubsub.publish(CHALLENGE_TOPIC, challenge);
+    const published = await this.pubsub.publish(CHALLENGE_TOPIC, challenge, signer);
     if (!published) {
-      this.pendingChallenges.delete(nonce);
+      this.pendingChallenges.delete(challengeNonce);
       console.error('[Validator] Failed to publish challenge');
       return;
     }
@@ -184,15 +280,15 @@ export class LocalValidator {
     const response = await responsePromise;
 
     if (!response) {
-      // Timeout
       this.stats.timeouts++;
       this.peerDiscovery.recordChallenge(peer.hiveUsername, false);
-      console.log(`[Validator] Challenge to ${peer.hiveUsername} timed out`);
+      console.log(`[Validator] Phase 2: Challenge to ${peer.hiveUsername} timed out`);
       return;
     }
 
     // Verify the proof independently
-    const serverElapsed = Date.now() - (this.pendingChallenges.get(nonce)?.startTime || Date.now());
+    const pending = this.pendingChallenges.get(challengeNonce);
+    const serverElapsed = Date.now() - (pending?.startTime || Date.now());
 
     // Anti-cheat: check elapsed time (our measurement, not theirs)
     if (serverElapsed >= CHALLENGE_TIMEOUT_MS) {
@@ -206,7 +302,7 @@ export class LocalValidator {
     if (response.status === 'fail') {
       this.stats.failed++;
       this.peerDiscovery.recordChallenge(peer.hiveUsername, false);
-      console.log(`[Validator] ${peer.hiveUsername} reported failure: ${response.error}`);
+      console.log(`[Validator] Phase 2: ${peer.hiveUsername} reported failure: ${response.error}`);
       await this.recordResult(peer, cid, false, '', serverElapsed);
       return;
     }
@@ -217,7 +313,8 @@ export class LocalValidator {
     if (verification.valid) {
       this.stats.passed++;
       this.peerDiscovery.recordChallenge(peer.hiveUsername, true);
-      console.log(`[Validator] ${peer.hiveUsername} PASSED (${serverElapsed}ms)`);
+      const phase = commitmentVerified ? 'v2' : 'v1-fallback';
+      console.log(`[Validator] ${peer.hiveUsername} PASSED [${phase}] (${serverElapsed}ms)`);
       await this.recordResult(peer, cid, true, response.proofHash, serverElapsed);
     } else {
       this.stats.failed++;
@@ -227,13 +324,36 @@ export class LocalValidator {
     }
   }
 
+  /** Handle an incoming commitment response (protocol v2 phase 1). */
+  handleCommitmentResponse(response: CommitmentResponse & { __signature?: string; __signerUsername?: string }): void {
+    if (response.validatorPeer !== this.myUsername) return;
+
+    const pending = this.pendingCommitments.get(response.nonce);
+    if (!pending) return;
+
+    if (response.__signature) {
+      console.log(`[Validator] Signed commitment response from ${response.targetPeer}`);
+    }
+
+    clearTimeout(pending.timeout);
+    this.pendingCommitments.delete(response.nonce);
+    pending.resolve(response);
+  }
+
   /** Handle an incoming challenge response from PubSub. */
-  handleChallengeResponse(response: ChallengeResponse): void {
+  handleChallengeResponse(response: ChallengeResponse & { __signature?: string; __signerUsername?: string }): void {
     // Must be addressed to us
     if (response.validatorPeer !== this.myUsername) return;
 
     const pending = this.pendingChallenges.get(response.nonce);
     if (!pending) return; // No matching pending challenge (already timed out or not ours)
+
+    // SECURITY: Log signature status (full async verification deferred to protocol v2)
+    if (response.__signature) {
+      console.log(`[Validator] Signed response from ${response.targetPeer}`);
+    } else {
+      console.log(`[Validator] Unsigned response from ${response.targetPeer} (legacy)`);
+    }
 
     clearTimeout(pending.timeout);
     this.pendingChallenges.delete(response.nonce);

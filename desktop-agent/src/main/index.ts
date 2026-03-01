@@ -8,7 +8,7 @@ import { AgentWSClient } from './agent-ws';
 import { AgentHiveClient } from './hive';
 import { PeerDiscovery } from './peer-discovery';
 import { PubSubBridge } from './pubsub';
-import { ChallengeHandler, ChallengeMessage, ChallengeResponse } from './challenge-handler';
+import { ChallengeHandler, ChallengeMessage, ChallengeResponse, CommitmentRequest, CommitmentResponse } from './challenge-handler';
 import { LocalValidator } from './validator';
 import { AutoPinner } from './auto-pinner';
 
@@ -138,10 +138,10 @@ async function initializeP2P(): Promise<void> {
 
   // Initialize challenge handler (always active — we always respond to challenges)
   challengeHandler = new ChallengeHandler(
-    kuboManager.getApiUrl(), pubsub, cfg.hiveUsername, configStore
+    kuboManager.getApiUrl(), pubsub, cfg.hiveUsername, configStore, hiveClient
   );
 
-  // Subscribe to challenge topic
+  // Subscribe to challenge topic (handles both v1 and v2 protocol messages)
   await pubsub.subscribe(CHALLENGE_TOPIC, (msg) => {
     try {
       const data = JSON.parse(msg.data);
@@ -149,6 +149,10 @@ async function initializeP2P(): Promise<void> {
         challengeHandler!.handleChallenge(data as ChallengeMessage);
       } else if (data.type === 'response') {
         validator?.handleChallengeResponse(data as ChallengeResponse);
+      } else if (data.type === 'commitment-request' && data.targetPeer === cfg.hiveUsername) {
+        challengeHandler!.handleCommitmentRequest(data as CommitmentRequest);
+      } else if (data.type === 'commitment-response') {
+        validator?.handleCommitmentResponse(data as CommitmentResponse);
       }
     } catch {}
   });

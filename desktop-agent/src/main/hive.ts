@@ -40,6 +40,9 @@ export class AgentHiveClient {
   private backoffUntil = 0;
   private static readonly MAX_BACKOFF_MS = 60000; // 1 minute max
 
+  // SECURITY: Random secret for HMAC fallback block hash (when Hive API is unavailable)
+  private readonly fallbackSecret = require('crypto').randomBytes(32).toString('hex');
+
   constructor(config: AgentHiveConfig) {
     this.config = config;
     this.client = new Client(config.nodes || DEFAULT_HIVE_NODES, {
@@ -113,9 +116,11 @@ export class AgentHiveClient {
       return props.head_block_id;
     } catch (err) {
       console.error('[Hive] Failed to get block hash:', err);
-      const crypto = await import('crypto');
-      return crypto.createHash('sha256')
-        .update(`fallback-${Date.now()}`)
+      // SECURITY: Use HMAC with local secret instead of predictable SHA256(timestamp)
+      const nodeCrypto = require('crypto');
+      const secret = this.config.postingKey || this.fallbackSecret;
+      return nodeCrypto.createHmac('sha256', secret)
+        .update(`fallback-${Date.now()}-${nodeCrypto.randomBytes(8).toString('hex')}`)
         .digest('hex');
     }
   }
@@ -348,6 +353,22 @@ export class AgentHiveClient {
     } catch (err: any) {
       console.error('[Hive] Signature verification failed:', err.message);
       return false;
+    }
+  }
+
+  /**
+   * Sign a message with the posting key for PubSub message authentication.
+   * Returns the signature string, or null if no posting key is configured.
+   */
+  signMessage(message: string): string | null {
+    if (!this.config.postingKey) return null;
+    try {
+      const key = PrivateKey.fromString(this.config.postingKey);
+      const hash = cryptoUtils.sha256(message);
+      return key.sign(hash).toString();
+    } catch (err: any) {
+      console.error('[Hive] Failed to sign message:', err.message);
+      return null;
     }
   }
 
