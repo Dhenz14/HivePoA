@@ -85,25 +85,25 @@
 }
 
 .dark {
-  /* Hive Red Theme - Dark Mode (Primary) */
-  --background: 220 15% 10%; /* Dark Blue-Grey */
+  /* Hive Red Theme - Dark Mode (Primary) — Deeper for glass contrast */
+  --background: 220 15% 7%;
   --foreground: 0 0% 98%;
-  --card: 220 15% 13%;
+  --card: 220 15% 11%;
   --card-foreground: 0 0% 98%;
-  --popover: 220 15% 13%;
+  --popover: 220 15% 11%;
   --popover-foreground: 0 0% 98%;
-  --primary: 350 83% 55%; /* Hive Red - Slightly brighter for dark mode */
+  --primary: 350 83% 55%;
   --primary-foreground: 0 0% 98%;
-  --secondary: 220 15% 20%;
+  --secondary: 220 15% 16%;
   --secondary-foreground: 0 0% 98%;
-  --muted: 220 15% 20%;
+  --muted: 220 15% 16%;
   --muted-foreground: 240 5% 64.9%;
-  --accent: 220 15% 20%;
+  --accent: 220 15% 16%;
   --accent-foreground: 0 0% 98%;
   --destructive: 0 62.8% 30.6%;
   --destructive-foreground: 0 0% 98%;
-  --border: 220 15% 20%;
-  --input: 220 15% 20%;
+  --border: 220 15% 18%;
+  --input: 220 15% 18%;
   --ring: 350 83% 55%;
   --chart-1: 220 70% 50%;
   --chart-2: 160 60% 45%;
@@ -131,4 +131,87 @@
   h1, h2, h3, h4, h5, h6 {
     @apply font-display tracking-tight;
   }
+}
+
+/* ─── Web3 Visual Utilities ─────────────────────────────────── */
+
+@layer utilities {
+  .glass {
+    backdrop-filter: blur(12px);
+    background: hsl(220 15% 11% / 0.6);
+    border: 1px solid hsl(0 0% 100% / 0.06);
+  }
+
+  .text-gradient-hero {
+    background: linear-gradient(135deg, hsl(0 0% 100%) 0%, hsl(350 83% 65%) 50%, hsl(0 0% 100%) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .text-gradient-subtle {
+    background: linear-gradient(135deg, hsl(0 0% 90%) 0%, hsl(350 83% 60%) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .glow-red {
+    box-shadow: 0 0 20px hsl(350 83% 55% / 0.15), 0 0 60px hsl(350 83% 55% / 0.05);
+  }
+
+  .glow-green {
+    box-shadow: 0 0 20px hsl(142 76% 36% / 0.2), 0 0 60px hsl(142 76% 36% / 0.06);
+  }
+
+  .glow-blue {
+    box-shadow: 0 0 20px hsl(220 70% 50% / 0.2), 0 0 60px hsl(220 70% 50% / 0.06);
+  }
+
+  .bg-grid-pattern {
+    background-image: radial-gradient(circle, hsl(0 0% 100% / 0.15) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+}
+
+/* ─── Animations ────────────────────────────────────────────── */
+
+@keyframes pulse-ring {
+  0% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(2.5); opacity: 0; }
+}
+
+.pulse-ring::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: inherit;
+  animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-4px); }
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+/* ─── Custom Scrollbar ──────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(220 15% 25%);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(350 83% 55% / 0.5);
 }
