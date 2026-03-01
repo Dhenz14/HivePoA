@@ -61,6 +61,9 @@ export class KuboManager {
     if (!fs.existsSync(path.join(this.repoPath, 'config'))) {
       console.log('[Kubo] Initializing IPFS repository...');
       await this.initRepo();
+    } else {
+      // Apply optimized settings to existing repos (e.g. after upgrade)
+      this.ensureOptimizedConfig();
     }
 
     // Start the daemon
@@ -145,6 +148,35 @@ export class KuboManager {
       console.log('[Kubo] Desktop configuration applied');
     } catch (error) {
       console.error('[Kubo] Failed to configure:', error);
+    }
+  }
+
+  /** Apply optimized settings to existing IPFS repos (after agent upgrade). */
+  private ensureOptimizedConfig(): void {
+    const configPath = path.join(this.repoPath, 'config');
+    try {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      let changed = false;
+
+      // Downgrade from full DHT server to client mode
+      if (!config.Routing || config.Routing.Type !== 'dhtclient') {
+        config.Routing = { ...config.Routing, Type: 'dhtclient' };
+        changed = true;
+      }
+
+      // Lower connection limits if still at old defaults (50/200)
+      const cm = config.Swarm?.ConnMgr;
+      if (cm && (cm.HighWater >= 200 || cm.LowWater >= 50)) {
+        config.Swarm.ConnMgr = { LowWater: 20, HighWater: 50, GracePeriod: '30s' };
+        changed = true;
+      }
+
+      if (changed) {
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+        console.log('[Kubo] Upgraded existing IPFS config (dhtclient + lower connections)');
+      }
+    } catch {
+      // Non-critical — will use existing config
     }
   }
 
