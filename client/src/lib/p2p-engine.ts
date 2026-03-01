@@ -1,6 +1,7 @@
 import Hls, { HlsConfig } from 'hls.js';
 import { HlsJsP2PEngine } from 'p2p-media-loader-hlsjs';
 import { SegmentCache, getSegmentCache } from './segment-cache';
+import { getApiBase, hasBackend } from './api-mode';
 
 export interface P2PStats {
   httpDownloaded: number;
@@ -249,6 +250,7 @@ export class P2PVideoEngine {
 
   /** Report final P2P stats to the server for contribution tracking */
   reportFinalStats(): void {
+    if (!hasBackend()) return;
     if (this.currentStats.p2pUploaded === 0 && this.currentStats.p2pDownloaded === 0) return;
 
     const body = JSON.stringify({
@@ -259,11 +261,13 @@ export class P2PVideoEngine {
       p2pRatio: this.currentStats.p2pRatio,
     });
 
+    const url = `${getApiBase()}/api/p2p/report`;
+
     // Use sendBeacon for reliability on page unload, fall back to fetch
     if (navigator.sendBeacon) {
-      navigator.sendBeacon('/api/p2p/report', new Blob([body], { type: 'application/json' }));
+      navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }));
     } else {
-      fetch('/api/p2p/report', {
+      fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,

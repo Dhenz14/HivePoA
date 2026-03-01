@@ -1,3 +1,5 @@
+import { getBackendMode } from './api-mode';
+
 type MessageHandler = (message: any) => void;
 
 interface P2PSignalingClientOptions {
@@ -38,6 +40,13 @@ export class P2PSignalingClient {
   }
 
   connect(url?: string) {
+    const mode = getBackendMode();
+    if (mode === 'standalone') {
+      // No backend — skip signaling entirely, P2P works via public trackers
+      this.shouldReconnect = false;
+      return;
+    }
+
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       return;
     }
@@ -73,6 +82,10 @@ export class P2PSignalingClient {
   }
 
   private getDefaultWsUrl(): string {
+    const mode = getBackendMode();
+    if (mode === 'agent') {
+      return 'ws://127.0.0.1:5111/p2p';
+    }
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${protocol}//${window.location.host}/p2p`;
   }
