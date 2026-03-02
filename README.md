@@ -2,6 +2,8 @@
 
 Decentralized storage validation protocol built on the Hive L1 blockchain. Validators run Proof of Access (PoA) challenges against IPFS storage nodes, earn HBD micropayments for honest work, and broadcast results on-chain via `custom_json` operations.
 
+**Live Demo:** [dhenz14.github.io/HivePoA](https://dhenz14.github.io/HivePoA/) (static site — browse the UI without a backend)
+
 ## Architecture
 
 - **Frontend**: React 19, TypeScript, Tailwind CSS v4, shadcn/ui, TanStack Query, Wouter
@@ -23,14 +25,17 @@ Decentralized storage validation protocol built on the Hive L1 blockchain. Valid
 | **P2P CDN** | WebRTC peer-to-peer video delivery via p2p-media-loader with segment caching in IndexedDB |
 | **Storage Contracts** | Uploader-funded storage with per-challenge rewards, budget tracking, and automatic expiry |
 | **Validator Dashboard** | Real-time challenge monitoring, reputation history, blacklist management |
+| **Validator Opt-In/Out** | Eligible users choose whether to activate as a validator — resign any time from the dashboard |
+| **Dark / Light Theme** | Toggle in the sidebar footer, persisted to localStorage |
 
 ## Project Scale
 
-- 140+ API endpoints across 25 services
-- 43 database tables (Drizzle ORM schema)
+- 154 API endpoints across 25 services
+- 42 database tables (Drizzle ORM schema)
 - 24 client pages (including video watch page with P2P)
-- 96 automated tests (vitest)
+- 168 automated tests across 5 test suites (vitest)
 - Full Docker deployment stack
+- GitHub Pages static site with auto-deploy
 
 ## Quick Start
 
@@ -80,6 +85,31 @@ npm test          # Run all tests
 npm run test:watch # Watch mode
 ```
 
+### GitHub Pages (Static Site)
+
+The app auto-deploys to [dhenz14.github.io/HivePoA](https://dhenz14.github.io/HivePoA/) on every push to `main`. In static mode:
+
+- **Works without a backend**: Browse the UI, view pages, toggle dark/light theme
+- **Login requires a backend**: Either run the full server locally or run the Desktop Agent (port 5111) — the app auto-detects which is available
+- **No validator ops**: Challenge queue, fraud detection, and payouts need the Express server + PostgreSQL
+
+### Windows Development Notes
+
+```bash
+# Port 5000 may conflict on Windows — use PORT=3000
+export PORT=3000
+
+# If IPFS Kubo is installed separately (not bundled), the server auto-detects
+# an external daemon on port 5001 before trying to start its own
+
+# pgcrypto extension is required
+psql -U postgres -d hivepoa -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+
+# Start the dev server
+export NODE_ENV=development DATABASE_URL=postgresql://postgres@localhost:5432/hivepoa IPFS_API_URL=http://127.0.0.1:5001 PORT=3000
+npx tsx server/index.ts
+```
+
 ## Environment Variables
 
 See [.env.example](.env.example) for all 15+ variables with documentation.
@@ -125,6 +155,23 @@ Witnesses can vouch for one non-witness Hive user, granting them full validator 
 | GET | `/api/wot/:username` | Public | Check vouch status for a user |
 | POST | `/api/wot/vouch` | Witness | Vouch for a non-witness user |
 | DELETE | `/api/wot/vouch` | Witness | Revoke your vouch |
+
+## Validator Opt-In / Opt-Out
+
+Eligible users (top-150 witnesses or vouched by a witness) are **not** auto-assigned as validators. On first login, an opt-in dialog asks whether they want to activate validator duties.
+
+- **Opt in**: Click "Activate Validator" in the dialog or sidebar
+- **Resign**: Click "Resign" on the Validator Dashboard header — confirmation required
+- **Re-activate**: Click "Activate Validator" in the sidebar at any time
+
+The choice is stored server-side on the session (`validatorOptedIn` column in `user_sessions`). Non-eligible users never see the dialog.
+
+**API Endpoints:**
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| POST | `/api/validator/opt-in` | Bearer | Activate validator role |
+| POST | `/api/validator/resign` | Bearer | Deactivate validator role |
 
 ## Storage Economics
 
