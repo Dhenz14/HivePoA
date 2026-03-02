@@ -283,13 +283,18 @@ export class TranscodingService {
     ];
 
     for (const node of nodes) {
-      await storage.createEncoderNode({
-        ...node,
-        availability: 'available',
-        status: 'active',
-        jobsCompleted: Math.floor(Math.random() * 100),
-        avgProcessingTime: 30 + Math.floor(Math.random() * 60),
-      });
+      try {
+        await storage.createEncoderNode({
+          ...node,
+          availability: 'available',
+          status: 'active',
+          jobsCompleted: Math.floor(Math.random() * 100),
+          avgProcessingTime: 30 + Math.floor(Math.random() * 60),
+        });
+      } catch (err: any) {
+        if (err?.code === '23505') continue; // unique constraint — already seeded by parallel process
+        throw err;
+      }
     }
 
     logTranscode.info("[Transcoding Service] Seeded sample encoder nodes");
