@@ -27,11 +27,18 @@ export async function detectBackendMode(): Promise<BackendMode> {
 
   _modePromise = (async () => {
     // If we're on localhost with the Express server (dev mode), use same-origin
+    // No need to probe the desktop agent — we're already running the full server
     const isLocalDev = typeof window !== "undefined" &&
       (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") &&
       window.location.port !== "";
 
-    // Try to detect the desktop agent
+    if (isLocalDev) {
+      _mode = "server";
+      notifyListeners();
+      return _mode;
+    }
+
+    // On GitHub Pages (or other external host) — probe for desktop agent
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 2000);
@@ -49,12 +56,7 @@ export async function detectBackendMode(): Promise<BackendMode> {
       // Agent not available
     }
 
-    // No agent — check if we're in local dev with Express server
-    if (isLocalDev) {
-      _mode = "server";
-    } else {
-      _mode = "standalone";
-    }
+    _mode = "standalone";
     notifyListeners();
     return _mode;
   })();
