@@ -46,6 +46,12 @@ async function buildAll() {
   ];
   const externals = allDeps.filter((dep) => !allowlist.includes(dep));
 
+  // better-sqlite3 is only used by the desktop agent (SQLite mode).
+  // It's not in the root package.json, so add it explicitly as external.
+  if (!externals.includes("better-sqlite3")) {
+    externals.push("better-sqlite3");
+  }
+
   await esbuild({
     entryPoints: ["server/index.ts"],
     platform: "node",

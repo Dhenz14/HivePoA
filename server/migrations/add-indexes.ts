@@ -81,7 +81,7 @@ export async function addIndexes(): Promise<void> {
 
   if (process.env.SQLITE_DB_PATH) {
     // SQLite mode — use the raw better-sqlite3 connection
-    const { getRawSQLiteDb } = require("./db-sqlite");
+    const { getRawSQLiteDb } = require("../db-sqlite");
     const rawDb = getRawSQLiteDb();
     for (const stmt of indexes) {
       rawDb.exec(stmt);
