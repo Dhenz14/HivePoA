@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
-import { getApiBase, hasBackend, detectBackendMode } from "@/lib/api-mode";
+import { getApiBase, getBackendMode, hasBackend, detectBackendMode } from "@/lib/api-mode";
 
 interface ValidatorUser {
   username: string;
@@ -29,8 +29,10 @@ const ValidatorAuthContext = createContext<ValidatorAuthContextType | null>(null
 const STORAGE_KEY = "spk_validator_session";
 const DESKTOP_AGENT_URL = "http://127.0.0.1:5111";
 
-/** Sync username to desktop agent if it's running (fire-and-forget) */
+/** Sync username to desktop agent if it's running (fire-and-forget).
+ *  Only attempts if backend mode is "agent" to avoid ERR_CONNECTION_REFUSED noise. */
 function syncToDesktopAgent(username: string): void {
+  if (getBackendMode() !== "agent") return;
   fetch(`${DESKTOP_AGENT_URL}/api/config`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

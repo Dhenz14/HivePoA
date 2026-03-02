@@ -397,9 +397,8 @@ export async function registerRoutes(
       agentWss.handleUpgrade(request, socket, head, (ws) => {
         agentWss.emit("connection", ws, request);
       });
-    } else {
-      socket.destroy();
     }
+    // Other paths (e.g. /vite-hmr) are left for Vite's HMR handler
   });
 
   // Start background services
