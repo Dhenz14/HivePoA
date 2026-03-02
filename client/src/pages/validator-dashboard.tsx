@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
@@ -7,8 +8,9 @@ import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Shield, Activity, Clock, Skull, TrendingUp, TrendingDown, CheckCircle2, XCircle, Timer, Zap, Server, Users, UserPlus, UserMinus, AlertTriangle } from "lucide-react";
+import { Shield, Activity, Clock, Skull, TrendingUp, TrendingDown, CheckCircle2, XCircle, Timer, Zap, Server, Users, UserPlus, UserMinus, AlertTriangle, LogOut } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip } from "recharts";
 import { cn } from "@/lib/utils";
@@ -108,7 +110,8 @@ function getStatusBadgeVariant(status: string): "default" | "secondary" | "destr
 }
 
 export default function ValidatorDashboard() {
-  const { user } = useValidatorAuth();
+  const { user, resign } = useValidatorAuth();
+  const [, setLocation] = useLocation();
   const username = user?.username || "demo_user";
   const sessionToken = user?.sessionToken;
   
@@ -158,11 +161,39 @@ export default function ValidatorDashboard() {
           </div>
           <p className="text-muted-foreground mt-1">Network policing and challenge monitoring</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
           <span className="px-3 py-1 bg-primary/10 text-primary text-xs rounded-full font-mono flex items-center gap-2 border border-primary/20" data-testid="status-live-updates">
             <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
             Live Updates
           </span>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="outline" size="sm" className="text-destructive border-destructive/30 hover:bg-destructive/10">
+                <LogOut className="h-3.5 w-3.5 mr-1.5" />
+                Resign
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Resign as Validator?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  You will lose access to validator tools including the dashboard, challenge queue, and fraud detection. You can re-activate from the sidebar at any time.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  onClick={async () => {
+                    await resign();
+                    setLocation("/");
+                  }}
+                >
+                  Resign
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       </div>
 

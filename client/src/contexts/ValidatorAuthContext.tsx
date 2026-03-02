@@ -8,6 +8,7 @@ interface ValidatorUser {
   isVouched: boolean;
   sponsor?: string;
   sessionToken: string;
+  validatorOptedIn: boolean | null; // null = not yet chosen, true = opted in, false = declined/resigned
 }
 
 interface ValidatorAuthContextType {
@@ -15,8 +16,12 @@ interface ValidatorAuthContextType {
   isLoading: boolean;
   isAuthenticated: boolean;
   isValidator: boolean;
+  isEligibleValidator: boolean;
+  needsValidatorChoice: boolean;
   login: (username: string, signature: string, challenge: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
+  optIn: () => Promise<{ success: boolean; error?: string }>;
+  resign: () => Promise<{ success: boolean; error?: string }>;
 }
 
 const ValidatorAuthContext = createContext<ValidatorAuthContextType | null>(null);
@@ -54,6 +59,7 @@ async function validateSession(username: string, sessionToken: string): Promise<
         isVouched: data.isVouched || false,
         sponsor: data.vouchSponsor,
         sessionToken,
+        validatorOptedIn: data.validatorOptedIn ?? null,
       };
     }
     return null;
@@ -93,6 +99,16 @@ export function ValidatorAuthProvider({ children }: { children: ReactNode }) {
     verifyStoredSession();
   }, []);
 
+  /** Persist user to localStorage whenever it changes */
+  const updateUser = useCallback((newUser: ValidatorUser) => {
+    setUser(newUser);
+    const session = {
+      user: newUser,
+      expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+  }, []);
+
   const login = useCallback(async (username: string, signature: string, challenge: string): Promise<{ success: boolean; error?: string }> => {
     try {
       // Ensure backend detection is complete before checking
@@ -123,32 +139,67 @@ export function ValidatorAuthProvider({ children }: { children: ReactNode }) {
         isVouched: data.isVouched || false,
         sponsor: data.vouchSponsor,
         sessionToken: data.sessionToken,
+        validatorOptedIn: data.validatorOptedIn ?? null,
       };
 
-      const session = {
-        user: validatorUser,
-        expiresAt: Date.now() + 24 * 60 * 60 * 1000,
-      };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
-      setUser(validatorUser);
-
+      updateUser(validatorUser);
       syncToDesktopAgent(data.username);
 
       return { success: true };
     } catch (error) {
       return { success: false, error: "Network error" };
     }
-  }, []);
+  }, [updateUser]);
 
   const logout = useCallback(() => {
     localStorage.removeItem(STORAGE_KEY);
     setUser(null);
   }, []);
 
-  const isValidator = !!user && (user.isTopWitness || user.isVouched);
+  const optIn = useCallback(async (): Promise<{ success: boolean; error?: string }> => {
+    if (!user) return { success: false, error: "Not logged in" };
+    try {
+      const response = await fetch(`${getApiBase()}/api/validator/opt-in`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${user.sessionToken}`,
+        },
+      });
+      const data = await response.json();
+      if (!response.ok) return { success: false, error: data.error || "Failed to opt in" };
+      updateUser({ ...user, validatorOptedIn: true });
+      return { success: true };
+    } catch {
+      return { success: false, error: "Network error" };
+    }
+  }, [user, updateUser]);
+
+  const resign = useCallback(async (): Promise<{ success: boolean; error?: string }> => {
+    if (!user) return { success: false, error: "Not logged in" };
+    try {
+      const response = await fetch(`${getApiBase()}/api/validator/resign`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${user.sessionToken}`,
+        },
+      });
+      const data = await response.json();
+      if (!response.ok) return { success: false, error: data.error || "Failed to resign" };
+      updateUser({ ...user, validatorOptedIn: false });
+      return { success: true };
+    } catch {
+      return { success: false, error: "Network error" };
+    }
+  }, [user, updateUser]);
+
+  const isEligibleValidator = !!user && (user.isTopWitness || user.isVouched);
+  const isValidator = isEligibleValidator && user!.validatorOptedIn === true;
+  const needsValidatorChoice = isEligibleValidator && user!.validatorOptedIn === null;
 
   return (
-    <ValidatorAuthContext.Provider value={{ user, isLoading, isAuthenticated: !!user, isValidator, login, logout }}>
+    <ValidatorAuthContext.Provider value={{ user, isLoading, isAuthenticated: !!user, isValidator, isEligibleValidator, needsValidatorChoice, login, logout, optIn, resign }}>
       {children}
     </ValidatorAuthContext.Provider>
   );

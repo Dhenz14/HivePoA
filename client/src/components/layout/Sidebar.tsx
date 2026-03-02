@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, HardDrive, Wallet, Server, Settings, Globe, Hexagon, Play, Wifi, Download, Coins, ShoppingBag, BarChart3, Shield, Zap, AlertTriangle, LogOut, FileText, Landmark, Users, Video, Key, ChevronRight } from "lucide-react";
+import { LayoutDashboard, HardDrive, Wallet, Server, Settings, Globe, Hexagon, Play, Wifi, Download, Coins, ShoppingBag, BarChart3, Shield, Zap, AlertTriangle, LogOut, FileText, Landmark, Users, Video, Key, ChevronRight, Sun, Moon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useNodeConfig } from "@/contexts/NodeConfigContext";
 import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
+import { useTheme } from "@/contexts/ThemeContext";
 
 interface NavItem {
   href: string;
@@ -77,7 +78,9 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 export function Sidebar() {
   const [location] = useLocation();
   const { config } = useNodeConfig();
-  const { user, isAuthenticated, isValidator, logout } = useValidatorAuth();
+  const { user, isAuthenticated, isValidator, isEligibleValidator, optIn, logout } = useValidatorAuth();
+  const { theme, toggleTheme } = useTheme();
+  const [isActivating, setIsActivating] = useState(false);
 
   const navigateLinks: NavItem[] = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -216,6 +219,24 @@ export function Sidebar() {
             <CollapsibleGroup group={validatorGroup} location={location} />
           </>
         )}
+        {isEligibleValidator && !isValidator && (
+          <>
+            <SectionLabel>Validator</SectionLabel>
+            <button
+              type="button"
+              onClick={async () => {
+                setIsActivating(true);
+                await optIn();
+                setIsActivating(false);
+              }}
+              disabled={isActivating}
+              className="flex items-center gap-2.5 w-full px-3 py-2 text-sm rounded-lg text-primary hover:bg-primary/10 transition-colors border border-dashed border-primary/30"
+            >
+              <Shield className="w-4 h-4" />
+              {isActivating ? "Activating..." : "Activate Validator"}
+            </button>
+          </>
+        )}
 
         {/* System */}
         <SectionLabel>System</SectionLabel>
@@ -226,18 +247,28 @@ export function Sidebar() {
 
       {/* Footer */}
       <div className="p-3 border-t border-white/6">
-        <div className="flex items-center gap-2.5 px-2 py-1.5 text-xs text-muted-foreground">
-          <div className={cn(
-            "w-2 h-2 rounded-full shrink-0",
-            config.isConnected ? "bg-green-500" : "bg-yellow-500"
-          )} />
-          <span className="truncate">
-            {config.mode === "demo"
-              ? "Demo Mode"
-              : config.isConnected
-                ? "IPFS Connected"
-                : "IPFS Disconnected"}
-          </span>
+        <div className="flex items-center justify-between px-2 py-1.5">
+          <div className="flex items-center gap-2.5 text-xs text-muted-foreground">
+            <div className={cn(
+              "w-2 h-2 rounded-full shrink-0",
+              config.isConnected ? "bg-green-500" : "bg-yellow-500"
+            )} />
+            <span className="truncate">
+              {config.mode === "demo"
+                ? "Demo Mode"
+                : config.isConnected
+                  ? "IPFS Connected"
+                  : "IPFS Disconnected"}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={toggleTheme}
+            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+          >
+            {theme === "dark" ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+          </button>
         </div>
         <div className="mt-1 text-[10px] text-muted-foreground/30 px-2 font-mono">
           v0.1.0-alpha

@@ -1779,14 +1779,18 @@ export class DatabaseStorage implements IStorage {
   }
 
   // User session CRUD (persistent, replaces in-memory Map)
-  async createSession(token: string, username: string, expiresAt: Date, role: string = "user"): Promise<void> {
-    await db.insert(userSessions).values({ token, username, expiresAt, role });
+  async createSession(token: string, username: string, expiresAt: Date, role: string = "user", validatorOptedIn?: boolean | null): Promise<void> {
+    await db.insert(userSessions).values({ token, username, expiresAt, role, validatorOptedIn: validatorOptedIn ?? null });
   }
 
-  async getSession(token: string): Promise<{ username: string; expiresAt: Date; role: string } | undefined> {
+  async getSession(token: string): Promise<{ username: string; expiresAt: Date; role: string; validatorOptedIn: boolean | null } | undefined> {
     const [row] = await db.select().from(userSessions).where(eq(userSessions.token, token)).limit(1);
     if (!row) return undefined;
-    return { username: row.username, expiresAt: row.expiresAt, role: row.role };
+    return { username: row.username, expiresAt: row.expiresAt, role: row.role, validatorOptedIn: row.validatorOptedIn };
+  }
+
+  async updateSessionValidatorOptIn(token: string, optedIn: boolean): Promise<void> {
+    await db.update(userSessions).set({ validatorOptedIn: optedIn }).where(eq(userSessions.token, token));
   }
 
   async deleteSession(token: string): Promise<void> {

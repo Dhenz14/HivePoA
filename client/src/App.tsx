@@ -11,6 +11,8 @@ import NotFound from "@/pages/not-found";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Layout } from "@/components/layout/Layout";
 import { AgentRequired } from "@/components/AgentRequired";
+import { ValidatorOptInDialog } from "@/components/ValidatorOptInDialog";
+import { ThemeProvider } from "@/contexts/ThemeContext";
 import { detectBackendMode } from "@/lib/api-mode";
 import Dashboard from "@/pages/dashboard";
 import Storage from "@/pages/storage";
@@ -37,7 +39,7 @@ import Watch from "@/pages/watch";
 import generatedImage from '@assets/generated_images/a_dark,_futuristic_abstract_mesh_background_with_red_accents..png';
 
 function ProtectedValidatorRoute({ component: Component }: { component: React.ComponentType }) {
-  const { isAuthenticated, isValidator, isLoading } = useValidatorAuth();
+  const { isAuthenticated, isValidator, isEligibleValidator, isLoading } = useValidatorAuth();
   const [, setLocation] = useLocation();
 
   if (isLoading) {
@@ -53,7 +55,11 @@ function ProtectedValidatorRoute({ component: Component }: { component: React.Co
     return (
       <div className="p-8 text-center text-muted-foreground">
         <p className="text-lg font-medium mb-2">Validator Access Required</p>
-        <p>Only top 150 Hive witnesses and vouched users can access validator features.</p>
+        <p>
+          {isEligibleValidator
+            ? "You have not activated your validator role. Use the sidebar to activate."
+            : "Only top 150 Hive witnesses and vouched users can access validator features."}
+        </p>
       </div>
     );
   }
@@ -115,6 +121,7 @@ function App() {
   }, []);
 
   return (
+    <ThemeProvider>
     <QueryClientProvider client={queryClient}>
       <NodeConfigProvider>
         <ValidatorAuthProvider>
@@ -127,6 +134,7 @@ function App() {
               </div>
               
               <Toaster />
+              <ValidatorOptInDialog />
               <ErrorBoundary>
                 <Router base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
                   <AppRoutes />
@@ -137,6 +145,7 @@ function App() {
         </ValidatorAuthProvider>
       </NodeConfigProvider>
     </QueryClientProvider>
+    </ThemeProvider>
   );
 }
 

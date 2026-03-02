@@ -531,6 +531,7 @@ export const userSessions = pgTable("user_sessions", {
   token: varchar("token").primaryKey(),
   username: text("username").notNull(),
   role: text("role").notNull().default("user"), // "user" | "validator" | "agent"
+  validatorOptedIn: boolean("validator_opted_in"), // null = not yet chosen, true = opted in, false = declined/resigned
   expiresAt: timestamp("expires_at").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

@@ -1966,10 +1966,12 @@ export async function registerRoutes(
       }
 
       // Generate session token for any authenticated Hive user
+      // Eligible validators start with validatorOptedIn = null (triggers opt-in dialog on client)
       await storage.cleanExpiredSessions();
       const sessionToken = generateSessionToken();
-      const role = (isTopWitness || isVouched) ? "validator" : "user";
-      await storage.createSession(sessionToken, username, new Date(Date.now() + 24 * 60 * 60 * 1000), role);
+      const isEligible = isTopWitness || isVouched;
+      const role = isEligible ? "validator" : "user";
+      await storage.createSession(sessionToken, username, new Date(Date.now() + 24 * 60 * 60 * 1000), role, isEligible ? null : false);
 
       res.json({
         success: true,
@@ -1980,6 +1982,7 @@ export async function registerRoutes(
         witnessRank: isTopWitness ? witnessRank : null,
         sessionToken,
         role,
+        validatorOptedIn: isEligible ? null : false,
         message: isTopWitness
           ? `Welcome, Witness #${witnessRank}!`
           : isVouched
@@ -2033,9 +2036,38 @@ export async function registerRoutes(
       }
 
       // Session is valid for any authenticated Hive user; witness/vouch status is metadata
-      res.json({ valid: true, username, isTopWitness, isVouched, vouchSponsor, witnessRank });
+      res.json({ valid: true, username, isTopWitness, isVouched, vouchSponsor, witnessRank, validatorOptedIn: session.validatorOptedIn });
     } catch (error) {
       res.status(500).json({ valid: false, error: "Validation failed" });
+    }
+  });
+
+  // Opt-in as validator (requires auth + eligibility)
+  app.post("/api/validator/opt-in", requireAuth, async (req, res) => {
+    try {
+      const token = req.headers.authorization!.slice(7);
+      const session = await storage.getSession(token);
+      if (!session || session.role !== "validator") {
+        res.status(403).json({ error: "Not eligible for validator role" });
+        return;
+      }
+      await storage.updateSessionValidatorOptIn(token, true);
+      res.json({ success: true, validatorOptedIn: true });
+    } catch (error) {
+      logRoutes.error({ err: error }, "Validator opt-in error");
+      res.status(500).json({ error: "Failed to opt in" });
+    }
+  });
+
+  // Resign as validator (requires auth)
+  app.post("/api/validator/resign", requireAuth, async (req, res) => {
+    try {
+      const token = req.headers.authorization!.slice(7);
+      await storage.updateSessionValidatorOptIn(token, false);
+      res.json({ success: true, validatorOptedIn: false });
+    } catch (error) {
+      logRoutes.error({ err: error }, "Validator resign error");
+      res.status(500).json({ error: "Failed to resign" });
     }
   });
 
