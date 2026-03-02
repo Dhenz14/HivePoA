@@ -202,9 +202,9 @@ export class JobScheduler {
         await db.update(encoderNodes)
           .set({
             jobsCompleted: sql`${encoderNodes.jobsCompleted} + 1`,
-            jobsInProgress: sql`GREATEST(${encoderNodes.jobsInProgress} - 1, 0)`,
+            jobsInProgress: sql`case when ${encoderNodes.jobsInProgress} > 1 then ${encoderNodes.jobsInProgress} - 1 else 0 end`,
             successRate: newSuccessRate,
-            reputationScore: sql`LEAST(${encoderNodes.reputationScore} + ${reputationBoost}, 1000)`,
+            reputationScore: sql`case when ${encoderNodes.reputationScore} + ${reputationBoost} < 1000 then ${encoderNodes.reputationScore} + ${reputationBoost} else 1000 end`,
           })
           .where(eq(encoderNodes.id, job.assignedEncoderId));
       }
@@ -241,9 +241,9 @@ export class JobScheduler {
           
           await db.update(encoderNodes)
             .set({
-              jobsInProgress: sql`GREATEST(${encoderNodes.jobsInProgress} - 1, 0)`,
+              jobsInProgress: sql`case when ${encoderNodes.jobsInProgress} > 1 then ${encoderNodes.jobsInProgress} - 1 else 0 end`,
               successRate: Math.max(0, newSuccessRate),
-              reputationScore: sql`GREATEST(${encoderNodes.reputationScore} - 25, 0)`, // Penalty for failure
+              reputationScore: sql`case when ${encoderNodes.reputationScore} > 25 then ${encoderNodes.reputationScore} - 25 else 0 end`,
             })
             .where(eq(encoderNodes.id, job.assignedEncoderId));
         }
@@ -287,11 +287,11 @@ export class JobScheduler {
 
   async getQueueStats(): Promise<QueueStats> {
     const [stats] = await db.select({
-      queued: sql<number>`count(*) filter (where ${encodingJobs.status} = 'queued')`,
-      assigned: sql<number>`count(*) filter (where ${encodingJobs.status} = 'assigned')`,
-      processing: sql<number>`count(*) filter (where ${encodingJobs.status} in ('downloading', 'encoding', 'uploading'))`,
-      completed: sql<number>`count(*) filter (where ${encodingJobs.status} = 'completed')`,
-      failed: sql<number>`count(*) filter (where ${encodingJobs.status} = 'failed')`,
+      queued: sql<number>`sum(case when ${encodingJobs.status} = 'queued' then 1 else 0 end)`,
+      assigned: sql<number>`sum(case when ${encodingJobs.status} = 'assigned' then 1 else 0 end)`,
+      processing: sql<number>`sum(case when ${encodingJobs.status} in ('downloading', 'encoding', 'uploading') then 1 else 0 end)`,
+      completed: sql<number>`sum(case when ${encodingJobs.status} = 'completed' then 1 else 0 end)`,
+      failed: sql<number>`sum(case when ${encodingJobs.status} = 'failed' then 1 else 0 end)`,
     }).from(encodingJobs);
 
     return {

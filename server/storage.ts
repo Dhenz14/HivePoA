@@ -341,6 +341,41 @@ export interface IStorage {
   createVouch(vouch: InsertWebOfTrust): Promise<WebOfTrust>;
   revokeVouch(sponsorUsername: string, reason: string): Promise<void>;
   isVouchedValidator(username: string): Promise<boolean>;
+
+  // User Sessions (persistent, survives server restarts)
+  createSession(token: string, username: string, expiresAt: Date, role?: string, validatorOptedIn?: boolean | null): Promise<void>;
+  getSession(token: string): Promise<{ username: string; expiresAt: Date; role: string; validatorOptedIn: boolean | null } | undefined>;
+  updateSessionValidatorOptIn(token: string, optedIn: boolean): Promise<void>;
+  deleteSession(token: string): Promise<void>;
+  cleanExpiredSessions(): Promise<void>;
+
+  // Agent API Keys
+  createAgentKey(apiKey: string, hiveUsername: string, label?: string): Promise<void>;
+  getAgentByKey(apiKey: string): Promise<{ hiveUsername: string; id: string } | undefined>;
+  deleteAgentKey(id: string): Promise<void>;
+
+  // File Refs (PoA 2.0)
+  getFileRefs(cid: string): Promise<string[] | null>;
+  saveFileRefs(cid: string, blockCids: string[]): Promise<void>;
+  hasFileRefs(cid: string): Promise<boolean>;
+
+  // Analytics
+  getChallengesLast24Hours(): Promise<{ hour: number; successCount: number; failCount: number; totalCount: number; avgLatency: number }[]>;
+  getPerformanceMetrics(): Promise<{ totalChallenges: number; successRate: number; avgLatency: number; minLatency: number; maxLatency: number }>;
+  getNodeHealthSummary(): Promise<{ active: number; probation: number; banned: number; total: number }>;
+  getViewEventStats(username: string): Promise<{ totalViews: number; completedViews: number; pinnedContent: number }>;
+  getRecentNodeLogs(limit?: number): Promise<{ timestamp: Date; level: string; message: string; source: string }[]>;
+  getStatsAggregated(): Promise<any>;
+  getStorageNodeByUsername(username: string): Promise<StorageNode | undefined>;
+  getNodeChallenges(nodeId: string, limit: number): Promise<PoaChallenge[]>;
+  getNodeEarnings(nodeUsername: string): Promise<number>;
+  getMarketplaceFiles(): Promise<any[]>;
+
+  // Paginated queries
+  getFilesPaginated(limit: number, offset: number): Promise<{ data: File[]; total: number }>;
+  getNodesPaginated(limit: number, offset: number): Promise<{ data: StorageNode[]; total: number }>;
+  getChallengesPaginated(limit: number, offset: number): Promise<{ data: PoaChallenge[]; total: number }>;
+  getTransactionsPaginated(limit: number, offset: number): Promise<{ data: HiveTransaction[]; total: number }>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -640,7 +675,7 @@ export class DatabaseStorage implements IStorage {
         eq(validatorBlacklists.active, true)
       ));
     
-    const blacklistedIds = blacklistedNodeIds.map(b => b.nodeId);
+    const blacklistedIds = blacklistedNodeIds.map((b: any) => b.nodeId);
     
     if (blacklistedIds.length === 0) {
       return await db.select().from(storageNodes)
@@ -1376,7 +1411,7 @@ export class DatabaseStorage implements IStorage {
 
     const HBD_PER_PROOF = 0.001;
 
-    return results.map(r => ({
+    return results.map((r: any) => ({
       username: r.hiveUsername,
       proofCount: r.successCount,
       successRate: r.totalCount > 0 ? (r.successCount / r.totalCount) * 100 : 0,
@@ -1479,7 +1514,7 @@ export class DatabaseStorage implements IStorage {
     .orderBy(desc(sql`SUM(${p2pContributions.bytesShared})`))
     .limit(limit);
 
-    return results.map(r => ({
+    return results.map((r: any) => ({
       hiveUsername: r.hiveUsername || '',
       totalBytesShared: r.totalBytesShared || 0,
       totalSegments: r.totalSegments || 0,
@@ -1656,7 +1691,7 @@ export class DatabaseStorage implements IStorage {
     .orderBy(desc(poaChallenges.createdAt))
     .limit(limit);
 
-    return challenges.map(c => ({
+    return challenges.map((c: any) => ({
       timestamp: c.createdAt,
       level: c.result === "success" ? "info" : "warn",
       message: c.result === "success"
@@ -1880,4 +1915,14 @@ export class DatabaseStorage implements IStorage {
   }
 }
 
-export const storage = new DatabaseStorage();
+// Factory: SQLite when SQLITE_DB_PATH is set (desktop agent), PostgreSQL otherwise
+function createStorage(): DatabaseStorage {
+  if (process.env.SQLITE_DB_PATH) {
+    // Lazy import to avoid pulling in better-sqlite3 when running PostgreSQL mode
+    const { SQLiteStorage } = require("./storage-sqlite");
+    return new SQLiteStorage() as unknown as DatabaseStorage;
+  }
+  return new DatabaseStorage();
+}
+
+export const storage = createStorage();

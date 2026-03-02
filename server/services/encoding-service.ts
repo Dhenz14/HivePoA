@@ -385,16 +385,16 @@ export class EncodingService {
   }> {
     const [jobStats] = await db.select({
       total: sql<number>`count(*)`,
-      completed: sql<number>`count(*) filter (where ${encodingJobs.status} = 'completed')`,
-      failed: sql<number>`count(*) filter (where ${encodingJobs.status} = 'failed')`,
-      queued: sql<number>`count(*) filter (where ${encodingJobs.status} = 'queued')`,
-      processing: sql<number>`count(*) filter (where ${encodingJobs.status} in ('downloading', 'encoding', 'uploading'))`,
+      completed: sql<number>`sum(case when ${encodingJobs.status} = 'completed' then 1 else 0 end)`,
+      failed: sql<number>`sum(case when ${encodingJobs.status} = 'failed' then 1 else 0 end)`,
+      queued: sql<number>`sum(case when ${encodingJobs.status} = 'queued' then 1 else 0 end)`,
+      processing: sql<number>`sum(case when ${encodingJobs.status} in ('downloading', 'encoding', 'uploading') then 1 else 0 end)`,
     }).from(encodingJobs);
 
     const [encoderStats] = await db.select({
-      active: sql<number>`count(*) filter (where ${encoderNodes.status} = 'active')`,
-      community: sql<number>`count(*) filter (where ${encoderNodes.encoderType} = 'community' and ${encoderNodes.status} = 'active')`,
-      desktop: sql<number>`count(*) filter (where ${encoderNodes.encoderType} = 'desktop' and ${encoderNodes.status} = 'active')`,
+      active: sql<number>`sum(case when ${encoderNodes.status} = 'active' then 1 else 0 end)`,
+      community: sql<number>`sum(case when ${encoderNodes.encoderType} = 'community' and ${encoderNodes.status} = 'active' then 1 else 0 end)`,
+      desktop: sql<number>`sum(case when ${encoderNodes.encoderType} = 'desktop' and ${encoderNodes.status} = 'active' then 1 else 0 end)`,
     }).from(encoderNodes);
 
     return {

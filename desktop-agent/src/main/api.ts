@@ -823,6 +823,16 @@ export class ApiServer {
     }
   }
 
+  /** Get the underlying HTTP server (for full server route registration) */
+  getHttpServer(): http.Server | null {
+    return this.server;
+  }
+
+  /** Get the Express app (for full server route registration) */
+  getExpressApp(): Express {
+    return this.app;
+  }
+
   setAgentWS(agentWS: AgentWSClient): void {
     this.agentWS = agentWS;
   }

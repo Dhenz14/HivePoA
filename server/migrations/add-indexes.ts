@@ -4,8 +4,7 @@ import { logDB } from "../logger";
 /**
  * Creates performance-critical indexes using IF NOT EXISTS.
  * Safe to run multiple times (idempotent).
- * Note: PostgreSQL 12 does not support CONCURRENTLY inside transactions,
- * so we run each index creation as a separate statement.
+ * Supports both PostgreSQL (pool) and SQLite (getRawSQLiteDb).
  */
 export async function addIndexes(): Promise<void> {
   const indexes = [
@@ -80,13 +79,24 @@ export async function addIndexes(): Promise<void> {
     `CREATE INDEX IF NOT EXISTS idx_payout_line_items_report ON payout_line_items (report_id)`,
   ];
 
-  const client = await pool.connect();
-  try {
-    for (const sql of indexes) {
-      await client.query(sql);
+  if (process.env.SQLITE_DB_PATH) {
+    // SQLite mode — use the raw better-sqlite3 connection
+    const { getRawSQLiteDb } = require("./db-sqlite");
+    const rawDb = getRawSQLiteDb();
+    for (const stmt of indexes) {
+      rawDb.exec(stmt);
     }
-    logDB.info(`[migrations] Created ${indexes.length} indexes`);
-  } finally {
-    client.release();
+    logDB.info(`[migrations] Created ${indexes.length} indexes (SQLite)`);
+  } else {
+    // PostgreSQL mode — use the PG connection pool
+    const client = await pool.connect();
+    try {
+      for (const stmt of indexes) {
+        await client.query(stmt);
+      }
+      logDB.info(`[migrations] Created ${indexes.length} indexes`);
+    } finally {
+      client.release();
+    }
   }
 }

@@ -11,6 +11,7 @@ import { PubSubBridge } from './pubsub';
 import { ChallengeHandler, ChallengeMessage, ChallengeResponse, CommitmentRequest, CommitmentResponse } from './challenge-handler';
 import { LocalValidator } from './validator';
 import { AutoPinner } from './auto-pinner';
+import { initializeFullServer, shutdownFullServer } from './server-init';
 
 // ─── Global error handlers — prevent silent crashes ─────────────────────────
 process.on('uncaughtException', (error) => {
@@ -255,6 +256,19 @@ async function initialize(): Promise<void> {
   try {
     await apiServer.start();
     console.log('[SPK] API server started on port 5111');
+
+    // Initialize the full server backend (SQLite + 154 endpoints)
+    // Agent-specific routes are already mounted and take priority
+    const httpServer = apiServer.getHttpServer();
+    const expressApp = apiServer.getExpressApp();
+    if (httpServer && expressApp) {
+      try {
+        await initializeFullServer(httpServer, expressApp);
+        console.log('[SPK] Full server backend ready — one-stop-shop mode active');
+      } catch (err: any) {
+        console.error('[SPK] Full server init failed (agent-only endpoints still work):', err.message);
+      }
+    }
   } catch (error) {
     console.error('[SPK] Failed to start API server:', error);
   }
@@ -352,6 +366,9 @@ app.on('before-quit', async () => {
 
   // Legacy cleanup
   agentWS?.disconnect();
+
+  // Close SQLite database
+  shutdownFullServer();
 
   await kuboManager?.stop();
   await apiServer?.stop();
