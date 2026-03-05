@@ -246,6 +246,46 @@ curl http://localhost:5000/api/validators
 
 ---
 
+## Treasury Signer Role
+
+Validators who are top-150 Hive witnesses (or who have 3+ treasury vouches from witnesses) can opt in as **multisig treasury signers**. This is a separate, optional role alongside validation.
+
+### What Treasury Signers Do
+
+Your desktop agent automatically co-signs HBD reward transfers from `@hivepoa-treasury`. No manual action needed — signing is policy-driven and happens in the background.
+
+### How to Become a Treasury Signer
+
+1. **Eligibility**: Be a top-150 Hive witness, OR get 3+ treasury vouches from top-150 witnesses
+2. **Active key**: Configure your Hive active key in the desktop agent (stored encrypted via OS keychain)
+3. **Join**: Click "Join as Treasury Signer" on the Treasury dashboard page, or `POST /api/treasury/join`
+4. **Done**: Your agent starts auto-signing treasury transactions immediately
+
+### What Gets Auto-Signed
+
+| Transaction Type | Auto-Sign? | Details |
+|-----------------|------------|---------|
+| PoA reward transfers | YES | Below 1 HBD per-tx, 50 HBD/day caps |
+| Authority updates (signer rotation) | YES | When signers join/leave |
+| Blocked operation types | NO | Only `transfer` and `account_update` allowed |
+| Over-cap transactions | NO | Rejected by local policy engine |
+
+### Opting Out
+
+- `POST /api/treasury/leave` or click "Leave" on the Treasury dashboard
+- 7-day cooldown before you can rejoin
+- If you opt out 3+ times in 90 days, cooldown extends to 30 days
+- Authority update automatically removes you from on-chain multisig
+
+### Security
+
+- Your active key never leaves your machine — it's stored in Electron `safeStorage`
+- The agent independently verifies every transaction digest before signing
+- Per-transaction and daily spending caps protect against runaway payments
+- You can disable treasury signing at any time without affecting your validator role
+
+---
+
 ## Best Practices
 
 ### Security

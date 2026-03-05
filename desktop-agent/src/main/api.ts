@@ -280,6 +280,11 @@ export class ApiServer {
         // Legacy server connection (for backward compatibility)
         serverConnection: this.agentWS?.getConnectionStatus() || { connected: false, reconnectAttempts: 0 },
         earnings,
+        // Treasury signer status
+        treasury: {
+          signerEnabled: configData.treasurySignerEnabled,
+          hasActiveKey: this.config.hasActiveKey(),
+        },
         version: electronApp.getVersion(),
       });
     });
@@ -552,6 +557,36 @@ export class ApiServer {
     this.app.delete('/api/hive/posting-key', this.requireLocalAuth, (req: Request, res: Response) => {
       this.config.clearPostingKey();
       res.json({ success: true, hasPostingKey: false });
+    });
+
+    // Active key management (for treasury signing)
+    this.app.post('/api/hive/active-key', this.requireLocalAuth, (req: Request, res: Response) => {
+      const { key } = req.body;
+      if (!key || typeof key !== 'string') {
+        return res.status(400).json({ error: 'Active key required' });
+      }
+      this.config.setActiveKey(key);
+      res.json({ success: true, hasActiveKey: true });
+    });
+
+    this.app.delete('/api/hive/active-key', this.requireLocalAuth, (req: Request, res: Response) => {
+      this.config.clearActiveKey();
+      res.json({ success: true, hasActiveKey: false });
+    });
+
+    // Treasury signer status
+    this.app.get('/api/treasury/signer-status', (req: Request, res: Response) => {
+      res.json({
+        enabled: this.config.getConfig().treasurySignerEnabled,
+        hasActiveKey: this.config.hasActiveKey(),
+      });
+    });
+
+    // Toggle treasury signing
+    this.app.post('/api/treasury/toggle', this.requireLocalAuth, (req: Request, res: Response) => {
+      const { enabled } = req.body;
+      this.config.setConfig({ treasurySignerEnabled: !!enabled });
+      res.json({ success: true, treasurySignerEnabled: !!enabled });
     });
 
     // Autostart management

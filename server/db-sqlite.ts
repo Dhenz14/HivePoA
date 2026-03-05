@@ -597,6 +597,56 @@ export function createSQLiteTables(dbPath: string) {
       revoke_reason TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS treasury_signers (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'active',
+      weight INTEGER NOT NULL DEFAULT 1,
+      joined_at TEXT,
+      left_at TEXT,
+      cooldown_until TEXT,
+      opt_events INTEGER NOT NULL DEFAULT 0,
+      last_heartbeat TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS treasury_vouches (
+      id TEXT PRIMARY KEY,
+      voucher_username TEXT NOT NULL,
+      candidate_username TEXT NOT NULL,
+      voucher_rank_at_vouch INTEGER NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      revoked_at TEXT,
+      revoke_reason TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Unique constraint: one active vouch per (voucher, candidate) pair
+    CREATE UNIQUE INDEX IF NOT EXISTS treasury_vouches_voucher_candidate_active_idx
+      ON treasury_vouches(voucher_username, candidate_username)
+      WHERE active = 1;
+
+    -- Lookup indexes for treasury vouches
+    CREATE INDEX IF NOT EXISTS treasury_vouches_candidate_idx
+      ON treasury_vouches(candidate_username) WHERE active = 1;
+    CREATE INDEX IF NOT EXISTS treasury_vouches_voucher_idx
+      ON treasury_vouches(voucher_username) WHERE active = 1;
+
+    CREATE TABLE IF NOT EXISTS treasury_transactions (
+      id TEXT PRIMARY KEY,
+      tx_type TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      operations_json TEXT NOT NULL,
+      tx_digest TEXT NOT NULL UNIQUE,
+      signatures TEXT NOT NULL DEFAULT '{}',
+      threshold INTEGER NOT NULL,
+      expires_at TEXT NOT NULL,
+      initiated_by TEXT NOT NULL,
+      broadcast_tx_id TEXT,
+      metadata TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
   return db;

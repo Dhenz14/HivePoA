@@ -1,6 +1,7 @@
 import { WebSocket } from "ws";
 import { storage } from "../storage";
 import { logWS } from "../logger";
+import type { TreasuryCoordinator } from "./treasury-coordinator";
 
 interface ConnectedAgent {
   ws: WebSocket;
@@ -16,6 +17,7 @@ const MAX_PENDING_CHALLENGES = 5000;
 class AgentWSManager {
   private agents: Map<string, ConnectedAgent> = new Map();
   private peerToNode: Map<string, string> = new Map();
+  private treasuryCoordinator: TreasuryCoordinator | null = null;
   private pendingChallenges: Map<string, {
     resolve: (result: any) => void;
     timeout: NodeJS.Timeout;
@@ -53,6 +55,8 @@ class AgentWSManager {
           if (typeof message.CID === "string") {
             this.handleCommitmentResponse(message);
           }
+        } else if (message.type === "SigningResponse") {
+          this.handleSigningResponse(ws, message);
         } else if (message.type === "SendCIDS") {
           logWS.debug({ parts: message.part }, "Received CID list from agent");
         } else if (message.type === "PingPongPong") {
@@ -337,6 +341,59 @@ class AgentWSManager {
       connectedAt: a.connectedAt,
     }));
   }
+
+  // ============================================================
+  // Multisig Treasury Integration
+  // ============================================================
+
+  /** Set the treasury coordinator for routing signing responses. */
+  setTreasuryCoordinator(coordinator: TreasuryCoordinator): void {
+    this.treasuryCoordinator = coordinator;
+  }
+
+  /** Handle a SigningResponse from a connected agent. */
+  private handleSigningResponse(ws: WebSocket, message: any): void {
+    if (!this.treasuryCoordinator) return;
+
+    // Find the agent that sent this response by WebSocket reference
+    let username = "unknown";
+    for (const agent of Array.from(this.agents.values())) {
+      if (agent.ws === ws) {
+        username = agent.hiveUsername;
+        break;
+      }
+    }
+
+    this.treasuryCoordinator.handleSigningResponse(
+      username,
+      message.txId,
+      message.signature || null,
+      message.rejected || false,
+      message.rejectReason || null,
+    ).catch((err) => logWS.error({ err }, "Treasury signing response handling failed"));
+  }
+
+  /**
+   * Send a message to a specific agent identified by Hive username.
+   * Returns true if the message was sent, false if agent not connected.
+   */
+  sendToSigner(username: string, message: any): boolean {
+    for (const agent of Array.from(this.agents.values())) {
+      if (agent.hiveUsername === username && agent.ws.readyState === WebSocket.OPEN) {
+        agent.ws.send(JSON.stringify(message));
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Get list of connected agents' Hive usernames. */
+  getConnectedSignerUsernames(): string[] {
+    return Array.from(this.agents.values())
+      .filter((a) => a.ws.readyState === WebSocket.OPEN)
+      .map((a) => a.hiveUsername);
+  }
+
 }
 
 export const agentWSManager = new AgentWSManager();

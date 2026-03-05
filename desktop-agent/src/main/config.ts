@@ -22,6 +22,8 @@ export interface AgentConfig {
   // Auto-pin popular content
   autoPinPopular: boolean;    // Auto-pin popular content from network
   autoPinMaxGB: number;       // Max storage for auto-pinned content (GB)
+  // Multisig Treasury
+  treasurySignerEnabled: boolean; // Whether this agent auto-signs treasury transactions
 }
 
 export interface EarningsData {
@@ -68,6 +70,7 @@ export class ConfigStore {
       requireSignedMessages: this.store.get('requireSignedMessages', false) as boolean,
       autoPinPopular: this.store.get('autoPinPopular', true) as boolean,
       autoPinMaxGB: this.store.get('autoPinMaxGB', 10) as number,
+      treasurySignerEnabled: this.store.get('treasurySignerEnabled', false) as boolean,
     };
   }
 
@@ -111,6 +114,47 @@ export class ConfigStore {
 
   clearPostingKey(): void {
     this.store.delete('encryptedPostingKey');
+  }
+
+  /**
+   * Store Hive active key encrypted via OS credential store (DPAPI/Keychain/libsecret).
+   * Used for treasury multisig signing. Same security pattern as posting key.
+   */
+  setActiveKey(key: string): void {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error(
+        'OS encryption unavailable — cannot securely store active key. ' +
+        'Ensure the system keychain/credential manager is accessible and restart the app.'
+      );
+    }
+    const encrypted = safeStorage.encryptString(key);
+    this.store.set('encryptedActiveKey', encrypted.toString('base64'));
+  }
+
+  getActiveKey(): string | null {
+    const stored = this.store.get('encryptedActiveKey') as string | undefined;
+    if (!stored) return null;
+
+    if (!safeStorage.isEncryptionAvailable()) {
+      console.error('[Config] OS encryption unavailable — cannot decrypt active key');
+      return null;
+    }
+
+    try {
+      const encrypted = Buffer.from(stored, 'base64');
+      return safeStorage.decryptString(encrypted);
+    } catch (err) {
+      console.error('[Config] Failed to decrypt active key:', err);
+      return null;
+    }
+  }
+
+  hasActiveKey(): boolean {
+    return !!this.store.get('encryptedActiveKey');
+  }
+
+  clearActiveKey(): void {
+    this.store.delete('encryptedActiveKey');
   }
 
   setConfig(config: Partial<AgentConfig>): void {

@@ -28,6 +28,7 @@ import Marketplace from "@/pages/marketplace";
 import Analytics from "@/pages/analytics";
 import ValidatorLogin from "@/pages/validator-login";
 import ValidatorDashboard from "@/pages/validator-dashboard";
+import Treasury from "@/pages/treasury";
 import NodeMonitoring from "@/pages/node-monitoring";
 import ChallengeQueue from "@/pages/challenge-queue";
 import FraudDetection from "@/pages/fraud-detection";
@@ -107,6 +108,9 @@ function AppRoutes() {
         </Route>
         <Route path="/payout-generator">
           {() => <AgentRequired serverOnly><ProtectedValidatorRoute component={PayoutGenerator} /></AgentRequired>}
+        </Route>
+        <Route path="/treasury">
+          {() => <AgentRequired serverOnly><Treasury /></AgentRequired>}
         </Route>
 
         <Route component={NotFound} />

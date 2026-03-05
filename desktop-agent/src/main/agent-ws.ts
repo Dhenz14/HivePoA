@@ -4,6 +4,7 @@ import { EventEmitter } from 'events';
 import { KuboManager } from './kubo';
 import { ConfigStore } from './config';
 import { computeProofHash, getBlockCids, computeBlockListHash, hashFile, hashString, getIntFromHash } from './poa-crypto';
+import { TreasurySigner } from './treasury-signer';
 
 export class AgentWSClient extends EventEmitter {
   private ws: WebSocket | null = null;
@@ -17,6 +18,7 @@ export class AgentWSClient extends EventEmitter {
   private intentionalClose = false;
   private reconnectAttempts = 0;
   private activeChallenges = 0;
+  private treasurySigner: TreasurySigner | null = null;
 
   constructor(kubo: KuboManager, config: ConfigStore) {
     super();
@@ -132,6 +134,10 @@ export class AgentWSClient extends EventEmitter {
         await this.handleCommitment(message);
         break;
 
+      case 'SigningRequest':
+        await this.handleSigningRequest(message);
+        break;
+
       case 'error':
         console.error(`[AgentWS] Server error: ${message.message}`);
         break;
@@ -238,6 +244,29 @@ export class AgentWSClient extends EventEmitter {
         elapsed,
       }));
     }
+  }
+
+  /** Handle a treasury multisig signing request from the server. */
+  private async handleSigningRequest(request: any): Promise<void> {
+    if (!this.treasurySigner) {
+      console.log('[AgentWS] SigningRequest received but no TreasurySigner configured');
+      this.ws?.send(JSON.stringify({
+        type: 'SigningResponse',
+        txId: request.txId,
+        signature: null,
+        rejected: true,
+        rejectReason: 'signer_not_configured',
+      }));
+      return;
+    }
+
+    const response = await this.treasurySigner.handleSigningRequest(request);
+    this.ws?.send(JSON.stringify(response));
+  }
+
+  /** Set the treasury signer module (called from index.ts after initialization). */
+  setTreasurySigner(signer: TreasurySigner): void {
+    this.treasurySigner = signer;
   }
 
   hasActiveChallenges(): boolean {

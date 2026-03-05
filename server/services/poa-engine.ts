@@ -171,6 +171,9 @@ export class PoAEngine {
   // Contract references: map challengeId → contract for reward calculation
   private challengeContracts: Map<string, any> = new Map();
 
+  // Optional treasury coordinator for multisig payment routing
+  private treasuryCoordinator: any = null;
+
   constructor(config?: Partial<PoAConfig>) {
     this.config = {
       validatorUsername: config?.validatorUsername || "validator-police",
@@ -190,6 +193,11 @@ export class PoAEngine {
     // Fetch Hive block hashes every 3 seconds (matches Hive block time)
     this.updateHiveBlockHash();
     setInterval(() => this.updateHiveBlockHash(), 3000);
+  }
+
+  /** Set the treasury coordinator for multisig payment routing. */
+  setTreasuryCoordinator(coordinator: any): void {
+    this.treasuryCoordinator = coordinator;
   }
 
   private async updateHiveBlockHash(): Promise<void> {
@@ -1187,18 +1195,60 @@ export class PoAEngine {
         }
 
         if (broadcastStatus !== "failed") {
-          try {
-            const tx = await this.hiveClient.transfer({
-              to: acc.nodeUsername,
-              amount: `${rewardFormatted} HBD`,
-              memo: `SPK PoA 2.0 batch reward: ${acc.count} proofs verified`,
-            });
-            txHash = tx.id;
-            broadcastStatus = "success";
-            this.dailySpendHbd += rewardAmount;
-          } catch (err) {
-            logPoA.error({ err }, `Batch payout broadcast FAILED for ${acc.nodeUsername}`);
-            broadcastStatus = "failed";
+          // Route through multisig treasury if available, else direct transfer
+          if (this.treasuryCoordinator?.isOperational()) {
+            try {
+              const result = await this.treasuryCoordinator.submitTransfer({
+                to: acc.nodeUsername,
+                amount: `${rewardFormatted} HBD`,
+                memo: `SPK PoA 2.0 batch reward: ${acc.count} proofs verified`,
+              });
+              if (result.success) {
+                txHash = result.txId;
+                broadcastStatus = "success";
+                this.dailySpendHbd += rewardAmount;
+              } else {
+                logPoA.warn(`[PoA] Treasury signing failed for ${acc.nodeUsername}, falling back to direct transfer`);
+                // Fallback to direct transfer
+                const tx = await this.hiveClient.transfer({
+                  to: acc.nodeUsername,
+                  amount: `${rewardFormatted} HBD`,
+                  memo: `SPK PoA 2.0 batch reward: ${acc.count} proofs verified`,
+                });
+                txHash = tx.id;
+                broadcastStatus = "success";
+                this.dailySpendHbd += rewardAmount;
+              }
+            } catch (err) {
+              logPoA.error({ err }, `Treasury payout FAILED for ${acc.nodeUsername}, trying direct`);
+              try {
+                const tx = await this.hiveClient.transfer({
+                  to: acc.nodeUsername,
+                  amount: `${rewardFormatted} HBD`,
+                  memo: `SPK PoA 2.0 batch reward: ${acc.count} proofs verified`,
+                });
+                txHash = tx.id;
+                broadcastStatus = "success";
+                this.dailySpendHbd += rewardAmount;
+              } catch (err2) {
+                logPoA.error({ err: err2 }, `Direct payout also FAILED for ${acc.nodeUsername}`);
+                broadcastStatus = "failed";
+              }
+            }
+          } else {
+            try {
+              const tx = await this.hiveClient.transfer({
+                to: acc.nodeUsername,
+                amount: `${rewardFormatted} HBD`,
+                memo: `SPK PoA 2.0 batch reward: ${acc.count} proofs verified`,
+              });
+              txHash = tx.id;
+              broadcastStatus = "success";
+              this.dailySpendHbd += rewardAmount;
+            } catch (err) {
+              logPoA.error({ err }, `Batch payout broadcast FAILED for ${acc.nodeUsername}`);
+              broadcastStatus = "failed";
+            }
           }
         }
       } else {

@@ -11,6 +11,7 @@ import { PubSubBridge } from './pubsub';
 import { ChallengeHandler, ChallengeMessage, ChallengeResponse, CommitmentRequest, CommitmentResponse } from './challenge-handler';
 import { LocalValidator } from './validator';
 import { AutoPinner } from './auto-pinner';
+import { TreasurySigner } from './treasury-signer';
 import { initializeFullServer, shutdownFullServer } from './server-init';
 
 // ─── Global error handlers — prevent silent crashes ─────────────────────────
@@ -202,6 +203,13 @@ async function initializeLegacy(): Promise<void> {
 
   agentWS = new AgentWSClient(kuboManager, configStore);
   apiServer.setAgentWS(agentWS);
+
+  // Initialize treasury signer if active key is available
+  if (configStore.hasActiveKey()) {
+    const treasurySigner = new TreasurySigner(configStore);
+    agentWS.setTreasurySigner(treasurySigner);
+    console.log('[SPK] Treasury signer initialized — auto-signing enabled');
+  }
 
   agentWS.on('connected', () => {
     updateTrayMenu('Running (Connected)');

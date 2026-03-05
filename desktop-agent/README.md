@@ -32,35 +32,54 @@ Built with **Electron** for reliable cross-platform support.
 - **Web App Integration**: Detected automatically by the SPK web app on port 5111.
 - **PoA Challenges**: Responds to Proof-of-Access challenges from validators.
 - **Earnings Tracking**: Track your HBD earnings and challenge streak.
+- **Treasury Auto-Signer**: Automatically co-signs multisig treasury transactions within policy limits (active key required).
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────┐
-│  SPK Desktop (Electron)             │
-│                                     │
-│  ┌──────────────────────────────┐  │
-│  │  Dashboard UI (HTML/JS)      │  │
-│  │  - Status display            │  │
-│  │  - Earnings stats            │  │
-│  │  - Hive account linking      │  │
-│  └──────────────────────────────┘  │
-│               ↕                     │
-│  ┌──────────────────────────────┐  │
-│  │  Main Process (Node.js)      │  │
-│  │  - Kubo Manager              │  │
-│  │  - HTTP API (port 5111)      │  │
-│  │  - System Tray               │  │
-│  │  - Config Store              │  │
-│  └──────────────────────────────┘  │
-└─────────────────────────────────────┘
-            ↕
-    ┌───────────────┐
-    │ Kubo Daemon   │
-    │ (go-ipfs)     │
-    │ (Bundled)     │
-    └───────────────┘
++-------------------------------------+
+|  SPK Desktop (Electron)             |
+|                                     |
+|  +------------------------------+  |
+|  |  Dashboard UI (HTML/JS)      |  |
+|  |  - Status display            |  |
+|  |  - Earnings stats            |  |
+|  |  - Hive account linking      |  |
+|  |  - Treasury signer config    |  |
+|  +------------------------------+  |
+|               |                     |
+|  +------------------------------+  |
+|  |  Main Process (Node.js)      |  |
+|  |  - Kubo Manager              |  |
+|  |  - HTTP API (port 5111)      |  |
+|  |  - System Tray               |  |
+|  |  - Config Store              |  |
+|  |  - Treasury Signer           |  |
+|  +------------------------------+  |
++-------------------------------------+
+            |
+    +---------------+
+    | Kubo Daemon   |
+    | (go-ipfs)     |
+    | (Bundled)     |
+    +---------------+
 ```
+
+## Treasury Auto-Signing
+
+If you're a top-150 Hive witness (or have 3+ treasury vouches), you can enable treasury signing:
+
+1. Configure your Hive **active key** in the agent config
+2. Enable `treasurySignerEnabled` in your config
+3. The agent auto-signs treasury transactions within policy limits
+
+**Policy defaults:**
+- Per-transaction cap: 1.0 HBD
+- Daily cap: 50.0 HBD
+- Rate limit: 100 signing requests/hour
+- Op type whitelist: `transfer`, `account_update` only
+
+**Security:** The agent independently verifies every transaction digest before signing. It computes `cryptoUtils.transactionDigest(tx, HIVE_CHAIN_ID)` locally and rejects if the server-provided digest doesn't match.
 
 ## Development
 

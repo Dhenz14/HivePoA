@@ -119,6 +119,7 @@ export function Sidebar() {
       { href: "/node-monitoring", label: "Node Monitor", icon: Server },
       { href: "/fraud-detection", label: "Fraud Detection", icon: AlertTriangle },
       { href: "/payout-generator", label: "Payout Reports", icon: FileText },
+      { href: "/treasury", label: "Treasury", icon: Key },
       { href: "/validators", label: "Validators", icon: Globe },
     ],
   };

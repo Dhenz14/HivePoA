@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, timestamp, boolean, real, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, timestamp, boolean, real, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -577,6 +577,58 @@ export const webOfTrust = pgTable("web_of_trust", {
 });
 
 // ============================================================
+// PHASE 8: Multisig Treasury
+// ============================================================
+
+// Treasury Signers — Top-150 witnesses OR WoT-vouched users who opted in as multisig signers
+export const treasurySigners = pgTable("treasury_signers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  username: text("username").notNull().unique(),                 // Hive username (top-150 witness or WoT-vouched)
+  status: text("status").notNull().default("active"),            // 'active' | 'leaving' | 'cooldown' | 'removed'
+  weight: integer("weight").notNull().default(1),                // Authority weight on @hivepoa-treasury
+  joinedAt: timestamp("joined_at"),
+  leftAt: timestamp("left_at"),
+  cooldownUntil: timestamp("cooldown_until"),                    // When they can rejoin after opt-out
+  optEvents: integer("opt_events").notNull().default(0),         // Opt-in/out cycle count (churn tracking)
+  lastHeartbeat: timestamp("last_heartbeat"),                    // Last signing-daemon heartbeat
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Treasury Vouches — WoT extension for treasury signers (1:N, unlike validator WoT which is 1:1)
+// A top-150 witness can vouch for multiple treasury signer candidates.
+// A candidate needs 3+ vouches from top-150 witnesses to qualify.
+export const treasuryVouches = pgTable("treasury_vouches", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  voucherUsername: text("voucher_username").notNull(),             // Top-150 witness doing the vouching
+  candidateUsername: text("candidate_username").notNull(),         // Who they're vouching for
+  voucherRankAtVouch: integer("voucher_rank_at_vouch").notNull(), // Witness rank at time of vouch
+  active: boolean("active").notNull().default(true),
+  revokedAt: timestamp("revoked_at"),
+  revokeReason: text("revoke_reason"),                            // 'manual' | 'voucher_deranked'
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("treasury_vouches_voucher_candidate_active_idx")
+    .on(table.voucherUsername, table.candidateUsername)
+    .where(sql`active = true`),
+]);
+
+// Treasury Transactions — Signature collection + audit trail for multisig txs
+export const treasuryTransactions = pgTable("treasury_transactions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  txType: text("tx_type").notNull(),                             // 'transfer' | 'authority_update'
+  status: text("status").notNull().default("pending"),           // 'pending' | 'signing' | 'broadcast' | 'expired' | 'failed'
+  operationsJson: text("operations_json").notNull(),             // Serialized Hive operations array
+  txDigest: text("tx_digest").notNull().unique(),                // SHA256 of serialized tx (signers sign this)
+  signatures: jsonb("signatures").notNull().default({}),         // { "username": "sig_hex", ... }
+  threshold: integer("threshold").notNull(),                     // Required signatures at time of creation
+  expiresAt: timestamp("expires_at").notNull(),                  // Tx expiration
+  initiatedBy: text("initiated_by").notNull(),                   // 'system' or username
+  broadcastTxId: text("broadcast_tx_id"),                        // Hive tx ID after successful broadcast
+  metadata: jsonb("metadata"),                                   // Context: recipient, amount, memo, etc.
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ============================================================
 // Insert Schemas
 // ============================================================
 
@@ -837,6 +889,23 @@ export const insertWebOfTrustSchema = createInsertSchema(webOfTrust).omit({
   revokedAt: true,
 });
 
+// Phase 8: Multisig Treasury
+export const insertTreasurySignerSchema = createInsertSchema(treasurySigners).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertTreasuryVouchSchema = createInsertSchema(treasuryVouches).omit({
+  id: true,
+  createdAt: true,
+  revokedAt: true,
+});
+
+export const insertTreasuryTransactionSchema = createInsertSchema(treasuryTransactions).omit({
+  id: true,
+  createdAt: true,
+});
+
 // ============================================================
 // Types
 // ============================================================
@@ -961,3 +1030,13 @@ export type InsertP2pNetworkStats = z.infer<typeof insertP2pNetworkStatsSchema>;
 // Phase 7: Web of Trust Types
 export type WebOfTrust = typeof webOfTrust.$inferSelect;
 export type InsertWebOfTrust = z.infer<typeof insertWebOfTrustSchema>;
+
+// Phase 8: Multisig Treasury Types
+export type TreasurySigner = typeof treasurySigners.$inferSelect;
+export type InsertTreasurySigner = z.infer<typeof insertTreasurySignerSchema>;
+
+export type TreasuryVouch = typeof treasuryVouches.$inferSelect;
+export type InsertTreasuryVouch = z.infer<typeof insertTreasuryVouchSchema>;
+
+export type TreasuryTransaction = typeof treasuryTransactions.$inferSelect;
+export type InsertTreasuryTransaction = z.infer<typeof insertTreasuryTransactionSchema>;

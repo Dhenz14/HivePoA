@@ -1,0 +1,112 @@
+/**
+ * Shared TypeScript interfaces for the Multisig Treasury system.
+ * Used by both server (coordinator) and desktop agent (signer).
+ */
+
+// ============================================================
+// WebSocket Message Types (Server <-> Agent)
+// ============================================================
+
+/** Server -> Agent: Request to sign a treasury transaction */
+export interface SigningRequest {
+  type: "SigningRequest";
+  txId: string;                    // treasury_transactions.id
+  txDigest: string;                // Hex SHA256 of serialized tx — what gets signed
+  operations: any[];               // Human-readable ops for agent-side policy check
+  tx: any;                         // Full unsigned tx object — agent verifies digest matches
+  expiresAt: string;               // ISO8601
+  metadata: SigningMetadata;
+}
+
+/** Agent -> Server: Response to a signing request */
+export interface SigningResponse {
+  type: "SigningResponse";
+  txId: string;
+  signature: string | null;        // Hex signature, or null if rejected
+  rejected: boolean;
+  rejectReason: string | null;     // e.g., "amount_exceeds_cap", "blocked_op_type"
+}
+
+/** Metadata attached to signing requests for policy decisions */
+export interface SigningMetadata {
+  txType: "transfer" | "authority_update";
+  recipient?: string;
+  amount?: string;                 // e.g., "0.150 HBD"
+  memo?: string;
+}
+
+// ============================================================
+// Treasury Status (API responses)
+// ============================================================
+
+export interface TreasuryStatus {
+  operational: boolean;            // true if 3+ signers online and authority in sync
+  signerCount: number;
+  onlineSignerCount: number;
+  threshold: number;               // ceil(signerCount * 0.6)
+  treasuryAccount: string;         // e.g., "@hivepoa-treasury"
+  balance?: string;                // Current HBD balance
+  authorityInSync: boolean;        // On-chain authority matches DB signer set
+}
+
+export interface TreasurySignerInfo {
+  username: string;
+  status: string;
+  weight: number;
+  joinedAt: string | null;
+  lastHeartbeat: string | null;
+  online: boolean;                 // WebSocket connected right now
+  vouchCount?: number;             // Number of active WoT vouches (for non-witnesses)
+}
+
+// ============================================================
+// Agent-Side Policy Configuration
+// ============================================================
+
+export interface TreasurySignerConfig {
+  enabled: boolean;
+  maxPerTxHbd: number;             // Per-transaction cap (default: 1.0)
+  dailyCapHbd: number;             // Daily spending cap (default: 50.0)
+  maxSigningRequestsPerHour: number; // Rate limit (default: 100)
+}
+
+export const DEFAULT_SIGNER_CONFIG: TreasurySignerConfig = {
+  enabled: true,
+  maxPerTxHbd: 1.0,
+  dailyCapHbd: 50.0,
+  maxSigningRequestsPerHour: 100,
+};
+
+// ============================================================
+// Constants
+// ============================================================
+
+/** Minimum active signers before treasury accepts payment routing */
+export const MIN_SIGNERS_FOR_OPERATION = 3;
+
+/** Threshold ratio — 60% of active signers must sign */
+export const THRESHOLD_RATIO = 0.6;
+
+/** Treasury account on Hive */
+export const TREASURY_ACCOUNT = "hivepoa-treasury";
+
+/** Signing request timeout in ms (Hive txs expire ~60s, we use 45s) */
+export const SIGNING_TIMEOUT_MS = 45_000;
+
+/** Cooldown after opting out before rejoining (7 days) */
+export const OPT_OUT_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Extended cooldown for churners (30 days) */
+export const CHURN_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Number of opt-out events in 90 days that triggers extended cooldown */
+export const CHURN_THRESHOLD = 3;
+
+/** Rolling window for churn detection (90 days) */
+export const CHURN_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
+
+/** Minimum WoT vouches required for non-witness treasury signers */
+export const MIN_TREASURY_VOUCHES = 3;
+
+/** Self-healing authority sync interval (10 minutes) */
+export const AUTHORITY_SYNC_INTERVAL_MS = 10 * 60 * 1000;

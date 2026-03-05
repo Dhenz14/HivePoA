@@ -50,6 +50,9 @@ import type {
   P2pNetworkStats, InsertP2pNetworkStats,
   EncodingJobOffer, InsertEncodingJobOffer,
   WebOfTrust, InsertWebOfTrust,
+  TreasurySigner, InsertTreasurySigner,
+  TreasuryVouch, InsertTreasuryVouch,
+  TreasuryTransaction, InsertTreasuryTransaction,
 } from "@shared/schema";
 
 // ============================================================
@@ -102,6 +105,18 @@ function mapRow<T>(row: any): T {
 
 function mapRows<T>(rows: any[]): T[] {
   return rows.map(r => mapRow<T>(r));
+}
+
+/** Safely parse JSON text fields (signatures, metadata) on treasury transaction rows. */
+function parseTxJsonFields(row: any): TreasuryTransaction {
+  try {
+    if (typeof row.signatures === "string") row.signatures = JSON.parse(row.signatures);
+    else if (!row.signatures) row.signatures = {};
+  } catch { row.signatures = {}; }
+  try {
+    if (row.metadata && typeof row.metadata === "string") row.metadata = JSON.parse(row.metadata);
+  } catch { row.metadata = null; }
+  return row as TreasuryTransaction;
 }
 
 // ============================================================
@@ -1989,5 +2004,151 @@ export class SQLiteStorage implements IStorage {
   async isVouchedValidator(username: string): Promise<boolean> {
     const vouch = await this.getVouchForUser(username);
     return !!vouch;
+  }
+
+  // ============================================================
+  // Phase 8: Multisig Treasury — Signers
+  // ============================================================
+  async createTreasurySigner(signer: InsertTreasurySigner): Promise<TreasurySigner> {
+    const s = signer as any;
+    const [created] = await db().insert(S.treasurySigners).values({
+      id: randomUUID(),
+      ...s,
+      joinedAt: toISO(s.joinedAt) ?? nowISO(),
+      createdAt: toISO(s.createdAt) ?? nowISO(),
+    } as any).returning();
+    return mapRow<TreasurySigner>(created);
+  }
+
+  async getTreasurySignerByUsername(username: string): Promise<TreasurySigner | undefined> {
+    const [row] = await db().select().from(S.treasurySigners)
+      .where(eq(S.treasurySigners.username, username))
+      .limit(1);
+    return row ? mapRow<TreasurySigner>(row) : undefined;
+  }
+
+  async getActiveTreasurySigners(): Promise<TreasurySigner[]> {
+    const rows = await db().select().from(S.treasurySigners)
+      .where(eq(S.treasurySigners.status, "active"))
+      .orderBy(desc(S.treasurySigners.joinedAt));
+    return mapRows<TreasurySigner>(rows);
+  }
+
+  async updateSignerStatus(username: string, status: string, extra?: Partial<TreasurySigner>): Promise<void> {
+    const update: any = { status };
+    if (extra) {
+      if (extra.leftAt) update.leftAt = toISO(extra.leftAt as any);
+      if (extra.cooldownUntil) update.cooldownUntil = toISO(extra.cooldownUntil as any);
+      if (extra.optEvents !== undefined) update.optEvents = extra.optEvents;
+    }
+    await db().update(S.treasurySigners).set(update).where(eq(S.treasurySigners.username, username));
+  }
+
+  async updateSignerHeartbeat(username: string): Promise<void> {
+    await db().update(S.treasurySigners)
+      .set({ lastHeartbeat: nowISO() } as any)
+      .where(eq(S.treasurySigners.username, username));
+  }
+
+  // ============================================================
+  // Phase 8: Multisig Treasury — Vouches (WoT extension)
+  // ============================================================
+  async createTreasuryVouch(vouch: InsertTreasuryVouch): Promise<TreasuryVouch> {
+    const v = vouch as any;
+    const [created] = await db().insert(S.treasuryVouches).values({
+      id: randomUUID(),
+      ...v,
+      createdAt: toISO(v.createdAt) ?? nowISO(),
+    } as any).returning();
+    return mapRow<TreasuryVouch>(created);
+  }
+
+  async getActiveVouchesForCandidate(candidateUsername: string): Promise<TreasuryVouch[]> {
+    const rows = await db().select().from(S.treasuryVouches)
+      .where(and(eq(S.treasuryVouches.candidateUsername, candidateUsername), eq(S.treasuryVouches.active, true)))
+      .orderBy(desc(S.treasuryVouches.createdAt));
+    return mapRows<TreasuryVouch>(rows);
+  }
+
+  async getActiveVouchesByVoucher(voucherUsername: string): Promise<TreasuryVouch[]> {
+    const rows = await db().select().from(S.treasuryVouches)
+      .where(and(eq(S.treasuryVouches.voucherUsername, voucherUsername), eq(S.treasuryVouches.active, true)));
+    return mapRows<TreasuryVouch>(rows);
+  }
+
+  async getAllActiveTreasuryVouches(): Promise<TreasuryVouch[]> {
+    const rows = await db().select().from(S.treasuryVouches)
+      .where(eq(S.treasuryVouches.active, true))
+      .orderBy(desc(S.treasuryVouches.createdAt));
+    return mapRows<TreasuryVouch>(rows);
+  }
+
+  async revokeTreasuryVouch(voucherUsername: string, candidateUsername: string, reason: string): Promise<void> {
+    await db().update(S.treasuryVouches)
+      .set({ active: false, revokedAt: nowISO(), revokeReason: reason } as any)
+      .where(and(
+        eq(S.treasuryVouches.voucherUsername, voucherUsername),
+        eq(S.treasuryVouches.candidateUsername, candidateUsername),
+        eq(S.treasuryVouches.active, true),
+      ));
+  }
+
+  async revokeTreasuryVouchesByVoucher(voucherUsername: string, reason: string): Promise<void> {
+    await db().update(S.treasuryVouches)
+      .set({ active: false, revokedAt: nowISO(), revokeReason: reason } as any)
+      .where(and(eq(S.treasuryVouches.voucherUsername, voucherUsername), eq(S.treasuryVouches.active, true)));
+  }
+
+  async countActiveVouchesForCandidate(candidateUsername: string): Promise<number> {
+    const vouches = await this.getActiveVouchesForCandidate(candidateUsername);
+    return vouches.length;
+  }
+
+  // ============================================================
+  // Phase 8: Multisig Treasury — Transactions
+  // ============================================================
+  async createTreasuryTransaction(tx: InsertTreasuryTransaction): Promise<TreasuryTransaction> {
+    const t = tx as any;
+    const [created] = await db().insert(S.treasuryTransactions).values({
+      id: randomUUID(),
+      ...t,
+      expiresAt: toISO(t.expiresAt) ?? nowISO(),
+      signatures: typeof t.signatures === "object" ? JSON.stringify(t.signatures) : (t.signatures || "{}"),
+      metadata: typeof t.metadata === "object" ? JSON.stringify(t.metadata) : t.metadata,
+      createdAt: toISO(t.createdAt) ?? nowISO(),
+    } as any).returning();
+    return mapRow<TreasuryTransaction>(created);
+  }
+
+  async getTreasuryTransaction(id: string): Promise<TreasuryTransaction | undefined> {
+    const [row] = await db().select().from(S.treasuryTransactions)
+      .where(eq(S.treasuryTransactions.id, id))
+      .limit(1);
+    if (!row) return undefined;
+    const mapped = mapRow<any>(row);
+    return parseTxJsonFields(mapped);
+  }
+
+  async getRecentTreasuryTransactions(limit: number = 50): Promise<TreasuryTransaction[]> {
+    const rows = await db().select().from(S.treasuryTransactions)
+      .orderBy(desc(S.treasuryTransactions.createdAt))
+      .limit(limit);
+    return mapRows<any>(rows).map(parseTxJsonFields);
+  }
+
+  async updateTreasuryTxSignature(id: string, username: string, signature: string): Promise<void> {
+    const tx = await this.getTreasuryTransaction(id);
+    if (!tx) return;
+    const sigs = (tx.signatures as Record<string, string>) || {};
+    sigs[username] = signature;
+    await db().update(S.treasuryTransactions)
+      .set({ signatures: JSON.stringify(sigs), status: "signing" } as any)
+      .where(eq(S.treasuryTransactions.id, id));
+  }
+
+  async updateTreasuryTxStatus(id: string, status: string, broadcastTxId?: string): Promise<void> {
+    const update: any = { status };
+    if (broadcastTxId) update.broadcastTxId = broadcastTxId;
+    await db().update(S.treasuryTransactions).set(update).where(eq(S.treasuryTransactions.id, id));
   }
 }

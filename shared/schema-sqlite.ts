@@ -13,7 +13,7 @@
  */
 
 import { sql } from "drizzle-orm";
-import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 // ============================================================
 // PHASE 0: Core Tables
@@ -597,6 +597,52 @@ export const webOfTrust = sqliteTable("web_of_trust", {
 });
 
 // ============================================================
+// PHASE 8: Multisig Treasury
+// ============================================================
+
+export const treasurySigners = sqliteTable("treasury_signers", {
+  id: text("id").primaryKey(),
+  username: text("username").notNull().unique(),
+  status: text("status").notNull().default("active"),
+  weight: integer("weight").notNull().default(1),
+  joinedAt: text("joined_at"),
+  leftAt: text("left_at"),
+  cooldownUntil: text("cooldown_until"),
+  optEvents: integer("opt_events").notNull().default(0),
+  lastHeartbeat: text("last_heartbeat"),
+  createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+});
+
+export const treasuryVouches = sqliteTable("treasury_vouches", {
+  id: text("id").primaryKey(),
+  voucherUsername: text("voucher_username").notNull(),
+  candidateUsername: text("candidate_username").notNull(),
+  voucherRankAtVouch: integer("voucher_rank_at_vouch").notNull(),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  revokedAt: text("revoked_at"),
+  revokeReason: text("revoke_reason"),
+  createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+}, (table) => [
+  uniqueIndex("treasury_vouches_voucher_candidate_active_idx")
+    .on(table.voucherUsername, table.candidateUsername),
+]);
+
+export const treasuryTransactions = sqliteTable("treasury_transactions", {
+  id: text("id").primaryKey(),
+  txType: text("tx_type").notNull(),
+  status: text("status").notNull().default("pending"),
+  operationsJson: text("operations_json").notNull(),
+  txDigest: text("tx_digest").notNull().unique(),
+  signatures: text("signatures").notNull().default("{}"),
+  threshold: integer("threshold").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  initiatedBy: text("initiated_by").notNull(),
+  broadcastTxId: text("broadcast_tx_id"),
+  metadata: text("metadata"),
+  createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+});
+
+// ============================================================
 // Re-export types and Zod schemas from the PG schema.
 // Types are erased at compile time; Zod schemas are dialect-agnostic
 // validators. This allows the desktop agent webpack to alias
@@ -642,6 +688,9 @@ export type {
   P2pRoom, InsertP2pRoom,
   P2pNetworkStats, InsertP2pNetworkStats,
   WebOfTrust, InsertWebOfTrust,
+  TreasurySigner, InsertTreasurySigner,
+  TreasuryVouch, InsertTreasuryVouch,
+  TreasuryTransaction, InsertTreasuryTransaction,
 } from "./schema";
 
 export {
@@ -682,4 +731,7 @@ export {
   insertP2pRoomSchema,
   insertP2pNetworkStatsSchema,
   insertWebOfTrustSchema,
+  insertTreasurySignerSchema,
+  insertTreasuryVouchSchema,
+  insertTreasuryTransactionSchema,
 } from "./schema";

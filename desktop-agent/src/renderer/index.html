@@ -267,6 +267,28 @@
       <div class="hint" id="keyStatus">Your key is encrypted with OS-level security and never leaves your device.</div>
     </div>
 
+    <!-- Treasury Signer -->
+    <div class="status-card config-section">
+      <h2>Treasury Signer</h2>
+      <div class="status-indicator" style="margin-bottom: 12px;">
+        <div class="status-dot" id="treasuryDot"></div>
+        <span id="treasuryText">Disabled</span>
+      </div>
+      <label><input type="checkbox" id="treasuryEnabled"> Enable treasury auto-signing</label>
+      <div class="hint" style="margin-bottom: 10px;">Auto-signs multisig treasury transactions within policy limits (per-tx: 1 HBD, daily: 50 HBD).</div>
+      <details style="margin-bottom: 10px;">
+        <summary style="cursor:pointer; color:#888; font-size:13px;">Active Key (required for signing)</summary>
+        <div style="margin-top:10px;">
+          <label for="activeKey">Hive Active Key (encrypted locally)</label>
+          <input type="password" id="activeKey" placeholder="Enter your Hive active key">
+          <button type="button" id="saveActiveKey">Save Active Key</button>
+          <button type="button" id="clearActiveKey" style="background:#ff4444; margin-left:8px;">Clear Key</button>
+          <div class="hint" id="activeKeyStatus">Your key is encrypted with OS-level security and never leaves your device.</div>
+        </div>
+      </details>
+      <button type="button" id="saveTreasury">Apply Treasury Settings</button>
+    </div>
+
     <!-- Validation Settings -->
     <div class="status-card config-section">
       <h2>Validation</h2>

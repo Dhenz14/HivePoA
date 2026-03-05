@@ -1,6 +1,6 @@
 # SPK Network 2.0 (HivePoA)
 
-Decentralized storage validation protocol built on the Hive L1 blockchain. Validators run Proof of Access (PoA) challenges against IPFS storage nodes, earn HBD micropayments for honest work, and broadcast results on-chain via `custom_json` operations.
+Decentralized storage validation protocol built on the Hive L1 blockchain. Validators run Proof of Access (PoA) challenges against IPFS storage nodes, earn HBD micropayments for honest work, and broadcast results on-chain via `custom_json` operations. A shared **multisig treasury** (`@hivepoa-treasury`) distributes rewards without any single point of failure.
 
 **Live Demo:** [dhenz14.github.io/HivePoA](https://dhenz14.github.io/HivePoA/) (static site — browse the UI without a backend)
 
@@ -8,34 +8,92 @@ Decentralized storage validation protocol built on the Hive L1 blockchain. Valid
 
 - **Frontend**: React 19, TypeScript, Tailwind CSS v4, shadcn/ui, TanStack Query, Wouter
 - **Backend**: Express.js, PostgreSQL (Drizzle ORM), WebSocket (ws), pino structured logging
-- **Blockchain**: Hive L1 via `@hiveio/dhive` — Keychain auth, HBD transfers, `custom_json` broadcasts
+- **Blockchain**: Hive L1 via `@hiveio/dhive` — Keychain auth, HBD transfers, `custom_json` broadcasts, **native L1 multisig** (weighted `account_auths`)
 - **Storage**: IPFS (Kubo) — file pinning, CID refs sync, chunked uploads
-- **Desktop Agent**: Electron with bundled Kubo IPFS node and auto-updates
+- **Desktop Agent**: Electron with bundled Kubo IPFS node, auto-updates, and **treasury auto-signer**
 
 ## Key Features
 
 | Feature | Description |
 |---------|-------------|
+| **Multisig Treasury** | Hive L1 native multisig on `@hivepoa-treasury` — 60% quorum, fluid authority rotation, auto-signing, self-healing |
 | **Proof of Access (PoA)** | Refs-only verification with 25s anti-cheat timing, consecutive-fail banning, reputation scoring |
-| **Web of Trust** | Witnesses vouch for non-witness validators — cascading trust with automatic revocation |
-| **HBD Micropayments** | Contract-funded rewards with batched payouts (5 proofs per batch) via real Hive transfers |
+| **Web of Trust** | Witnesses vouch for non-witness validators — cascading trust with automatic revocation. Extended for treasury signer eligibility |
+| **HBD Micropayments** | Contract-funded rewards with batched payouts via multisig treasury (fallback: direct validator transfer) |
 | **Hive Keychain Auth** | Challenge-response signature verification for all users and validators |
 | **3Speak Integration** | Browse, search, and pin 3Speak videos directly to your IPFS node |
 | **Hybrid Encoding** | Local FFmpeg transcoding + remote encoding marketplace with agent API keys |
 | **P2P CDN** | WebRTC peer-to-peer video delivery via p2p-media-loader with segment caching in IndexedDB |
 | **Storage Contracts** | Uploader-funded storage with per-challenge rewards, budget tracking, and automatic expiry |
 | **Validator Dashboard** | Real-time challenge monitoring, reputation history, blacklist management |
+| **Treasury Dashboard** | Authority ring visualization, signer status, WoT vouching, signature progress, transaction history |
 | **Validator Opt-In/Out** | Eligible users choose whether to activate as a validator — resign any time from the dashboard |
 | **Dark / Light Theme** | Toggle in the sidebar footer, persisted to localStorage |
 
 ## Project Scale
 
-- 154 API endpoints across 25 services
-- 42 database tables (Drizzle ORM schema)
-- 24 client pages (including video watch page with P2P)
+- 162 API endpoints across 25 services
+- 45 database tables (Drizzle ORM schema)
+- 25 client pages (including Treasury dashboard and video watch page with P2P)
 - 168 automated tests across 5 test suites (vitest)
 - Full Docker deployment stack
 - GitHub Pages static site with auto-deploy
+
+## Multisig Treasury
+
+The treasury system eliminates single points of failure for HBD reward distribution. Instead of each validator paying storage nodes from their own wallet, rewards flow through a shared multisig account controlled by multiple Hive witnesses.
+
+### How It Works
+
+1. **PoA engine** determines a storage node earned a reward (e.g., `0.150 HBD`)
+2. **Treasury coordinator** builds an unsigned Hive transaction and computes its canonical digest
+3. **Signing request** is sent to all connected signer agents over the existing `/ws/agent` WebSocket
+4. **Desktop agents** verify the digest independently, check local policy (op type whitelist, per-tx cap, daily cap), and auto-sign
+5. Once **60% of signers** have signed, the transaction broadcasts to Hive L1
+6. **Instant, free** — Hive transactions have 3-second block times and zero fees
+
+### Fluid Authority Rotation
+
+When signers join or leave, the on-chain authority updates automatically:
+
+```
+4 signers → threshold = 3 (ceil(4 * 0.6))
+5th joins → threshold = 3 (ceil(5 * 0.6))  — authority update co-signed by existing 4
+10 signers → threshold = 6 (ceil(10 * 0.6))
+4 leave → threshold = 4 (ceil(6 * 0.6))  — authority update co-signed by remaining
+```
+
+Every authority change is an L1 `account_update` transaction, co-signed by the current authority holders. No manual key management.
+
+### Self-Healing
+
+Every 10 minutes, the coordinator compares on-chain authority with the database signer set. If a signer was deranked from top-150 witnesses (or lost WoT vouches), they're auto-removed and a corrective authority update broadcasts.
+
+### Security
+
+- **Agent-side digest verification**: Agents independently compute `cryptoUtils.transactionDigest(tx, chainId)` and reject mismatches — prevents a compromised server from submitting tampered transactions
+- **Broadcast race guard**: `broadcastingTxIds` Set prevents concurrent broadcast attempts when signatures arrive simultaneously
+- **Churn protection**: 7-day cooldown after opting out, escalating to 30 days for frequent churners (3+ opt-outs in 90 days)
+- **Genesis bootstrap**: `TREASURY_GENESIS_KEY` env var for initial authority setup, removed after first multisig update
+
+### Eligibility
+
+- **Top-150 Hive witnesses**: Opt in directly — they ARE the trust layer
+- **WoT-vouched users**: Non-witnesses need 3+ vouches from top-150 witnesses via the treasury vouch system
+
+### Treasury API
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/api/treasury/status` | Public | Signer count, threshold, balance, operational status |
+| GET | `/api/treasury/signers` | Public | Active signers with online status |
+| POST | `/api/treasury/join` | Top-150 witness | Opt in as signer |
+| POST | `/api/treasury/leave` | Active signer | Opt out with cooldown |
+| GET | `/api/treasury/transactions` | Signer | Recent treasury transactions |
+| GET | `/api/treasury/transactions/:id` | Signer | Single tx with signature progress |
+| POST | `/api/wot/treasury-vouch` | Witness | Vouch for a treasury signer candidate |
+| DELETE | `/api/wot/treasury-vouch` | Witness | Revoke treasury vouch |
+| GET | `/api/wot/treasury-vouches` | Public | All active treasury vouches |
 
 ## Quick Start
 
@@ -112,7 +170,7 @@ npx tsx server/index.ts
 
 ## Environment Variables
 
-See [.env.example](.env.example) for all 15+ variables with documentation.
+See [.env.example](.env.example) for all variables with documentation.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -124,37 +182,48 @@ See [.env.example](.env.example) for all 15+ variables with documentation.
 | `SPK_POA_URL` | No | SPK PoA WebSocket endpoint |
 | `ENCODING_WEBHOOK_SECRET` | No | HMAC secret for encoding webhook verification |
 | `PORT` | No | Server port (default: 5000) |
+| `TREASURY_ENABLED` | No | Enable multisig treasury mode (default: disabled) |
+| `TREASURY_GENESIS_KEY` | No | One-time private key for bootstrapping initial authority |
 
-Services fall back to mock/simulation mode when keys are not configured.
+Services fall back to mock/simulation mode when keys are not configured. Treasury falls back to direct validator-to-node transfers when disabled or not operational.
 
 ## Authentication
 
 Three auth schemes:
 
-1. **Bearer Token** — Hive Keychain challenge-response login → session token for all user endpoints
-2. **Agent API Key** — `POST /api/encoding/agent/register` → API key for encoding agent endpoints
+1. **Bearer Token** — Hive Keychain challenge-response login -> session token for all user endpoints
+2. **Agent API Key** — `POST /api/encoding/agent/register` -> API key for encoding agent endpoints
 3. **Webhook HMAC** — `X-Webhook-Signature` header verified against `ENCODING_WEBHOOK_SECRET`
 
 ## Web of Trust
 
-Witnesses can vouch for one non-witness Hive user, granting them full validator access. Trust chain: if you trust the witness, you trust their pick.
+Witnesses can vouch for non-witness Hive users, granting them validator access. The WoT extends to treasury signer eligibility via a separate vouch system.
 
-**Rules:**
+### Validator WoT (1:1)
+
 - Each witness can vouch for exactly **1** non-witness user (UNIQUE constraint)
 - Vouched users get full validator access (dashboard, challenges, payouts)
 - If the witness drops out of top 150, their vouched user **automatically loses access** (cascading revocation)
-- Witnesses can revoke their vouch at any time
 - Vouched users **cannot** vouch for others (no transitive trust chains)
-- All vouches are public — anyone can see the web of trust
 
-**API Endpoints:**
+### Treasury WoT (1:N)
+
+- Each witness can vouch for **multiple** treasury signer candidates
+- A candidate needs **3+** vouches from top-150 witnesses to qualify
+- If a voucher drops from top-150, their vouch is **automatically revoked**
+- If a candidate drops below 3 vouches, they're **removed from the signer set**
+
+**WoT API Endpoints:**
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| GET | `/api/wot` | Public | List all active vouches |
+| GET | `/api/wot` | Public | List all active validator vouches |
 | GET | `/api/wot/:username` | Public | Check vouch status for a user |
-| POST | `/api/wot/vouch` | Witness | Vouch for a non-witness user |
-| DELETE | `/api/wot/vouch` | Witness | Revoke your vouch |
+| POST | `/api/wot/vouch` | Witness | Vouch for a non-witness validator |
+| DELETE | `/api/wot/vouch` | Witness | Revoke your validator vouch |
+| POST | `/api/wot/treasury-vouch` | Witness | Vouch for a treasury signer candidate |
+| DELETE | `/api/wot/treasury-vouch` | Witness | Revoke treasury vouch |
+| GET | `/api/wot/treasury-vouches` | Public | All active treasury vouches grouped by candidate |
 
 ## Validator Opt-In / Opt-Out
 
@@ -163,8 +232,6 @@ Eligible users (top-150 witnesses or vouched by a witness) are **not** auto-assi
 - **Opt in**: Click "Activate Validator" in the dialog or sidebar
 - **Resign**: Click "Resign" on the Validator Dashboard header — confirmation required
 - **Re-activate**: Click "Activate Validator" in the sidebar at any time
-
-The choice is stored server-side on the session (`validatorOptedIn` column in `user_sessions`). Non-eligible users never see the dialog.
 
 **API Endpoints:**
 
@@ -175,7 +242,7 @@ The choice is stored server-side on the session (`validatorOptedIn` column in `u
 
 ## Storage Economics
 
-Uploaders fund storage contracts with HBD. PoA challenges verify that nodes actually store the data, and successful proofs are rewarded from the contract budget.
+Uploaders fund storage contracts with HBD. PoA challenges verify that nodes actually store the data, and successful proofs are rewarded from the contract budget. When the multisig treasury is operational, rewards are paid from `@hivepoa-treasury` via co-signed transactions. Otherwise, validators pay directly from their own wallets as a fallback.
 
 **How it works:**
 
@@ -185,19 +252,6 @@ Uploaders fund storage contracts with HBD. PoA challenges verify that nodes actu
 4. Contract activates — PoA engine begins challenging nodes that store this CID
 5. Each successful proof deducts `rewardPerChallenge` from the contract budget
 6. Contract completes when budget is exhausted or duration expires
-
-**Example — $4/year for 1 video:**
-
-| Parameter | Value |
-|-----------|-------|
-| Budget | 4.000 HBD |
-| Duration | 365 days |
-| Replicas | 3 |
-| Est. challenges/year | ~109 |
-| Reward per challenge | ~0.037 HBD |
-| Earnings per storer/year | ~$1.33 |
-
-Challenge frequency is low by design (every 4 hours, 5 per round) to minimize Hive API load. Rewards are higher per challenge to compensate. Rarity multiplier (`1/replicaCount`) and streak bonuses (up to 1.5x) still apply.
 
 **Contract API:**
 
@@ -219,7 +273,7 @@ Every viewer watching a video automatically redistributes content to other viewe
 - HLS segments are shared peer-to-peer via WebTorrent trackers
 - Segments are cached in IndexedDB (500MB budget, 7-day TTL) so returning viewers seed from cache
 - Desktop agents auto-pin popular content (`/api/p2p/popular`) for 24/7 seeding
-- Stats reported via `navigator.sendBeacon` on session end → `POST /api/p2p/report`
+- Stats reported via `navigator.sendBeacon` on session end -> `POST /api/p2p/report`
 
 **P2P API:**
 
@@ -239,11 +293,12 @@ Every viewer watching a video automatically redistributes content to other viewe
 - Zod input validation on all mutation endpoints
 - WebSocket heartbeats with connection limits
 - Non-root Docker user
+- **Treasury**: Agent-side digest verification, broadcast race guards, churn protection cooldowns, partial unique indexes on vouches
 
 ## Build
 
 ```bash
-npm run build  # Vite (client) + esbuild (server) → dist/
+npm run build  # Vite (client) + esbuild (server) -> dist/
 npm start      # Production: node dist/index.cjs
 ```
 

@@ -3937,6 +3937,268 @@ export async function registerRoutes(
     }
   });
 
+  // ============================================================
+  // Phase 8: Multisig Treasury Endpoints
+  // ============================================================
+
+  // Initialize treasury coordinator if enabled
+  let treasuryCoordinator: any = null;
+  if (process.env.TREASURY_ENABLED) {
+    const { TreasuryCoordinator } = await import("./services/treasury-coordinator");
+    const { Client } = await import("@hiveio/dhive");
+    const hiveNodes = (process.env.HIVE_NODES || "https://api.hive.blog,https://api.deathwing.me").split(",");
+    const treasuryClient = new Client(hiveNodes);
+
+    treasuryCoordinator = new TreasuryCoordinator({
+      client: treasuryClient,
+      sendToSigner: (username: string, message: any) => agentWSManager.sendToSigner(username, message),
+      getConnectedSigners: () => agentWSManager.getConnectedSignerUsernames(),
+      isTopWitness: async (username: string) => {
+        const { createHiveClient } = await import("./services/hive-client");
+        const hc = createHiveClient();
+        return hc.isTopWitness(username, 150);
+      },
+      genesisKey: process.env.TREASURY_GENESIS_KEY,
+    });
+
+    agentWSManager.setTreasuryCoordinator(treasuryCoordinator);
+    treasuryCoordinator.start();
+
+    // Wire up to PoA engine if it exists
+    if ((global as any).__poaEngine) {
+      (global as any).__poaEngine.setTreasuryCoordinator(treasuryCoordinator);
+    }
+
+    logWoT.info("[Treasury] Coordinator initialized and started");
+  }
+
+  // GET /api/treasury/status — Public treasury status
+  app.get("/api/treasury/status", async (_req, res) => {
+    if (!treasuryCoordinator) {
+      return res.json({ operational: false, signerCount: 0, onlineSignerCount: 0, threshold: 0, treasuryAccount: "@hivepoa-treasury", authorityInSync: false });
+    }
+    try {
+      const status = await treasuryCoordinator.getStatus();
+      res.json(status);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to get treasury status" });
+    }
+  });
+
+  // GET /api/treasury/signers — Public signer list
+  app.get("/api/treasury/signers", async (_req, res) => {
+    if (!treasuryCoordinator) {
+      return res.json([]);
+    }
+    try {
+      const signers = await treasuryCoordinator.getSignerInfoList();
+      res.json(signers);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to get treasury signers" });
+    }
+  });
+
+  // POST /api/treasury/join — Opt in as treasury signer (top-150 witness or WoT-vouched)
+  app.post("/api/treasury/join", async (req, res) => {
+    const sessionToken = req.headers.authorization?.slice(7);
+    if (!sessionToken) return res.status(401).json({ error: "No session token" });
+
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid || !validation.username) {
+      return res.status(401).json({ error: "Invalid session" });
+    }
+
+    if (!treasuryCoordinator) {
+      return res.status(503).json({ error: "Treasury system not enabled" });
+    }
+
+    try {
+      const result = await treasuryCoordinator.joinSigner(validation.username);
+      if (!result.success) {
+        return res.status(400).json({ error: result.error });
+      }
+      res.json({ success: true, message: `@${validation.username} joined treasury signers` });
+    } catch (error) {
+      logWoT.error({ err: error }, "Failed to join treasury");
+      res.status(500).json({ error: "Failed to join treasury" });
+    }
+  });
+
+  // POST /api/treasury/leave — Opt out of treasury signer set
+  app.post("/api/treasury/leave", async (req, res) => {
+    const sessionToken = req.headers.authorization?.slice(7);
+    if (!sessionToken) return res.status(401).json({ error: "No session token" });
+
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid || !validation.username) {
+      return res.status(401).json({ error: "Invalid session" });
+    }
+
+    if (!treasuryCoordinator) {
+      return res.status(503).json({ error: "Treasury system not enabled" });
+    }
+
+    try {
+      const result = await treasuryCoordinator.leaveSigner(validation.username);
+      if (!result.success) {
+        return res.status(400).json({ error: result.error });
+      }
+      res.json({ success: true, message: `@${validation.username} left treasury signers` });
+    } catch (error) {
+      logWoT.error({ err: error }, "Failed to leave treasury");
+      res.status(500).json({ error: "Failed to leave treasury" });
+    }
+  });
+
+  // GET /api/treasury/transactions — Recent treasury transactions (signer-only)
+  app.get("/api/treasury/transactions", async (req, res) => {
+    const sessionToken = req.headers.authorization?.slice(7);
+    if (!sessionToken) return res.status(401).json({ error: "No session token" });
+
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid) return res.status(401).json({ error: "Invalid session" });
+
+    try {
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+      const transactions = await storage.getRecentTreasuryTransactions(limit);
+      res.json(transactions);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to get treasury transactions" });
+    }
+  });
+
+  // GET /api/treasury/transactions/:id — Single transaction detail
+  app.get("/api/treasury/transactions/:id", async (req, res) => {
+    const sessionToken = req.headers.authorization?.slice(7);
+    if (!sessionToken) return res.status(401).json({ error: "No session token" });
+
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid) return res.status(401).json({ error: "Invalid session" });
+
+    try {
+      const tx = await storage.getTreasuryTransaction(req.params.id);
+      if (!tx) return res.status(404).json({ error: "Transaction not found" });
+      res.json(tx);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to get treasury transaction" });
+    }
+  });
+
+  // POST /api/wot/treasury-vouch — Vouch for a treasury signer candidate (witness-only)
+  app.post("/api/wot/treasury-vouch", async (req, res) => {
+    const sessionToken = req.headers.authorization?.slice(7);
+    if (!sessionToken) return res.status(401).json({ error: "No session token" });
+
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid || !validation.username) {
+      return res.status(401).json({ error: "Invalid session" });
+    }
+
+    // Only direct witnesses can vouch (not vouched validators)
+    if (validation.isVouched) {
+      return res.status(403).json({ error: "Only top-150 witnesses can vouch for treasury signers" });
+    }
+
+    const { candidateUsername } = req.body;
+    if (!candidateUsername || typeof candidateUsername !== "string") {
+      return res.status(400).json({ error: "candidateUsername is required" });
+    }
+
+    if (candidateUsername === validation.username) {
+      return res.status(400).json({ error: "Cannot vouch for yourself" });
+    }
+
+    try {
+      const { createHiveClient } = await import("./services/hive-client");
+      const hiveClient = createHiveClient();
+
+      // Check for existing active vouch for this pair
+      const existingVouches = await storage.getActiveVouchesForCandidate(candidateUsername);
+      const alreadyVouched = existingVouches.some((v) => v.voucherUsername === validation.username);
+      if (alreadyVouched) {
+        return res.status(409).json({ error: "You already have an active vouch for this user" });
+      }
+
+      const sponsorRank = await hiveClient.getWitnessRank(validation.username);
+
+      await storage.createTreasuryVouch({
+        voucherUsername: validation.username,
+        candidateUsername,
+        voucherRankAtVouch: sponsorRank || 0,
+        active: true,
+      });
+
+      const vouchCount = await storage.countActiveVouchesForCandidate(candidateUsername);
+      res.json({
+        success: true,
+        message: `Vouched for @${candidateUsername} as treasury signer`,
+        vouchCount,
+        requiredVouches: 3,
+      });
+    } catch (error) {
+      logWoT.error({ err: error }, "Failed to create treasury vouch");
+      res.status(500).json({ error: "Failed to create treasury vouch" });
+    }
+  });
+
+  // DELETE /api/wot/treasury-vouch — Revoke a treasury vouch (witness-only)
+  app.delete("/api/wot/treasury-vouch", async (req, res) => {
+    const sessionToken = req.headers.authorization?.slice(7);
+    if (!sessionToken) return res.status(401).json({ error: "No session token" });
+
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid || !validation.username) {
+      return res.status(401).json({ error: "Invalid session" });
+    }
+
+    const { candidateUsername } = req.body;
+    if (!candidateUsername || typeof candidateUsername !== "string") {
+      return res.status(400).json({ error: "candidateUsername is required" });
+    }
+
+    try {
+      await storage.revokeTreasuryVouch(validation.username, candidateUsername, "manual");
+      res.json({ success: true, message: `Revoked treasury vouch for @${candidateUsername}` });
+    } catch (error) {
+      logWoT.error({ err: error }, "Failed to revoke treasury vouch");
+      res.status(500).json({ error: "Failed to revoke treasury vouch" });
+    }
+  });
+
+  // GET /api/wot/treasury-vouches — All active treasury vouches (public)
+  app.get("/api/wot/treasury-vouches", async (_req, res) => {
+    try {
+      // Get ALL active vouches and group by candidate — includes candidates not yet signers
+      const allVouches = await storage.getAllActiveTreasuryVouches();
+      const signers = await storage.getActiveTreasurySigners();
+      const signerMap = new Map(signers.map((s) => [s.username, s.status]));
+
+      // Group by candidate
+      const grouped: Record<string, { voucher: string; voucherRank: number; createdAt: any }[]> = {};
+      for (const v of allVouches) {
+        if (!grouped[v.candidateUsername]) grouped[v.candidateUsername] = [];
+        grouped[v.candidateUsername].push({
+          voucher: v.voucherUsername,
+          voucherRank: v.voucherRankAtVouch,
+          createdAt: v.createdAt,
+        });
+      }
+
+      const result = Object.entries(grouped).map(([username, vouches]) => ({
+        username,
+        status: signerMap.get(username) || "candidate",
+        isSigner: signerMap.has(username),
+        vouchCount: vouches.length,
+        requiredVouches: 3,
+        vouches,
+      }));
+
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to get treasury vouches" });
+    }
+  });
+
   // ===== Desktop Agent Downloads =====
 
   const DOWNLOADS_DIR = path.resolve(process.cwd(), "desktop-agent", "build");

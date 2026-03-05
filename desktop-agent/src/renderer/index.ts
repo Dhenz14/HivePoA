@@ -183,6 +183,63 @@ async function saveValidation(): Promise<void> {
   }
 }
 
+async function saveActiveKey(): Promise<void> {
+  const input = document.getElementById('activeKey') as HTMLInputElement;
+  const key = input.value.trim();
+  if (!key) {
+    alert('Please enter your Hive active key');
+    return;
+  }
+
+  try {
+    const response = await fetch(`${API_URL}/api/hive/active-key`, {
+      method: 'POST',
+      headers: mutationHeaders(),
+      body: JSON.stringify({ key }),
+    });
+    const data = await response.json();
+    if (data.success) {
+      input.value = '';
+      alert('Active key saved securely!');
+      updateUI();
+    } else {
+      alert('Failed to save: ' + (data.error || 'Unknown error'));
+    }
+  } catch {
+    alert('Failed to save active key');
+  }
+}
+
+async function clearActiveKey(): Promise<void> {
+  if (!confirm('Clear your active key? Treasury signing will be disabled.')) return;
+
+  try {
+    await fetch(`${API_URL}/api/hive/active-key`, {
+      method: 'DELETE',
+      headers: mutationHeaders(),
+    });
+    alert('Active key cleared.');
+    updateUI();
+  } catch {
+    alert('Failed to clear active key');
+  }
+}
+
+async function saveTreasury(): Promise<void> {
+  const enabledInput = document.getElementById('treasuryEnabled') as HTMLInputElement;
+  try {
+    await fetch(`${API_URL}/api/treasury/toggle`, {
+      method: 'POST',
+      headers: mutationHeaders(),
+      body: JSON.stringify({ enabled: enabledInput.checked }),
+    });
+    alert('Treasury settings applied!');
+    updateUI();
+  } catch {
+    alert('Failed to apply treasury settings');
+  }
+}
+
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
   const k = 1024;
@@ -278,6 +335,38 @@ async function updateUI(): Promise<void> {
         } else {
           keyStatus.textContent = 'Your key is encrypted with OS-level security and never leaves your device.';
           keyStatus.style.color = '#666';
+        }
+      }
+    }
+
+    // Treasury signer status
+    const treasuryDot = document.getElementById('treasuryDot');
+    const treasuryText = document.getElementById('treasuryText');
+    const treasuryEnabledInput = document.getElementById('treasuryEnabled') as HTMLInputElement;
+    const activeKeyStatus = document.getElementById('activeKeyStatus');
+
+    if ((status as any).treasury) {
+      const treasury = (status as any).treasury;
+      if (treasuryEnabledInput && !treasuryEnabledInput.matches(':focus')) {
+        treasuryEnabledInput.checked = treasury.signerEnabled;
+      }
+      if (treasury.signerEnabled && treasury.hasActiveKey) {
+        treasuryDot?.classList.add('running');
+        if (treasuryText) treasuryText.textContent = 'Active — auto-signing enabled';
+      } else if (treasury.signerEnabled && !treasury.hasActiveKey) {
+        treasuryDot?.classList.remove('running');
+        if (treasuryText) treasuryText.textContent = 'Enabled but no active key configured';
+      } else {
+        treasuryDot?.classList.remove('running');
+        if (treasuryText) treasuryText.textContent = 'Disabled';
+      }
+      if (activeKeyStatus) {
+        if (treasury.hasActiveKey) {
+          activeKeyStatus.textContent = 'Active key saved (encrypted). Treasury signing ready.';
+          activeKeyStatus.style.color = '#00d4aa';
+        } else {
+          activeKeyStatus.textContent = 'Your key is encrypted with OS-level security and never leaves your device.';
+          activeKeyStatus.style.color = '#666';
         }
       }
     }
@@ -399,6 +488,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('saveStorage')?.addEventListener('click', saveStorage);
   document.getElementById('saveValidation')?.addEventListener('click', saveValidation);
   document.getElementById('keychainLogin')?.addEventListener('click', keychainLogin);
+  document.getElementById('saveActiveKey')?.addEventListener('click', saveActiveKey);
+  document.getElementById('clearActiveKey')?.addEventListener('click', clearActiveKey);
+  document.getElementById('saveTreasury')?.addEventListener('click', saveTreasury);
 
   updateUI();
   setInterval(updateUI, 5000);
