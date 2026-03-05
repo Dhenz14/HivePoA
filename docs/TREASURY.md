@@ -26,6 +26,8 @@ The treasury system eliminates single points of failure for HBD reward distribut
 | `server/services/treasury-hive.ts` | dhive multisig primitives (build tx, compute digest, broadcast) |
 | `server/services/treasury-coordinator.ts` | Core orchestration (signer lifecycle, signing flow, authority sync) |
 | `desktop-agent/src/main/treasury-signer.ts` | Agent-side auto-signing with local policy engine |
+| `desktop-agent/src/main/wallet-manager.ts` | Encrypted wallet (AES-256-GCM + PBKDF2) for key storage |
+| `desktop-agent/src/main/cli.ts` | Headless CLI entry point for Linux servers |
 | `client/src/pages/treasury.tsx` | Treasury dashboard UI |
 
 ### Database Tables
@@ -239,6 +241,37 @@ When `@hivepoa-treasury` is first created, it has a single key in `key_auths` an
 
 ---
 
+## Encrypted Wallet
+
+Private keys are never stored in plaintext. The desktop agent uses an encrypted wallet file at `~/.spk-ipfs/wallet/wallet.json`.
+
+### Encryption
+
+- **Algorithm**: AES-256-GCM (authenticated encryption)
+- **Key derivation**: PBKDF2 with 600,000 iterations, SHA-512, 32-byte key
+- **Salt**: 32 random bytes, stored in the wallet file
+- **IV**: 16 random bytes per key entry
+
+Each key entry stores `encrypted` (ciphertext), `iv`, `tag` (GCM auth tag), and `publicKey` (STM format, not secret).
+
+### Key Lifecycle
+
+1. User sets a wallet password -> PBKDF2 derives encryption key from password + salt
+2. User imports a private key -> key is encrypted with AES-256-GCM and written to disk
+3. On startup, wallet is unlocked with the password -> keys decrypted into memory for signing
+4. On shutdown, in-memory keys are zeroed
+
+### Password Storage
+
+- **Electron mode**: Password stored in the OS keychain via `electron.safeStorage` (DPAPI / Keychain / libsecret). Wallet auto-unlocks on app start.
+- **CLI mode**: Password provided via `SPK_WALLET_PASSWORD` environment variable. Never persisted to disk.
+
+### Recovery
+
+There is no password recovery mechanism. If the password is lost, delete the wallet file and re-import keys.
+
+---
+
 ## Agent-Side Policy Configuration
 
 Default policy (ships with safe defaults, configurable per agent):
@@ -291,3 +324,5 @@ Operation type whitelist: `transfer`, `account_update` only. Everything else is 
 | Authority update resets memo_key | `readAccountInfo()` preserves current memo_key and json_metadata |
 | Stale chain props invalidate signatures | Full tx stored in `operations_json`, not rebuilt at broadcast time |
 | Unsafe JSON in SQLite storage | `parseTxJsonFields()` helper with try-catch wrappers |
+| Raw keys in process memory | AES-256-GCM encrypted wallet; keys decrypted only at startup, zeroed on shutdown |
+| Wallet password exposure | Electron: OS keychain (DPAPI/Keychain/libsecret). CLI: env var per session, never persisted |

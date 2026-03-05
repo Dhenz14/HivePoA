@@ -119,7 +119,7 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/hivepoa npx drizzle-k
 npm run dev
 ```
 
-### Desktop Agent
+### Desktop Agent (Electron)
 
 ```bash
 cd desktop-agent
@@ -127,6 +127,30 @@ npm install
 npm run dev    # Development mode
 npm run build  # Production build
 ```
+
+### Desktop Agent (Headless CLI — Linux Servers)
+
+Run the agent without Electron on Ubuntu/Debian servers:
+
+```bash
+cd desktop-agent
+npm install
+npm run build:cli
+
+# Start with wallet password and Hive username
+SPK_WALLET_PASSWORD=mypassword SPK_HIVE_USERNAME=myuser node dist-cli/cli.js
+```
+
+Environment variables for CLI mode:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SPK_WALLET_PASSWORD` | For signing | Unlocks the encrypted wallet on startup |
+| `SPK_HIVE_USERNAME` | For P2P/treasury | Hive username (overrides saved config) |
+| `SPK_API_PORT` | No | API port (default: 5111) |
+| `SPK_SERVER_URL` | No | Central server URL (default: `http://localhost:5000`) |
+
+Keys are stored in `~/.spk-ipfs/wallet/wallet.json` encrypted with AES-256-GCM. The password is never persisted in CLI mode — provide it via env var each startup.
 
 ### Docker
 
@@ -293,6 +317,7 @@ Every viewer watching a video automatically redistributes content to other viewe
 - Zod input validation on all mutation endpoints
 - WebSocket heartbeats with connection limits
 - Non-root Docker user
+- **Encrypted Wallet**: Private keys stored with AES-256-GCM encryption, PBKDF2 key derivation (600K iterations, SHA-512). Keys decrypted only at startup, never persisted in plaintext
 - **Treasury**: Agent-side digest verification, broadcast race guards, churn protection cooldowns, partial unique indexes on vouches
 
 ## Build
