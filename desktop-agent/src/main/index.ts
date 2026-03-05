@@ -12,6 +12,7 @@ import { ChallengeHandler, ChallengeMessage, ChallengeResponse, CommitmentReques
 import { LocalValidator } from './validator';
 import { AutoPinner } from './auto-pinner';
 import { TreasurySigner } from './treasury-signer';
+import { WalletManager } from './wallet-manager';
 import { initializeFullServer, shutdownFullServer } from './server-init';
 
 // ─── Global error handlers — prevent silent crashes ─────────────────────────
@@ -32,6 +33,7 @@ let kuboManager: KuboManager;
 let apiServer: ApiServer;
 let configStore: ConfigStore;
 let autoUpdater: AutoUpdater;
+let walletManager: WalletManager;
 
 // Legacy mode
 let agentWS: AgentWSClient | null = null;
@@ -123,7 +125,7 @@ async function initializeP2P(): Promise<void> {
   // Initialize Hive client with on-demand key callback
   hiveClient = new AgentHiveClient({
     username: cfg.hiveUsername,
-    getPostingKey: () => configStore.getPostingKey(),
+    getPostingKey: () => walletManager.getPostingKey(),
   });
 
   // Get peer ID from IPFS
@@ -204,9 +206,9 @@ async function initializeLegacy(): Promise<void> {
   agentWS = new AgentWSClient(kuboManager, configStore);
   apiServer.setAgentWS(agentWS);
 
-  // Initialize treasury signer if active key is available
-  if (configStore.hasActiveKey()) {
-    const treasurySigner = new TreasurySigner(configStore);
+  // Initialize treasury signer if wallet has an active key
+  if (walletManager.isInitialized() && walletManager.hasActiveKey()) {
+    const treasurySigner = new TreasurySigner(configStore, walletManager);
     agentWS.setTreasurySigner(treasurySigner);
     console.log('[SPK] Treasury signer initialized — auto-signing enabled');
   }
@@ -230,8 +232,24 @@ async function initialize(): Promise<void> {
   console.log('[SPK] Initializing desktop agent...');
 
   configStore = new ConfigStore();
+
+  // Initialize encrypted wallet for key management
+  walletManager = new WalletManager();
+  const walletDir = path.join(require('os').homedir(), '.spk-ipfs', 'wallet');
+  const walletPassword = configStore.getWalletPassword();
+  if (walletPassword) {
+    try {
+      await walletManager.init(walletDir, walletPassword);
+      console.log('[SPK] Wallet unlocked —', walletManager.hasActiveKey() ? 'active key loaded' : 'no active key');
+    } catch (err: any) {
+      console.error('[SPK] Failed to unlock wallet:', err.message);
+    }
+  } else {
+    console.log('[SPK] No wallet password configured — wallet not initialized');
+  }
+
   kuboManager = new KuboManager(configStore);
-  apiServer = new ApiServer(kuboManager, configStore);
+  apiServer = new ApiServer(kuboManager, configStore, walletManager);
   autoUpdater = new AutoUpdater();
   autoUpdater.setMainWindow(mainWindow);
 

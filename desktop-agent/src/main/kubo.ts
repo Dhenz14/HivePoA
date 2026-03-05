@@ -2,8 +2,15 @@ import { spawn, ChildProcess, execSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { app } from 'electron';
-import { ConfigStore } from './config';
+import type { ConfigStore } from './config';
+
+// Electron is optional — CLI mode runs without it
+let electronApp: { isPackaged: boolean } | null = null;
+try {
+  electronApp = require('electron').app;
+} catch {
+  electronApp = null;
+}
 
 export class KuboManager {
   private process: ChildProcess | null = null;
@@ -24,7 +31,7 @@ export class KuboManager {
     const ext = process.platform === 'win32' ? '.exe' : '';
     
     // In production, use the bundled binary from extraResources
-    if (app.isPackaged) {
+    if (electronApp?.isPackaged) {
       const resourcePath = path.join(process.resourcesPath, 'kubo-bin', `ipfs${ext}`);
       console.log('[Kubo] Looking for binary at:', resourcePath);
       if (fs.existsSync(resourcePath)) {

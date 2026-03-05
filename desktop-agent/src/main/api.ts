@@ -2,7 +2,13 @@ import express, { Express, Request, Response } from 'express';
 import * as http from 'http';
 import * as crypto from 'crypto';
 import axios from 'axios';
-import { app as electronApp } from 'electron';
+// Electron is optional — CLI mode runs without it
+let electronApp: { getVersion(): string; setLoginItemSettings(opts: any): void } | null = null;
+try {
+  electronApp = require('electron').app;
+} catch {
+  electronApp = null;
+}
 import { KuboManager } from './kubo';
 import { ConfigStore, AgentConfig } from './config';
 import { AgentHiveClient } from './hive';
@@ -11,6 +17,7 @@ import type { AgentWSClient } from './agent-ws';
 import type { PeerDiscovery } from './peer-discovery';
 import type { LocalValidator } from './validator';
 import type { ChallengeHandler } from './challenge-handler';
+import { WalletManager } from './wallet-manager';
 
 // Self-contained Keychain auth page served to the user's browser
 const AUTH_PAGE_HTML = `<!DOCTYPE html>
@@ -169,6 +176,7 @@ export class ApiServer {
   private server: http.Server | null = null;
   private kubo: KuboManager;
   private config: ConfigStore;
+  private wallet: WalletManager;
   private port: number;
   private agentWS: AgentWSClient | null = null;
 
@@ -188,9 +196,10 @@ export class ApiServer {
   // Local auth token — generated at startup, required for mutation endpoints
   private localAuthToken: string = crypto.randomBytes(32).toString('hex');
 
-  constructor(kubo: KuboManager, config: ConfigStore) {
+  constructor(kubo: KuboManager, config: ConfigStore, wallet?: WalletManager) {
     this.kubo = kubo;
     this.config = config;
+    this.wallet = wallet || new WalletManager();
     this.port = config.getConfig().apiPort;
     this.app = express();
     this.setupMiddleware();
@@ -275,7 +284,7 @@ export class ApiServer {
           peerCount: this.peerDiscovery?.getPeerCount() || 0,
           validatorEnabled: configData.validatorEnabled,
           validationStats: this.validator?.getStats() || { issued: 0, passed: 0, failed: 0, timeouts: 0 },
-          hasPostingKey: this.config.hasPostingKey(),
+          hasPostingKey: this.wallet.hasPostingKey() || this.config.hasPostingKey(),
         },
         // Legacy server connection (for backward compatibility)
         serverConnection: this.agentWS?.getConnectionStatus() || { connected: false, reconnectAttempts: 0 },
@@ -283,9 +292,10 @@ export class ApiServer {
         // Treasury signer status
         treasury: {
           signerEnabled: configData.treasurySignerEnabled,
-          hasActiveKey: this.config.hasActiveKey(),
+          hasActiveKey: this.wallet.hasActiveKey() || this.config.hasActiveKey(),
+          walletInitialized: this.wallet.isInitialized(),
         },
-        version: electronApp.getVersion(),
+        version: electronApp?.getVersion() || process.env.SPK_VERSION || '1.2.0',
       });
     });
 
@@ -544,33 +554,73 @@ export class ApiServer {
       res.json({ success: true, validatorEnabled: !!enabled });
     });
 
-    // Posting key management
+    // Wallet setup — initialize wallet with a password (first-time setup)
+    this.app.post('/api/wallet/init', this.requireLocalAuth, async (req: Request, res: Response) => {
+      const { password } = req.body;
+      if (!password || typeof password !== 'string' || password.length < 8) {
+        return res.status(400).json({ error: 'Password required (min 8 characters)' });
+      }
+      try {
+        const os = require('os');
+        const path = require('path');
+        const walletDir = path.join(os.homedir(), '.spk-ipfs', 'wallet');
+        await this.wallet.init(walletDir, password);
+        this.config.setWalletPassword(password);
+        res.json({ success: true, walletInitialized: true });
+      } catch (err: any) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    // Posting key management — imports into encrypted wallet
     this.app.post('/api/hive/posting-key', this.requireLocalAuth, (req: Request, res: Response) => {
       const { key } = req.body;
       if (!key || typeof key !== 'string') {
         return res.status(400).json({ error: 'Posting key required' });
       }
-      this.config.setPostingKey(key);
-      res.json({ success: true, hasPostingKey: true });
+      if (!this.wallet.isInitialized()) {
+        return res.status(400).json({ error: 'Wallet not initialized — call POST /api/wallet/init first' });
+      }
+      try {
+        const pubKey = this.wallet.importPostingKey(key);
+        this.config.setPostingPublicKey(pubKey);
+        res.json({ success: true, hasPostingKey: true, publicKey: pubKey });
+      } catch (err: any) {
+        res.status(500).json({ error: err.message });
+      }
     });
 
     this.app.delete('/api/hive/posting-key', this.requireLocalAuth, (req: Request, res: Response) => {
-      this.config.clearPostingKey();
+      if (this.wallet.isInitialized()) {
+        this.wallet.removePostingKey();
+      }
+      this.config.clearPostingPublicKey();
       res.json({ success: true, hasPostingKey: false });
     });
 
-    // Active key management (for treasury signing)
+    // Active key management (for treasury signing) — imports into encrypted wallet
     this.app.post('/api/hive/active-key', this.requireLocalAuth, (req: Request, res: Response) => {
       const { key } = req.body;
       if (!key || typeof key !== 'string') {
         return res.status(400).json({ error: 'Active key required' });
       }
-      this.config.setActiveKey(key);
-      res.json({ success: true, hasActiveKey: true });
+      if (!this.wallet.isInitialized()) {
+        return res.status(400).json({ error: 'Wallet not initialized — call POST /api/wallet/init first' });
+      }
+      try {
+        const pubKey = this.wallet.importActiveKey(key);
+        this.config.setActivePublicKey(pubKey);
+        res.json({ success: true, hasActiveKey: true, publicKey: pubKey });
+      } catch (err: any) {
+        res.status(500).json({ error: err.message });
+      }
     });
 
     this.app.delete('/api/hive/active-key', this.requireLocalAuth, (req: Request, res: Response) => {
-      this.config.clearActiveKey();
+      if (this.wallet.isInitialized()) {
+        this.wallet.removeActiveKey();
+      }
+      this.config.clearActivePublicKey();
       res.json({ success: true, hasActiveKey: false });
     });
 
@@ -578,7 +628,8 @@ export class ApiServer {
     this.app.get('/api/treasury/signer-status', (req: Request, res: Response) => {
       res.json({
         enabled: this.config.getConfig().treasurySignerEnabled,
-        hasActiveKey: this.config.hasActiveKey(),
+        hasActiveKey: this.wallet.hasActiveKey(),
+        walletInitialized: this.wallet.isInitialized(),
       });
     });
 
@@ -599,14 +650,18 @@ export class ApiServer {
       const { enabled } = req.body;
       this.config.setConfig({ autoStart: enabled });
 
-      try {
-        electronApp.setLoginItemSettings({
-          openAtLogin: !!enabled,
-          name: 'SPK Desktop Agent',
-        });
-        console.log(`[API] Autostart ${enabled ? 'enabled' : 'disabled'}`);
-      } catch (error) {
-        console.error('[API] Failed to configure autostart:', error);
+      if (electronApp) {
+        try {
+          electronApp.setLoginItemSettings({
+            openAtLogin: !!enabled,
+            name: 'SPK Desktop Agent',
+          });
+          console.log(`[API] Autostart ${enabled ? 'enabled' : 'disabled'}`);
+        } catch (error) {
+          console.error('[API] Failed to configure autostart:', error);
+        }
+      } else {
+        console.log(`[API] Autostart ${enabled ? 'enabled' : 'disabled'} (CLI mode — use systemd for autostart)`);
       }
 
       res.json({ success: true, enabled });

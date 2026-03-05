@@ -1,5 +1,6 @@
 // Integration: blueprint:javascript_database
-import { 
+import { createRequire } from "module";
+import {
   storageNodes, 
   files,
   validators,
@@ -2067,13 +2068,23 @@ export class DatabaseStorage implements IStorage {
 }
 
 // Factory: SQLite when SQLITE_DB_PATH is set (desktop agent), PostgreSQL otherwise
+// Uses createRequire for compatibility with both ESM (tsx dev) and CJS (esbuild prod)
+let _storageInstance: DatabaseStorage | null = null;
+
 function createStorage(): DatabaseStorage {
+  if (_storageInstance) return _storageInstance;
+
   if (process.env.SQLITE_DB_PATH) {
-    // Lazy import to avoid pulling in better-sqlite3 when running PostgreSQL mode
-    const { SQLiteStorage } = require("./storage-sqlite");
-    return new SQLiteStorage() as unknown as DatabaseStorage;
+    const _require = createRequire(import.meta.url ?? __filename);
+    const { initSQLite, createSQLiteTables } = _require("./db-sqlite");
+    initSQLite(process.env.SQLITE_DB_PATH);
+    createSQLiteTables(process.env.SQLITE_DB_PATH);
+    const { SQLiteStorage } = _require("./storage-sqlite");
+    _storageInstance = new SQLiteStorage() as unknown as DatabaseStorage;
+  } else {
+    _storageInstance = new DatabaseStorage();
   }
-  return new DatabaseStorage();
+  return _storageInstance;
 }
 
 export const storage = createStorage();

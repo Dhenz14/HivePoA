@@ -7,8 +7,9 @@
  * routine payments. Authority updates also auto-sign if policy allows.
  */
 
-import { PrivateKey, cryptoUtils } from "@hiveio/dhive";
+import { cryptoUtils } from "@hiveio/dhive";
 import { ConfigStore } from "./config";
+import { WalletManager } from "./wallet-manager";
 
 // Hive mainnet chain ID — used to verify transaction digests locally
 const HIVE_CHAIN_ID = Buffer.from(
@@ -24,6 +25,7 @@ import { DEFAULT_SIGNER_CONFIG } from "../../../shared/treasury-types";
 
 export class TreasurySigner {
   private config: ConfigStore;
+  private wallet: WalletManager;
   private policyConfig: TreasurySignerConfig;
 
   // Daily spend tracking (resets every 24h)
@@ -33,8 +35,9 @@ export class TreasurySigner {
   // Rate limiting
   private signingRequestTimestamps: number[] = [];
 
-  constructor(config: ConfigStore) {
+  constructor(config: ConfigStore, wallet: WalletManager) {
     this.config = config;
+    this.wallet = wallet;
     this.policyConfig = { ...DEFAULT_SIGNER_CONFIG };
   }
 
@@ -49,9 +52,8 @@ export class TreasurySigner {
       return this.reject(request.txId, "treasury_signer_disabled");
     }
 
-    // Check if we have an active key
-    const activeKey = this.config.getActiveKey();
-    if (!activeKey) {
+    // Check if wallet has an active key
+    if (!this.wallet.hasActiveKey()) {
       return this.reject(request.txId, "no_active_key");
     }
 
@@ -86,11 +88,11 @@ export class TreasurySigner {
         return this.reject(request.txId, "digest_mismatch");
       }
 
-      // Also verify the operations in the tx match what's in metadata
-      // (the tx object IS the source of truth since we verified the digest from it)
-      const digestBuffer = Buffer.from(request.txDigest, "hex");
-      const key = PrivateKey.fromString(activeKey);
-      const signature = key.sign(digestBuffer).toString();
+      // Sign using the wallet manager (key never exposed as raw string)
+      const signature = this.wallet.signDigest(request.txDigest);
+      if (!signature) {
+        return this.reject(request.txId, "signing_failed");
+      }
 
       // Track daily spend for transfers (sum all transfer ops in the tx)
       if (request.metadata.txType === "transfer") {
@@ -195,7 +197,7 @@ export class TreasurySigner {
    */
   isReady(): boolean {
     const cfg = this.config.getConfig();
-    return cfg.treasurySignerEnabled && this.config.hasActiveKey();
+    return cfg.treasurySignerEnabled && this.wallet.hasActiveKey();
   }
 
   getStatus(): {
@@ -206,7 +208,7 @@ export class TreasurySigner {
   } {
     return {
       enabled: this.config.getConfig().treasurySignerEnabled,
-      hasActiveKey: this.config.hasActiveKey(),
+      hasActiveKey: this.wallet.hasActiveKey(),
       dailySpendHbd: this.dailySpendHbd,
       policyConfig: this.policyConfig,
     };

@@ -1,8 +1,16 @@
-import Store from 'electron-store';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
-import { safeStorage } from 'electron';
+
+// Electron modules are optional — CLI mode runs without them
+let Store: any;
+let safeStorage: { isEncryptionAvailable(): boolean; encryptString(s: string): Buffer; decryptString(b: Buffer): string } | null = null;
+try {
+  Store = require('electron-store');
+  safeStorage = require('electron').safeStorage;
+} catch {
+  // Running in CLI mode without Electron
+}
 
 export interface AgentConfig {
   hiveUsername: string | null;
@@ -35,11 +43,14 @@ export interface EarningsData {
 }
 
 export class ConfigStore {
-  private store: Store;
+  private store: any;
   private configPath: string;
   private earningsPath: string;
 
   constructor() {
+    if (!Store) {
+      throw new Error('ConfigStore requires Electron — use CliConfigStore for headless mode');
+    }
     this.store = new Store({
       name: 'spk-desktop-agent',
     });
@@ -75,27 +86,27 @@ export class ConfigStore {
   }
 
   /**
-   * Store Hive posting key encrypted via OS credential store (DPAPI/Keychain/libsecret).
-   * The raw key never touches disk in plaintext.
-   * SECURITY: Refuses to store if OS encryption is unavailable (no plaintext fallback).
+   * Store wallet password encrypted via OS credential store (DPAPI/Keychain/libsecret).
+   * The wallet password unlocks the beekeeper-style encrypted wallet file.
+   * For CLI mode (no Electron), password is entered at startup or via env var.
    */
-  setPostingKey(key: string): void {
-    if (!safeStorage.isEncryptionAvailable()) {
+  setWalletPassword(password: string): void {
+    if (!safeStorage || !safeStorage.isEncryptionAvailable()) {
       throw new Error(
-        'OS encryption unavailable — cannot securely store posting key. ' +
+        'OS encryption unavailable — cannot securely store wallet password. ' +
         'Ensure the system keychain/credential manager is accessible and restart the app.'
       );
     }
-    const encrypted = safeStorage.encryptString(key);
-    this.store.set('encryptedPostingKey', encrypted.toString('base64'));
+    const encrypted = safeStorage.encryptString(password);
+    this.store.set('encryptedWalletPassword', encrypted.toString('base64'));
   }
 
-  getPostingKey(): string | null {
-    const stored = this.store.get('encryptedPostingKey') as string | undefined;
+  getWalletPassword(): string | null {
+    const stored = this.store.get('encryptedWalletPassword') as string | undefined;
     if (!stored) return null;
 
-    if (!safeStorage.isEncryptionAvailable()) {
-      console.error('[Config] OS encryption unavailable — cannot decrypt posting key');
+    if (!safeStorage || !safeStorage.isEncryptionAvailable()) {
+      console.error('[Config] OS encryption unavailable — cannot decrypt wallet password');
       return null;
     }
 
@@ -103,58 +114,50 @@ export class ConfigStore {
       const encrypted = Buffer.from(stored, 'base64');
       return safeStorage.decryptString(encrypted);
     } catch (err) {
-      console.error('[Config] Failed to decrypt posting key:', err);
+      console.error('[Config] Failed to decrypt wallet password:', err);
       return null;
     }
   }
 
-  hasPostingKey(): boolean {
-    return !!this.store.get('encryptedPostingKey');
+  hasWalletPassword(): boolean {
+    return !!this.store.get('encryptedWalletPassword');
   }
 
-  clearPostingKey(): void {
-    this.store.delete('encryptedPostingKey');
+  clearWalletPassword(): void {
+    this.store.delete('encryptedWalletPassword');
   }
 
-  /**
-   * Store Hive active key encrypted via OS credential store (DPAPI/Keychain/libsecret).
-   * Used for treasury multisig signing. Same security pattern as posting key.
-   */
-  setActiveKey(key: string): void {
-    if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error(
-        'OS encryption unavailable — cannot securely store active key. ' +
-        'Ensure the system keychain/credential manager is accessible and restart the app.'
-      );
-    }
-    const encrypted = safeStorage.encryptString(key);
-    this.store.set('encryptedActiveKey', encrypted.toString('base64'));
+  /** Public key accessors — public keys are not secret, stored in plaintext config */
+  setActivePublicKey(pubKey: string): void {
+    this.store.set('activePublicKey', pubKey);
   }
 
-  getActiveKey(): string | null {
-    const stored = this.store.get('encryptedActiveKey') as string | undefined;
-    if (!stored) return null;
-
-    if (!safeStorage.isEncryptionAvailable()) {
-      console.error('[Config] OS encryption unavailable — cannot decrypt active key');
-      return null;
-    }
-
-    try {
-      const encrypted = Buffer.from(stored, 'base64');
-      return safeStorage.decryptString(encrypted);
-    } catch (err) {
-      console.error('[Config] Failed to decrypt active key:', err);
-      return null;
-    }
+  getActivePublicKey(): string | null {
+    return this.store.get('activePublicKey', null) as string | null;
   }
 
   hasActiveKey(): boolean {
-    return !!this.store.get('encryptedActiveKey');
+    return !!this.store.get('activePublicKey');
   }
 
-  clearActiveKey(): void {
-    this.store.delete('encryptedActiveKey');
+  clearActivePublicKey(): void {
+    this.store.delete('activePublicKey');
+  }
+
+  setPostingPublicKey(pubKey: string): void {
+    this.store.set('postingPublicKey', pubKey);
+  }
+
+  getPostingPublicKey(): string | null {
+    return this.store.get('postingPublicKey', null) as string | null;
+  }
+
+  hasPostingKey(): boolean {
+    return !!this.store.get('postingPublicKey');
+  }
+
+  clearPostingPublicKey(): void {
+    this.store.delete('postingPublicKey');
   }
 
   setConfig(config: Partial<AgentConfig>): void {
