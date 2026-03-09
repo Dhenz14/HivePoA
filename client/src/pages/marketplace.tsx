@@ -13,6 +13,7 @@ import { Files, Gem, TrendingUp, Pin, Search, ArrowUpDown, ArrowUp, ArrowDown, D
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { motion } from "framer-motion";
+import { getApiBase } from "@/lib/api-mode";
 
 interface MarketplaceFile {
   id: string;
@@ -26,7 +27,7 @@ interface MarketplaceFile {
 }
 
 async function fetchMarketplaceFiles(): Promise<MarketplaceFile[]> {
-  const res = await fetch("/api/files/marketplace");
+  const res = await fetch(`${getApiBase()}/api/files/marketplace`);
   if (!res.ok) {
     return [];
   }

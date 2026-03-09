@@ -6,6 +6,7 @@ import { TrendingUp, TrendingDown, Activity, Gauge, Clock, AlertTriangle, CheckC
 import { useQuery } from "@tanstack/react-query";
 import { LineChart, Line, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, Area, AreaChart } from "recharts";
 import { cn } from "@/lib/utils";
+import { getApiBase } from "@/lib/api-mode";
 
 interface PerformanceData {
   proofsPerHour: number;
@@ -25,7 +26,7 @@ interface PerformanceData {
 }
 
 async function fetchPerformanceData(): Promise<PerformanceData> {
-  const res = await fetch("/api/analytics/performance");
+  const res = await fetch(`${getApiBase()}/api/analytics/performance`);
   if (!res.ok) {
     return {
       proofsPerHour: 0,

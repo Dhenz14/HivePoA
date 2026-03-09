@@ -43,6 +43,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { BrowserEncoder } from "@/lib/browser-encoder";
 import { detectDesktopAgent, type DesktopAgentStatus } from "@/lib/desktop-agent";
+import { getApiBase } from "@/lib/api-mode";
 
 interface EncodingJob {
   id: string;
@@ -185,9 +186,9 @@ export default function EncodingPage() {
   const { data: jobs = [] } = useQuery<EncodingJob[]>({
     queryKey: ["/api/encoding/jobs", username],
     queryFn: async () => {
-      const url = username 
-        ? `/api/encoding/jobs?owner=${encodeURIComponent(username)}`
-        : "/api/encoding/jobs";
+      const url = username
+        ? `${getApiBase()}/api/encoding/jobs?owner=${encodeURIComponent(username)}`
+        : `${getApiBase()}/api/encoding/jobs`;
       const res = await fetch(url);
       if (!res.ok) throw new Error("Failed to fetch jobs");
       return res.json();
@@ -203,7 +204,7 @@ export default function EncodingPage() {
   const { data: marketEncoders = [] } = useQuery<EncoderNode[]>({
     queryKey: ["/api/encoding/encoders/market"],
     queryFn: async () => {
-      const res = await fetch("/api/encoding/encoders/market?quality=all&sortBy=reputation");
+      const res = await fetch(`${getApiBase()}/api/encoding/encoders/market?quality=all&sortBy=reputation`);
       if (!res.ok) throw new Error("Failed to fetch market encoders");
       return res.json();
     },
@@ -215,7 +216,7 @@ export default function EncodingPage() {
     queryKey: ["/api/encoding/offers/user", wizardState.owner],
     queryFn: async () => {
       if (!wizardState.owner) return [];
-      const res = await fetch(`/api/encoding/offers/user/${encodeURIComponent(wizardState.owner)}`);
+      const res = await fetch(`${getApiBase()}/api/encoding/offers/user/${encodeURIComponent(wizardState.owner)}`);
       if (!res.ok) throw new Error("Failed to fetch offers");
       return res.json();
     },
@@ -284,7 +285,7 @@ export default function EncodingPage() {
 
   const submitJobMutation = useMutation({
     mutationFn: async (job: typeof newJobForm) => {
-      const res = await fetch("/api/encoding/jobs", {
+      const res = await fetch(`${getApiBase()}/api/encoding/jobs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -318,7 +319,7 @@ export default function EncodingPage() {
       owner: string;
       permlink: string;
     }) => {
-      const res = await fetch("/api/encoding/offers", {
+      const res = await fetch(`${getApiBase()}/api/encoding/offers`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
@@ -339,7 +340,7 @@ export default function EncodingPage() {
 
   const cancelOfferMutation = useMutation({
     mutationFn: async ({ offerId, username }: { offerId: string; username: string }) => {
-      const res = await fetch(`/api/encoding/offers/${offerId}?username=${encodeURIComponent(username)}`, {
+      const res = await fetch(`${getApiBase()}/api/encoding/offers/${offerId}?username=${encodeURIComponent(username)}`, {
         method: "DELETE",
       });
       if (!res.ok) throw new Error("Failed to cancel offer");
@@ -356,7 +357,7 @@ export default function EncodingPage() {
 
   const checkDesktopAgentMutation = useMutation({
     mutationFn: async (endpoint: string) => {
-      const res = await fetch("/api/encoding/check-desktop-agent", {
+      const res = await fetch(`${getApiBase()}/api/encoding/check-desktop-agent`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ endpoint }),

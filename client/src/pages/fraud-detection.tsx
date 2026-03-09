@@ -10,6 +10,7 @@ import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
+import { getApiBase } from "@/lib/api-mode";
 
 interface SuspiciousPattern {
   type: string;
@@ -53,7 +54,7 @@ async function fetchFraudData(sessionToken?: string): Promise<FraudData> {
     headers['Authorization'] = `Bearer ${sessionToken}`;
   }
   
-  const res = await fetch("/api/validator/fraud", { headers });
+  const res = await fetch(`${getApiBase()}/api/validator/fraud`, { headers });
   if (!res.ok) {
     return {
       suspiciousPatterns: [],

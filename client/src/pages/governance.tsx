@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+import { getApiBase } from "@/lib/api-mode";
 
 export default function Governance() {
   const { toast } = useToast();
@@ -16,7 +17,7 @@ export default function Governance() {
   const { data: walletData } = useQuery({
     queryKey: ["wallet-dashboard"],
     queryFn: async () => {
-      const res = await fetch("/api/wallet/dashboard");
+      const res = await fetch(`${getApiBase()}/api/wallet/dashboard`);
       if (!res.ok) return { balance: 0 };
       return res.json();
     },

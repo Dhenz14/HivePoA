@@ -15,6 +15,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
 import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
+import { getApiBase } from "@/lib/api-mode";
 
 type ChallengeResult = "pass" | "fail" | "timeout" | "pending";
 
@@ -52,7 +53,7 @@ async function fetchChallenges(sessionToken?: string): Promise<ChallengeStats> {
     headers['Authorization'] = `Bearer ${sessionToken}`;
   }
   
-  const res = await fetch("/api/validator/challenges", { headers });
+  const res = await fetch(`${getApiBase()}/api/validator/challenges`, { headers });
   if (!res.ok) {
     throw new Error(`Failed to fetch challenges: ${res.status} ${res.statusText}`);
   }

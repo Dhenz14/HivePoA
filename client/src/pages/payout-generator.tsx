@@ -10,6 +10,7 @@ import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
 import { CalendarIcon, FileText, Download, CheckCircle2, Clock, AlertCircle, Loader2 } from "lucide-react";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
 import { cn } from "@/lib/utils";
+import { getApiBase } from "@/lib/api-mode";
 
 interface PoaRecipient {
   username: string;
@@ -51,7 +52,7 @@ export default function PayoutGenerator() {
     queryKey: ["poa-data", dateRange.from.toISOString(), dateRange.to.toISOString()],
     queryFn: async () => {
       const res = await fetch(
-        `/api/validator/payout/poa-data?startDate=${startOfDay(dateRange.from).toISOString()}&endDate=${endOfDay(dateRange.to).toISOString()}`,
+        `${getApiBase()}/api/validator/payout/poa-data?startDate=${startOfDay(dateRange.from).toISOString()}&endDate=${endOfDay(dateRange.to).toISOString()}`,
         { headers: { Authorization: `Bearer ${sessionToken}` } }
       );
       if (!res.ok) throw new Error("Failed to fetch PoA data");
@@ -63,7 +64,7 @@ export default function PayoutGenerator() {
   const { data: reports, isLoading: loadingReports } = useQuery<PayoutReport[]>({
     queryKey: ["payout-reports"],
     queryFn: async () => {
-      const res = await fetch("/api/validator/payout/reports", {
+      const res = await fetch(`${getApiBase()}/api/validator/payout/reports`, {
         headers: { Authorization: `Bearer ${sessionToken}` },
       });
       if (!res.ok) throw new Error("Failed to fetch reports");
@@ -74,7 +75,7 @@ export default function PayoutGenerator() {
 
   const generateMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/validator/payout/generate", {
+      const res = await fetch(`${getApiBase()}/api/validator/payout/generate`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -94,7 +95,7 @@ export default function PayoutGenerator() {
   });
 
   const exportReport = async (reportId: string) => {
-    const res = await fetch(`/api/validator/payout/reports/${reportId}/export`, {
+    const res = await fetch(`${getApiBase()}/api/validator/payout/reports/${reportId}/export`, {
       headers: { Authorization: `Bearer ${sessionToken}` },
     });
     if (!res.ok) return;

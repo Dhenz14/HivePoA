@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Wallet, ArrowDownLeft, FileText, CheckCircle2, Clock, Loader2, TrendingUp, Users, DollarSign } from "lucide-react";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
+import { getApiBase } from "@/lib/api-mode";
 
 interface WalletDeposit {
   id: string;
@@ -45,7 +46,7 @@ export default function WalletDashboard() {
   const { data, isLoading } = useQuery<WalletDashboardData>({
     queryKey: ["wallet-dashboard"],
     queryFn: async () => {
-      const res = await fetch("/api/wallet/dashboard");
+      const res = await fetch(`${getApiBase()}/api/wallet/dashboard`);
       if (!res.ok) throw new Error("Failed to fetch wallet data");
       return res.json();
     },

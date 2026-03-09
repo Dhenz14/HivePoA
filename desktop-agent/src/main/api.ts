@@ -254,7 +254,13 @@ export class ApiServer {
   }
 
   private setupRoutes(): void {
-    // Health check - used by web app to detect desktop agent
+    // Lightweight health check — used by static site to detect desktop agent
+    // Must respond instantly (no async I/O) so the 2s probe timeout never fires
+    this.app.get('/api/health', (_req: Request, res: Response) => {
+      res.json({ ok: true, agent: true, version: electronApp.getVersion() });
+    });
+
+    // Full status (heavy — calls Kubo APIs, may be slow)
     this.app.get('/api/status', async (req: Request, res: Response) => {
       const peerId = await this.kubo.getPeerId();
       const stats = await this.kubo.getStats();

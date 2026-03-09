@@ -42,7 +42,7 @@ export async function detectBackendMode(): Promise<BackendMode> {
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 2000);
-      const res = await fetch(`${AGENT_URL}/api/status`, {
+      const res = await fetch(`${AGENT_URL}/api/health`, {
         signal: controller.signal,
         mode: "cors",
       });

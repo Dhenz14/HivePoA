@@ -12,6 +12,7 @@ import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { motion } from "framer-motion";
 import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
+import { getApiBase } from "@/lib/api-mode";
 
 interface NodeDetails {
   id: string;
@@ -54,7 +55,7 @@ async function fetchNodes(sessionToken?: string): Promise<NodesData> {
     headers['Authorization'] = `Bearer ${sessionToken}`;
   }
   
-  const res = await fetch("/api/validator/nodes", { headers });
+  const res = await fetch(`${getApiBase()}/api/validator/nodes`, { headers });
   if (!res.ok) {
     return {
       all: [],

@@ -14,6 +14,7 @@ import { Shield, Activity, Clock, Skull, TrendingUp, TrendingDown, CheckCircle2,
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip } from "recharts";
 import { cn } from "@/lib/utils";
+import { getApiBase } from "@/lib/api-mode";
 import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
 
 interface HourlyActivityItem {
@@ -60,7 +61,7 @@ async function fetchValidatorDashboard(username: string, sessionToken?: string):
     headers['Authorization'] = `Bearer ${sessionToken}`;
   }
   
-  const res = await fetch(`/api/validator/dashboard/${username}`, { headers });
+  const res = await fetch(`${getApiBase()}/api/validator/dashboard/${username}`, { headers });
   if (!res.ok) {
     return {
       validator: {
@@ -575,7 +576,7 @@ function WebOfTrustCard() {
     queryKey: ["wot", user?.username],
     queryFn: async () => {
       if (!user?.username) return null;
-      const res = await fetch(`/api/wot/${user.username}`);
+      const res = await fetch(`${getApiBase()}/api/wot/${user.username}`);
       if (!res.ok) return null;
       return res.json();
     },
@@ -585,7 +586,7 @@ function WebOfTrustCard() {
 
   const vouchMutation = useMutation({
     mutationFn: async (targetUsername: string) => {
-      const res = await fetch("/api/wot/vouch", {
+      const res = await fetch(`${getApiBase()}/api/wot/vouch`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -610,7 +611,7 @@ function WebOfTrustCard() {
 
   const revokeMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/wot/vouch", {
+      const res = await fetch(`${getApiBase()}/api/wot/vouch`, {
         method: "DELETE",
         headers: {
           Authorization: `Bearer ${user?.sessionToken}`,

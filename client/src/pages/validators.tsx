@@ -7,6 +7,7 @@ import { Search, Globe, Shield, Activity, Signal, BarChart3, Users, Loader2 } fr
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { getApiBase } from "@/lib/api-mode";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
@@ -206,7 +207,7 @@ function WebOfTrustSidebar() {
   const { data: vouches = [] } = useQuery<WotVouch[]>({
     queryKey: ["wot"],
     queryFn: async () => {
-      const res = await fetch("/api/wot");
+      const res = await fetch(`${getApiBase()}/api/wot`);
       if (!res.ok) return [];
       return res.json();
     },
