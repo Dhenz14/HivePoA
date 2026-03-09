@@ -188,7 +188,7 @@ export class ApiServer {
   // Keychain auth state
   private pendingChallenge: { token: string; expiresAt: number } | null = null;
   private verifyAttempts: { count: number; windowStart: number } = { count: 0, windowStart: 0 };
-  private sessions: Map<string, { username: string; expiresAt: number }> = new Map();
+  private sessions: Map<string, { username: string; expiresAt: number; isTopWitness: boolean; witnessRank: number | null }> = new Map();
   private static readonly MAX_VERIFY_ATTEMPTS = 5;
   private static readonly VERIFY_WINDOW_MS = 60000;
   private static readonly CHALLENGE_TTL_MS = 60000;
@@ -869,19 +869,33 @@ export class ApiServer {
         this.sessions.set(sessionToken, {
           username,
           expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+          isTopWitness,
+          witnessRank,
         });
+
+        // Check witness status from Hive blockchain
+        let isTopWitness = false;
+        let witnessRank: number | null = null;
+        try {
+          isTopWitness = await hive.isTopWitness(username, 150);
+          if (isTopWitness) {
+            witnessRank = await hive.getWitnessRank(username, 150);
+          }
+        } catch {
+          // Hive API unavailable — default to false
+        }
 
         // Store username in agent config
         this.config.setConfig({ hiveUsername: username });
-        console.log(`[API] Validator login: ${username} verified successfully`);
+        console.log(`[API] Validator login: ${username} verified successfully (witness: ${isTopWitness}, rank: ${witnessRank})`);
 
         res.json({
           success: true,
           username,
           sessionToken,
-          isTopWitness: false,
+          isTopWitness,
           isVouched: false,
-          witnessRank: null,
+          witnessRank,
         });
       } catch (err: any) {
         console.error('[API] Validator login error:', err.message);
@@ -905,9 +919,9 @@ export class ApiServer {
       res.json({
         valid: true,
         username,
-        isTopWitness: false,
+        isTopWitness: session.isTopWitness || false,
         isVouched: false,
-        witnessRank: null,
+        witnessRank: session.witnessRank ?? null,
       });
     });
   }

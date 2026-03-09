@@ -346,6 +346,33 @@ export class AgentHiveClient {
     });
   }
 
+  /** Fetch top witnesses by vote from the Hive blockchain. */
+  async getTopWitnesses(limit: number = 150): Promise<string[]> {
+    await this.throttle();
+    try {
+      const witnesses = await this.client.database.call('get_witnesses_by_vote', ['', limit]);
+      this.onSuccess();
+      return witnesses.map((w: any) => w.owner);
+    } catch (err) {
+      this.onFailure();
+      console.error('[Hive] Failed to get top witnesses:', err);
+      return [];
+    }
+  }
+
+  /** Check if a username is a top N witness. */
+  async isTopWitness(username: string, limit: number = 150): Promise<boolean> {
+    const witnesses = await this.getTopWitnesses(limit);
+    return witnesses.includes(username);
+  }
+
+  /** Get the witness rank (1-indexed) for a username, or null if not a witness. */
+  async getWitnessRank(username: string, limit: number = 150): Promise<number | null> {
+    const witnesses = await this.getTopWitnesses(limit);
+    const idx = witnesses.indexOf(username);
+    return idx >= 0 ? idx + 1 : null;
+  }
+
   /** Verify a Hive Keychain signature against the account's posting key authorities. */
   async verifySignature(username: string, message: string, signature: string): Promise<boolean> {
     try {
