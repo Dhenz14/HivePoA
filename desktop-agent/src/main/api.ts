@@ -257,7 +257,7 @@ export class ApiServer {
     // Lightweight health check — used by static site to detect desktop agent
     // Must respond instantly (no async I/O) so the 2s probe timeout never fires
     this.app.get('/api/health', (_req: Request, res: Response) => {
-      res.json({ ok: true, agent: true, version: electronApp.getVersion() });
+      res.json({ ok: true, agent: true, version: electronApp?.getVersion() || process.env.SPK_VERSION || '1.2.0' });
     });
 
     // Full status (heavy — calls Kubo APIs, may be slow)

@@ -39,21 +39,24 @@ export async function detectBackendMode(): Promise<BackendMode> {
     }
 
     // On GitHub Pages (or other external host) — probe for desktop agent
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 2000);
-      const res = await fetch(`${AGENT_URL}/api/health`, {
-        signal: controller.signal,
-        mode: "cors",
-      });
-      clearTimeout(timeout);
-      if (res.ok) {
-        _mode = "agent";
-        notifyListeners();
-        return _mode;
+    // Try /api/health first (instant, new agents), fall back to /api/status (older agents)
+    for (const endpoint of ["/api/health", "/api/status"]) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 2000);
+        const res = await fetch(`${AGENT_URL}${endpoint}`, {
+          signal: controller.signal,
+          mode: "cors",
+        });
+        clearTimeout(timeout);
+        if (res.ok) {
+          _mode = "agent";
+          notifyListeners();
+          return _mode;
+        }
+      } catch {
+        // Try next endpoint
       }
-    } catch {
-      // Agent not available
     }
 
     _mode = "standalone";
