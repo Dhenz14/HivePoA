@@ -673,6 +673,19 @@ export const treasuryTransactions = sqliteTable("treasury_transactions", {
   createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 
+// Treasury Audit Log — Persistent record of all signing events
+export const treasuryAuditLog = sqliteTable("treasury_audit_log", {
+  id: text("id").primaryKey(),
+  txId: text("tx_id").notNull(),
+  signerUsername: text("signer_username").notNull(),
+  action: text("action").notNull(),
+  nonce: text("nonce"),
+  rejectReason: text("reject_reason"),
+  txDigest: text("tx_digest"),
+  metadata: text("metadata"),
+  createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+});
+
 // ============================================================
 // Re-export types and Zod schemas from the PG schema.
 // Types are erased at compile time; Zod schemas are dialect-agnostic
@@ -722,6 +735,9 @@ export type {
   TreasurySigner, InsertTreasurySigner,
   TreasuryVouch, InsertTreasuryVouch,
   TreasuryTransaction, InsertTreasuryTransaction,
+  TreasuryAuditLog, InsertTreasuryAuditLog,
+  ContentFlag, InsertContentFlag,
+  UploaderBan, InsertUploaderBan,
 } from "./schema";
 
 export {
@@ -765,4 +781,7 @@ export {
   insertTreasurySignerSchema,
   insertTreasuryVouchSchema,
   insertTreasuryTransactionSchema,
+  insertTreasuryAuditLogSchema,
+  insertContentFlagSchema,
+  insertUploaderBanSchema,
 } from "./schema";

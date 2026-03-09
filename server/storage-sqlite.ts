@@ -53,6 +53,7 @@ import type {
   TreasurySigner, InsertTreasurySigner,
   TreasuryVouch, InsertTreasuryVouch,
   TreasuryTransaction, InsertTreasuryTransaction,
+  TreasuryAuditLog, InsertTreasuryAuditLog,
   ContentFlag, InsertContentFlag,
   UploaderBan, InsertUploaderBan,
 } from "@shared/schema";
@@ -2261,5 +2262,22 @@ export class SQLiteStorage implements IStorage {
       .where(and(eq(S.uploaderBans.bannedBy, nodeOperator), eq(S.uploaderBans.active, true)))
       .orderBy(desc(S.uploaderBans.createdAt));
     return rows.map(r => mapRow<UploaderBan>(r)) as UploaderBan[];
+  }
+
+  async createTreasuryAuditLog(entry: InsertTreasuryAuditLog): Promise<TreasuryAuditLog> {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    const [row] = await db().insert(S.treasuryAuditLog).values({
+      id,
+      txId: entry.txId,
+      signerUsername: entry.signerUsername,
+      action: entry.action,
+      nonce: entry.nonce ?? null,
+      rejectReason: entry.rejectReason ?? null,
+      txDigest: entry.txDigest ?? null,
+      metadata: entry.metadata ? JSON.stringify(entry.metadata) : null,
+      createdAt: now,
+    }).returning();
+    return mapRow<TreasuryAuditLog>(row) as TreasuryAuditLog;
   }
 }

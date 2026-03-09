@@ -799,6 +799,19 @@ export const insertPayoutLineItemSchema = createInsertSchema(payoutLineItems).om
   createdAt: true,
 });
 
+// Treasury Audit Log — Persistent record of all signing events
+export const treasuryAuditLog = pgTable("treasury_audit_log", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  txId: text("tx_id").notNull(),
+  signerUsername: text("signer_username").notNull(),
+  action: text("action").notNull(), // requested, signed, rejected, expired, broadcast, failed
+  nonce: text("nonce"),
+  rejectReason: text("reject_reason"),
+  txDigest: text("tx_digest"),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // ============================================================
 // PHASE 9: Community Content Moderation
 // ============================================================
@@ -958,6 +971,11 @@ export const insertTreasuryTransactionSchema = createInsertSchema(treasuryTransa
   createdAt: true,
 });
 
+export const insertTreasuryAuditLogSchema = createInsertSchema(treasuryAuditLog).omit({
+  id: true,
+  createdAt: true,
+});
+
 // ============================================================
 // Types
 // ============================================================
@@ -1092,3 +1110,6 @@ export type InsertTreasuryVouch = z.infer<typeof insertTreasuryVouchSchema>;
 
 export type TreasuryTransaction = typeof treasuryTransactions.$inferSelect;
 export type InsertTreasuryTransaction = z.infer<typeof insertTreasuryTransactionSchema>;
+
+export type TreasuryAuditLog = typeof treasuryAuditLog.$inferSelect;
+export type InsertTreasuryAuditLog = z.infer<typeof insertTreasuryAuditLogSchema>;

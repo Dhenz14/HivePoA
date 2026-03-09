@@ -28,13 +28,14 @@ Decentralized storage validation protocol built on the Hive L1 blockchain. Valid
 | **Validator Dashboard** | Real-time challenge monitoring, reputation history, blacklist management |
 | **Treasury Dashboard** | Authority ring visualization, signer status, WoT vouching, signature progress, transaction history |
 | **Validator Opt-In/Out** | Eligible users choose whether to activate as a validator — resign any time from the dashboard |
+| **Content Moderation** | Community flagging, uploader bans, auto-blocklist for confirmed threats |
 | **Dark / Light Theme** | Toggle in the sidebar footer, persisted to localStorage |
 
 ## Project Scale
 
-- 162 API endpoints across 25 services
-- 45 database tables (Drizzle ORM schema)
-- 25 client pages (including Treasury dashboard and video watch page with P2P)
+- 164+ API endpoints across 25 services
+- 46 database tables (Drizzle ORM schema)
+- 25 client pages (including Treasury dashboard, content moderation, and video watch page with P2P)
 - 168 automated tests across 5 test suites (vitest)
 - Full Docker deployment stack
 - GitHub Pages static site with auto-deploy
@@ -72,6 +73,15 @@ Every 10 minutes, the coordinator compares on-chain authority with the database 
 ### Security
 
 - **Agent-side digest verification**: Agents independently compute `cryptoUtils.transactionDigest(tx, chainId)` and reject mismatches — prevents a compromised server from submitting tampered transactions
+- **Operations cross-verification**: Agent verifies `request.operations` matches `request.tx.operations` exactly — prevents policy-bypass attacks where benign ops pass policy but tx contains different operations
+- **Nonce replay protection**: Both server and agent track seen nonces with LRU eviction — duplicate signing requests are rejected
+- **Protocol version validation**: Agent rejects requests with unexpected protocol version, enabling safe upgrades
+- **Cryptographic signature verification**: Server verifies each signature via `dhive Signature.recover()` against the signer's on-chain active key before accepting
+- **Server-side spending caps**: $5/tx and $200/day server-side limits mirror agent policy as defense-in-depth
+- **Signer re-validation at broadcast**: Before broadcasting, server re-checks every signer is still active/eligible — late removals invalidate their signatures
+- **Treasury audit log**: Every signing event (request, sign, reject, broadcast, expire) is recorded in `treasury_audit_log` for forensic analysis
+- **Persistent daily spend**: Agent persists daily spend state to disk — restarts don't reset the daily cap
+- **Local-only policy**: Agent policy configuration cannot be overridden remotely by the server
 - **Broadcast race guard**: `broadcastingTxIds` Set prevents concurrent broadcast attempts when signatures arrive simultaneously
 - **Churn protection**: 7-day cooldown after opting out, escalating to 30 days for frequent churners (3+ opt-outs in 90 days)
 - **Genesis bootstrap**: `TREASURY_GENESIS_KEY` env var for initial authority setup, removed after first multisig update
@@ -350,7 +360,8 @@ Every viewer watching a video automatically redistributes content to other viewe
 - WebSocket heartbeats with connection limits
 - Non-root Docker user
 - **Encrypted Wallet**: Private keys stored with AES-256-GCM encryption, PBKDF2 key derivation (600K iterations, SHA-512). Keys decrypted only at startup, never persisted in plaintext
-- **Treasury**: Agent-side digest verification, broadcast race guards, churn protection cooldowns, partial unique indexes on vouches
+- **Treasury**: Agent-side digest + operations verification, nonce replay protection, cryptographic signature verification, server-side spending caps, signer re-validation at broadcast, persistent audit log, local-only policy config
+- **Content Moderation**: Community flagging with severity levels, auto-blocklist for confirmed critical threats, uploader bans by Hive username (local/network scope)
 
 ## Build
 

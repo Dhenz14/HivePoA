@@ -10,7 +10,9 @@
 /** Server -> Agent: Request to sign a treasury transaction */
 export interface SigningRequest {
   type: "SigningRequest";
+  version: number;                 // Protocol version (must be 1)
   txId: string;                    // treasury_transactions.id
+  nonce: string;                   // Unique nonce — agent rejects duplicates
   txDigest: string;                // Hex SHA256 of serialized tx — what gets signed
   operations: any[];               // Human-readable ops for agent-side policy check
   tx: any;                         // Full unsigned tx object — agent verifies digest matches
@@ -21,11 +23,17 @@ export interface SigningRequest {
 /** Agent -> Server: Response to a signing request */
 export interface SigningResponse {
   type: "SigningResponse";
+  version: number;                 // Protocol version (must be 1)
   txId: string;
+  nonce: string;                   // Echo back nonce for replay matching
   signature: string | null;        // Hex signature, or null if rejected
   rejected: boolean;
   rejectReason: string | null;     // e.g., "amount_exceeds_cap", "blocked_op_type"
+  signerUsername: string;           // Signer's Hive username for server-side verification
 }
+
+/** Current protocol version */
+export const TREASURY_PROTOCOL_VERSION = 1;
 
 /** Metadata attached to signing requests for policy decisions */
 export interface SigningMetadata {

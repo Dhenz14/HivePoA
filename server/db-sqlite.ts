@@ -648,6 +648,18 @@ export function createSQLiteTables(dbPath: string) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS treasury_audit_log (
+      id TEXT PRIMARY KEY,
+      tx_id TEXT NOT NULL,
+      signer_username TEXT NOT NULL,
+      action TEXT NOT NULL,
+      nonce TEXT,
+      reject_reason TEXT,
+      tx_digest TEXT,
+      metadata TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS content_flags (
       id TEXT PRIMARY KEY,
       cid TEXT NOT NULL,

@@ -5,9 +5,18 @@
  * validates against local policy rules, signs with the active key,
  * and returns a SigningResponse. No popups, no user interaction for
  * routine payments. Authority updates also auto-sign if policy allows.
+ *
+ * Security hardening:
+ *   - Protocol version validation
+ *   - Nonce replay protection (rejects duplicate nonces)
+ *   - Operations ↔ tx.operations cross-verification
+ *   - Daily spend persisted to disk (survives restarts)
+ *   - Policy updates only from local config (no remote override)
  */
 
 import { cryptoUtils } from "@hiveio/dhive";
+import { existsSync, readFileSync, writeFileSync } from "fs";
+import { join } from "path";
 import { ConfigStore } from "./config";
 import { WalletManager } from "./wallet-manager";
 
@@ -21,24 +30,44 @@ import type {
   SigningResponse,
   TreasurySignerConfig,
 } from "../../../shared/treasury-types";
-import { DEFAULT_SIGNER_CONFIG } from "../../../shared/treasury-types";
+import {
+  DEFAULT_SIGNER_CONFIG,
+  TREASURY_PROTOCOL_VERSION,
+} from "../../../shared/treasury-types";
+
+/** Maximum nonces to track before evicting oldest 20% */
+const MAX_NONCE_CACHE = 10_000;
+
+interface PersistedSpendState {
+  dailySpendHbd: number;
+  dailySpendResetAt: number;
+}
 
 export class TreasurySigner {
   private config: ConfigStore;
   private wallet: WalletManager;
   private policyConfig: TreasurySignerConfig;
 
-  // Daily spend tracking (resets every 24h)
+  // Daily spend tracking (persisted to disk)
   private dailySpendHbd = 0;
   private dailySpendResetAt = Date.now() + 86_400_000;
+  private spendFilePath: string;
+
+  // Nonce replay protection — reject duplicate nonces
+  private seenNonces = new Map<string, number>(); // nonce → timestamp
 
   // Rate limiting
   private signingRequestTimestamps: number[] = [];
 
-  constructor(config: ConfigStore, wallet: WalletManager) {
+  constructor(config: ConfigStore, wallet: WalletManager, dataDir?: string) {
     this.config = config;
     this.wallet = wallet;
     this.policyConfig = { ...DEFAULT_SIGNER_CONFIG };
+
+    // Persist daily spend to disk so restarts don't reset the daily cap
+    const dir = dataDir || (typeof process !== "undefined" ? process.cwd() : ".");
+    this.spendFilePath = join(dir, "treasury-spend-state.json");
+    this.loadSpendState();
   }
 
   /**
@@ -46,35 +75,54 @@ export class TreasurySigner {
    */
   async handleSigningRequest(request: SigningRequest): Promise<SigningResponse> {
     const agentConfig = this.config.getConfig();
+    const signerUsername = agentConfig.hiveUsername || "";
 
     // Check if treasury signing is enabled
     if (!agentConfig.treasurySignerEnabled) {
-      return this.reject(request.txId, "treasury_signer_disabled");
+      return this.reject(request.txId, request.nonce, signerUsername, "treasury_signer_disabled");
     }
 
     // Check if wallet has an active key
     if (!this.wallet.hasActiveKey()) {
-      return this.reject(request.txId, "no_active_key");
+      return this.reject(request.txId, request.nonce, signerUsername, "no_active_key");
     }
+
+    // SECURITY: Validate protocol version
+    if (request.version !== TREASURY_PROTOCOL_VERSION) {
+      return this.reject(request.txId, request.nonce, signerUsername,
+        `unsupported_protocol_version:${request.version}`);
+    }
+
+    // SECURITY: Reject duplicate nonces (replay protection)
+    if (!request.nonce || this.seenNonces.has(request.nonce)) {
+      return this.reject(request.txId, request.nonce, signerUsername, "duplicate_or_missing_nonce");
+    }
+    this.trackNonce(request.nonce);
 
     // Check expiration
     if (new Date(request.expiresAt).getTime() < Date.now()) {
-      return this.reject(request.txId, "request_expired");
+      return this.reject(request.txId, request.nonce, signerUsername, "request_expired");
     }
 
     // Run policy checks
     const policyResult = this.checkPolicy(request);
     if (!policyResult.allowed) {
       console.log(`[TreasurySigner] Policy rejected: ${policyResult.reason}`);
-      return this.reject(request.txId, policyResult.reason);
+      return this.reject(request.txId, request.nonce, signerUsername, policyResult.reason);
     }
 
     // SECURITY: Verify the digest matches the tx object before signing.
-    // This prevents a compromised server from sending a policy-compliant operations
-    // array but a digest for a different malicious transaction.
     try {
       if (!request.tx) {
-        return this.reject(request.txId, "missing_tx_object");
+        return this.reject(request.txId, request.nonce, signerUsername, "missing_tx_object");
+      }
+
+      // SECURITY: Verify operations array matches tx.operations exactly.
+      // Prevents a compromised server from sending benign-looking operations
+      // for policy approval but a tx with different actual operations.
+      if (!this.verifyOperationsMatch(request.operations, request.tx.operations)) {
+        console.error(`[TreasurySigner] OPERATIONS MISMATCH — request.operations != tx.operations!`);
+        return this.reject(request.txId, request.nonce, signerUsername, "operations_mismatch");
       }
 
       // Compute digest locally from the full tx to verify it matches
@@ -85,13 +133,13 @@ export class TreasurySigner {
       const localDigestHex = localDigest.toString("hex");
       if (localDigestHex !== request.txDigest) {
         console.error(`[TreasurySigner] DIGEST MISMATCH — server sent tampered digest!`);
-        return this.reject(request.txId, "digest_mismatch");
+        return this.reject(request.txId, request.nonce, signerUsername, "digest_mismatch");
       }
 
       // Sign using the wallet manager (key never exposed as raw string)
       const signature = this.wallet.signDigest(request.txDigest);
       if (!signature) {
-        return this.reject(request.txId, "signing_failed");
+        return this.reject(request.txId, request.nonce, signerUsername, "signing_failed");
       }
 
       // Track daily spend for transfers (sum all transfer ops in the tx)
@@ -106,20 +154,38 @@ export class TreasurySigner {
             }
           }
         }
+        this.saveSpendState();
       }
 
       console.log(`[TreasurySigner] Signed tx ${request.txId} (${request.metadata.txType})`);
 
       return {
         type: "SigningResponse",
+        version: TREASURY_PROTOCOL_VERSION,
         txId: request.txId,
+        nonce: request.nonce,
+        signerUsername,
         signature,
         rejected: false,
         rejectReason: null,
       };
     } catch (err: any) {
       console.error(`[TreasurySigner] Signing failed: ${err.message}`);
-      return this.reject(request.txId, "signing_error");
+      return this.reject(request.txId, request.nonce, signerUsername, "signing_error");
+    }
+  }
+
+  /**
+   * SECURITY: Verify that request.operations matches tx.operations exactly.
+   * Deep comparison using JSON serialization — operations must be identical.
+   */
+  private verifyOperationsMatch(policyOps: any[], txOps: any[]): boolean {
+    if (!policyOps || !txOps) return false;
+    if (policyOps.length !== txOps.length) return false;
+    try {
+      return JSON.stringify(policyOps) === JSON.stringify(txOps);
+    } catch {
+      return false;
     }
   }
 
@@ -131,6 +197,7 @@ export class TreasurySigner {
     if (Date.now() > this.dailySpendResetAt) {
       this.dailySpendHbd = 0;
       this.dailySpendResetAt = Date.now() + 86_400_000;
+      this.saveSpendState();
     }
 
     // Rate limit check
@@ -175,21 +242,61 @@ export class TreasurySigner {
     return { allowed: true, reason: "" };
   }
 
-  private reject(txId: string, reason: string): SigningResponse {
+  private reject(txId: string, nonce: string, signerUsername: string, reason: string): SigningResponse {
     return {
       type: "SigningResponse",
+      version: TREASURY_PROTOCOL_VERSION,
       txId,
+      nonce,
+      signerUsername,
       signature: null,
       rejected: true,
       rejectReason: reason,
     };
   }
 
-  /**
-   * Update policy configuration at runtime.
-   */
-  updatePolicy(config: Partial<TreasurySignerConfig>): void {
-    this.policyConfig = { ...this.policyConfig, ...config };
+  /** Track a nonce to prevent replay. Evicts oldest 20% when cache is full. */
+  private trackNonce(nonce: string): void {
+    if (this.seenNonces.size >= MAX_NONCE_CACHE) {
+      // Evict oldest 20%
+      const entries = [...this.seenNonces.entries()]
+        .sort((a, b) => a[1] - b[1]);
+      const toRemove = Math.ceil(MAX_NONCE_CACHE * 0.2);
+      for (let i = 0; i < toRemove; i++) {
+        this.seenNonces.delete(entries[i][0]);
+      }
+    }
+    this.seenNonces.set(nonce, Date.now());
+  }
+
+  /** Persist daily spend state to disk so restarts don't reset the cap. */
+  private saveSpendState(): void {
+    try {
+      const state: PersistedSpendState = {
+        dailySpendHbd: this.dailySpendHbd,
+        dailySpendResetAt: this.dailySpendResetAt,
+      };
+      writeFileSync(this.spendFilePath, JSON.stringify(state), "utf-8");
+    } catch {
+      // Non-critical — worst case we lose spend tracking on crash
+    }
+  }
+
+  /** Load persisted daily spend state from disk. */
+  private loadSpendState(): void {
+    try {
+      if (existsSync(this.spendFilePath)) {
+        const raw = readFileSync(this.spendFilePath, "utf-8");
+        const state: PersistedSpendState = JSON.parse(raw);
+        if (state.dailySpendResetAt > Date.now()) {
+          this.dailySpendHbd = state.dailySpendHbd;
+          this.dailySpendResetAt = state.dailySpendResetAt;
+        }
+        // If reset time has passed, leave defaults (0 spend, new 24h window)
+      }
+    } catch {
+      // Non-critical — start fresh
+    }
   }
 
   /**

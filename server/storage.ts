@@ -121,12 +121,15 @@ import {
   treasurySigners,
   treasuryVouches,
   treasuryTransactions,
+  treasuryAuditLog,
   type TreasurySigner,
   type InsertTreasurySigner,
   type TreasuryVouch,
   type InsertTreasuryVouch,
   type TreasuryTransaction,
   type InsertTreasuryTransaction,
+  type TreasuryAuditLog,
+  type InsertTreasuryAuditLog,
   // Phase 9: Content Moderation
   contentFlags,
   uploaderBans,
@@ -431,6 +434,8 @@ export interface IStorage {
   isUploaderBanned(username: string, bannedBy?: string): Promise<boolean>;
   removeUploaderBan(id: string): Promise<void>;
   getActiveBansForNode(nodeOperator: string): Promise<UploaderBan[]>;
+  // Treasury Audit Log
+  createTreasuryAuditLog(entry: InsertTreasuryAuditLog): Promise<TreasuryAuditLog>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2208,6 +2213,11 @@ export class DatabaseStorage implements IStorage {
         eq(uploaderBans.active, true)
       ))
       .orderBy(desc(uploaderBans.createdAt));
+  }
+
+  async createTreasuryAuditLog(entry: InsertTreasuryAuditLog): Promise<TreasuryAuditLog> {
+    const [row] = await db.insert(treasuryAuditLog).values(entry).returning();
+    return row;
   }
 }
 

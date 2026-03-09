@@ -35,6 +35,9 @@ import {
   MIN_TREASURY_VOUCHES,
 } from "../../shared/treasury-types";
 import type { SigningRequest, SigningMetadata, TreasuryStatus, TreasurySignerInfo } from "../../shared/treasury-types";
+import { TREASURY_PROTOCOL_VERSION } from "../../shared/treasury-types";
+import { randomUUID } from "crypto";
+import { cryptoUtils, PublicKey, Signature } from "@hiveio/dhive";
 
 const log = logHive; // Reuse the Hive logger
 
@@ -60,6 +63,16 @@ export class TreasuryCoordinator {
 
   // Guard against concurrent broadcast attempts for the same tx
   private broadcastingTxIds: Set<string> = new Set();
+
+  // Nonce tracking: prevent replay attacks (nonce -> txId)
+  private usedNonces: Map<string, string> = new Map();
+  private static readonly MAX_NONCE_CACHE = 10000;
+
+  // Server-side per-tx amount cap (defense-in-depth, mirrors agent policy)
+  private static readonly SERVER_MAX_PER_TX_HBD = 5.0;
+  private static readonly SERVER_DAILY_CAP_HBD = 200.0;
+  private dailyServerSpendHbd = 0;
+  private dailyServerResetAt = Date.now() + 86_400_000;
 
   constructor(opts: {
     client: Client;
@@ -286,6 +299,22 @@ export class TreasuryCoordinator {
     }
 
     const threshold = computeThreshold(signers.length);
+
+    // SERVER-SIDE policy check (defense-in-depth — mirrors agent-side caps)
+    const transferAmountHbd = parseFloat(opts.amount) || 0;
+    if (transferAmountHbd > TreasuryCoordinator.SERVER_MAX_PER_TX_HBD) {
+      log.warn({ amount: opts.amount }, "[Treasury] Transfer exceeds server per-tx cap");
+      return { success: false };
+    }
+    if (Date.now() > this.dailyServerResetAt) {
+      this.dailyServerSpendHbd = 0;
+      this.dailyServerResetAt = Date.now() + 86_400_000;
+    }
+    if (this.dailyServerSpendHbd + transferAmountHbd > TreasuryCoordinator.SERVER_DAILY_CAP_HBD) {
+      log.warn("[Treasury] Transfer exceeds server daily cap");
+      return { success: false };
+    }
+
     const transferOp = buildTransferOp(opts.to, opts.amount, opts.memo);
 
     try {
@@ -312,9 +341,14 @@ export class TreasuryCoordinator {
 
       // Distribute signing request to connected signers
       // Include full tx so agents can independently verify the digest
+      const nonce = randomUUID();
+      this.trackNonce(nonce, txRecord.id);
+
       const request: SigningRequest = {
         type: "SigningRequest",
+        version: TREASURY_PROTOCOL_VERSION,
         txId: txRecord.id,
+        nonce,
         txDigest: digestHex,
         operations: tx.operations,
         tx,
@@ -326,6 +360,9 @@ export class TreasuryCoordinator {
           memo: opts.memo,
         },
       };
+
+      // Track server spend after successful request creation
+      this.dailyServerSpendHbd += transferAmountHbd;
 
       const connectedSigners = this.getConnectedSigners();
       const activeSignerUsernames = signers.map((s) => s.username);
@@ -415,9 +452,14 @@ export class TreasuryCoordinator {
         },
       });
 
+      const batchNonce = randomUUID();
+      this.trackNonce(batchNonce, txRecord.id);
+
       const request: SigningRequest = {
         type: "SigningRequest",
+        version: TREASURY_PROTOCOL_VERSION,
         txId: txRecord.id,
+        nonce: batchNonce,
         txDigest: digestHex,
         operations: tx.operations,
         tx,
@@ -474,6 +516,7 @@ export class TreasuryCoordinator {
 
   /**
    * Handle a signing response from a connected agent.
+   * Now with: nonce replay check, signature verification, signer re-validation, audit logging.
    */
   async handleSigningResponse(
     username: string,
@@ -481,7 +524,11 @@ export class TreasuryCoordinator {
     signature: string | null,
     rejected: boolean,
     rejectReason: string | null,
+    nonce?: string,
   ): Promise<void> {
+    // Audit: log all responses (accepted and rejected)
+    this.auditLog(txId, username, rejected ? "rejected" : "signed", nonce, rejectReason ?? undefined);
+
     if (rejected || !signature) {
       log.info({ username, txId, rejectReason }, "[Treasury] Signer rejected");
       return;
@@ -492,7 +539,37 @@ export class TreasuryCoordinator {
       return; // Already resolved
     }
 
-    // Store the signature
+    // SECURITY: Check expiration server-side (not just agent-side)
+    if (tx.expiresAt && new Date(tx.expiresAt).getTime() < Date.now()) {
+      log.warn({ txId, username }, "[Treasury] Signing response for expired tx");
+      return;
+    }
+
+    // SECURITY: Nonce replay check
+    if (nonce && this.usedNonces.has(nonce)) {
+      const originalTxId = this.usedNonces.get(nonce);
+      if (originalTxId !== txId) {
+        log.error({ txId, username, nonce }, "[Treasury] NONCE REUSE DETECTED — possible replay");
+        return;
+      }
+    }
+
+    // SECURITY: Verify signer is still active at signature acceptance time
+    const signer = await storage.getTreasurySignerByUsername(username);
+    if (!signer || signer.status !== "active") {
+      log.warn({ username, txId }, "[Treasury] Signature from non-active signer — rejected");
+      return;
+    }
+
+    // SECURITY: Cryptographically verify the signature against the signer's public key
+    const verifyResult = await this.verifySignature(username, tx.txDigest, signature);
+    if (!verifyResult) {
+      log.error({ username, txId }, "[Treasury] INVALID SIGNATURE — cryptographic verification failed");
+      this.auditLog(txId, username, "invalid_signature", nonce);
+      return;
+    }
+
+    // Store the verified signature
     await storage.updateTreasuryTxSignature(txId, username, signature);
 
     // Re-read to get updated signature count
@@ -511,18 +588,48 @@ export class TreasuryCoordinator {
     if (sigCount >= updated.threshold && !this.broadcastingTxIds.has(txId)) {
       this.broadcastingTxIds.add(txId);
       try {
+        // SECURITY: Re-validate ALL signers are still active at broadcast time
+        const activeSigners = await storage.getActiveTreasurySigners();
+        const activeUsernames = new Set(activeSigners.map(s => s.username));
+        const validSigs: Record<string, string> = {};
+        for (const [sigUser, sig] of Object.entries(sigs)) {
+          if (activeUsernames.has(sigUser)) {
+            validSigs[sigUser] = sig;
+          } else {
+            log.warn({ username: sigUser, txId }, "[Treasury] Signer no longer active at broadcast — discarding signature");
+          }
+        }
+        if (Object.keys(validSigs).length < updated.threshold) {
+          log.warn({ txId, validSigs: Object.keys(validSigs).length, threshold: updated.threshold },
+            "[Treasury] Not enough valid signatures after re-validation");
+          this.broadcastingTxIds.delete(txId);
+          return; // Wait for more signatures
+        }
+
         // Parse the ORIGINAL transaction exactly as it was built (same ref_block, expiration)
         const originalTx = JSON.parse(updated.operationsJson);
+
+        // SECURITY: Verify digest matches before broadcast
+        const recomputedDigest = (cryptoUtils as any).transactionDigest(
+          originalTx, (this.client as any).chainId,
+        );
+        if (recomputedDigest.toString("hex") !== updated.txDigest) {
+          log.error({ txId }, "[Treasury] DIGEST MISMATCH at broadcast — operationsJson tampered!");
+          await storage.updateTreasuryTxStatus(txId, "failed");
+          this.auditLog(txId, "system", "digest_mismatch_at_broadcast");
+          return;
+        }
 
         // Assemble with collected signatures and broadcast
         const signedTx = assembleSignedTransaction(
           originalTx,
-          Object.values(sigs),
+          Object.values(validSigs),
         );
         const result = await broadcastMultisig(this.client, signedTx);
 
         await storage.updateTreasuryTxStatus(txId, "broadcast", result.id);
         log.info({ txId, hiveTxId: result.id }, "[Treasury] Multisig tx broadcast!");
+        this.auditLog(txId, "system", "broadcast", undefined, undefined, result.id);
 
         // Resolve the pending session
         const session = this.pendingSigningSessions.get(txId);
@@ -702,9 +809,14 @@ export class TreasuryCoordinator {
       });
 
       // Send signing request to all currently-connected active signers
+      const authNonce = randomUUID();
+      this.trackNonce(authNonce, txRecord.id);
+
       const request: SigningRequest = {
         type: "SigningRequest",
+        version: TREASURY_PROTOCOL_VERSION,
         txId: txRecord.id,
+        nonce: authNonce,
         txDigest: digestHex,
         operations: tx.operations,
         tx,
@@ -724,5 +836,75 @@ export class TreasuryCoordinator {
     } catch (err) {
       log.error({ err }, "[Treasury] Failed to initiate authority update");
     }
+  }
+
+  // ============================================================
+  // Security Helpers
+  // ============================================================
+
+  /** Track a nonce to prevent replay attacks. Evicts oldest when cache is full. */
+  private trackNonce(nonce: string, txId: string): void {
+    if (this.usedNonces.size >= TreasuryCoordinator.MAX_NONCE_CACHE) {
+      // Evict oldest 20%
+      const toDelete = Math.floor(TreasuryCoordinator.MAX_NONCE_CACHE * 0.2);
+      const keys = this.usedNonces.keys();
+      for (let i = 0; i < toDelete; i++) {
+        const k = keys.next().value;
+        if (k) this.usedNonces.delete(k);
+      }
+    }
+    this.usedNonces.set(nonce, txId);
+  }
+
+  /**
+   * Cryptographically verify a signature against the signer's Hive active public key.
+   * Returns true if valid, false if invalid or verification fails.
+   */
+  private async verifySignature(username: string, txDigestHex: string, signatureHex: string): Promise<boolean> {
+    try {
+      const [account] = await this.client.database.getAccounts([username]);
+      if (!account) return false;
+
+      const digestBuffer = Buffer.from(txDigestHex, "hex");
+      const sig = Signature.fromString(signatureHex);
+      const recovered = sig.recover(digestBuffer);
+
+      // Check against all active key authorities
+      const activeAuth = (account as any).active;
+      for (const [pubKeyStr] of activeAuth.key_auths) {
+        const pubKey = PublicKey.fromString(pubKeyStr as string);
+        if (recovered.toString() === pubKey.toString()) return true;
+      }
+
+      // Also check if username is in account_auths (account-level authority)
+      // The signer uses their own active key, which is what we're checking
+      return false;
+    } catch (err: any) {
+      log.error({ err: err.message, username }, "[Treasury] Signature verification failed");
+      return false;
+    }
+  }
+
+  /** Write an audit log entry for a treasury signing event. */
+  private auditLog(
+    txId: string,
+    signerUsername: string,
+    action: string,
+    nonce?: string,
+    rejectReason?: string,
+    broadcastTxId?: string,
+  ): void {
+    // Fire-and-forget — audit logging should never block the signing flow
+    storage.createTreasuryAuditLog?.({
+      txId,
+      signerUsername,
+      action,
+      nonce: nonce || null,
+      rejectReason: rejectReason || null,
+      txDigest: null,
+      metadata: broadcastTxId ? { broadcastTxId } : null,
+    }).catch((err: any) =>
+      log.error({ err: err.message }, "[Treasury] Audit log write failed"),
+    );
   }
 }
