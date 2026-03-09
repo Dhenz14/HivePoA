@@ -800,6 +800,39 @@ export const insertPayoutLineItemSchema = createInsertSchema(payoutLineItems).om
 });
 
 // ============================================================
+// PHASE 9: Community Content Moderation
+// ============================================================
+
+// Content Flags - Community reports on harmful/illegal content
+export const contentFlags = pgTable("content_flags", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  cid: text("cid").notNull(),
+  fileId: varchar("file_id").references(() => files.id),
+  reporterUsername: text("reporter_username").notNull(),
+  reason: text("reason").notNull(), // illegal, copyright, malware, spam, harassment, other
+  description: text("description"),
+  severity: text("severity").notNull().default("moderate"), // low, moderate, severe, critical
+  status: text("status").notNull().default("pending"), // pending, reviewed, confirmed, dismissed
+  reviewedBy: text("reviewed_by"),
+  reviewedAt: timestamp("reviewed_at"),
+  flagCount: integer("flag_count").notNull().default(1),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Uploader Bans - Node-level bans on uploaders by Hive username
+export const uploaderBans = pgTable("uploader_bans", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  bannedUsername: text("banned_username").notNull(),
+  bannedBy: text("banned_by").notNull(), // validator/node operator username
+  reason: text("reason").notNull(),
+  scope: text("scope").notNull().default("local"), // local (single node), network (validator-endorsed)
+  active: boolean("active").notNull().default(true),
+  expiresAt: timestamp("expires_at"),
+  relatedFlagId: varchar("related_flag_id").references(() => contentFlags.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ============================================================
 // PHASE 6: P2P CDN - Viewer-Contributed Resources
 // ============================================================
 
@@ -859,6 +892,18 @@ export const p2pNetworkStats = pgTable("p2p_network_stats", {
   bandwidthSavedBytes: integer("bandwidth_saved_bytes").notNull().default(0),
 });
 
+// Phase 9: Content Moderation Insert Schemas
+export const insertContentFlagSchema = createInsertSchema(contentFlags).omit({
+  id: true,
+  createdAt: true,
+  reviewedAt: true,
+});
+
+export const insertUploaderBanSchema = createInsertSchema(uploaderBans).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Phase 6: P2P CDN Insert Schemas
 export const insertP2pSessionSchema = createInsertSchema(p2pSessions).omit({
   id: true,
@@ -881,6 +926,13 @@ export const insertP2pNetworkStatsSchema = createInsertSchema(p2pNetworkStats).o
   id: true,
   timestamp: true,
 });
+
+// Phase 9: Content Moderation Types
+export type ContentFlag = typeof contentFlags.$inferSelect;
+export type InsertContentFlag = z.infer<typeof insertContentFlagSchema>;
+
+export type UploaderBan = typeof uploaderBans.$inferSelect;
+export type InsertUploaderBan = z.infer<typeof insertUploaderBanSchema>;
 
 // Phase 7: Web of Trust
 export const insertWebOfTrustSchema = createInsertSchema(webOfTrust).omit({

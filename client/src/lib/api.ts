@@ -324,6 +324,91 @@ export const api = {
     const res = await fetch(`${getBase()}/encoding/agents`);
     return res.json();
   },
+
+  // Content Flags
+  async flagContent(data: { cid: string; fileId?: string; reason: string; description?: string; severity?: string }, token: string) {
+    const res = await fetch(`${getBase()}/flags`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || "Failed to flag content");
+    }
+    return res.json();
+  },
+
+  async getFlags(status?: string) {
+    const url = status ? `${getBase()}/flags?status=${status}` : `${getBase()}/flags`;
+    const res = await fetch(url);
+    return res.json();
+  },
+
+  async getFlagsByCid(cid: string) {
+    const res = await fetch(`${getBase()}/flags/cid/${cid}`);
+    return res.json();
+  },
+
+  async getFlagsSummary() {
+    const res = await fetch(`${getBase()}/flags/summary`);
+    return res.json();
+  },
+
+  async reviewFlag(id: string, status: "confirmed" | "dismissed", token: string) {
+    const res = await fetch(`${getBase()}/flags/${id}/review`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ status }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || "Failed to review flag");
+    }
+    return res.json();
+  },
+
+  // Uploader Bans
+  async banUploader(data: { bannedUsername: string; reason: string; scope?: string; relatedFlagId?: string }, token: string) {
+    const res = await fetch(`${getBase()}/bans`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || "Failed to ban uploader");
+    }
+    return res.json();
+  },
+
+  async getBans(bannedBy?: string) {
+    const url = bannedBy ? `${getBase()}/bans?bannedBy=${bannedBy}` : `${getBase()}/bans`;
+    const res = await fetch(url);
+    return res.json();
+  },
+
+  async checkBan(username: string) {
+    const res = await fetch(`${getBase()}/bans/check/${username}`);
+    return res.json();
+  },
+
+  async removeBan(id: string, token: string) {
+    const res = await fetch(`${getBase()}/bans/${id}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || "Failed to remove ban");
+    }
+    return res.json();
+  },
+
+  async getNodeBans(operator: string) {
+    const res = await fetch(`${getBase()}/bans/node/${operator}`);
+    return res.json();
+  },
 };
 
 // WebSocket connection for real-time updates

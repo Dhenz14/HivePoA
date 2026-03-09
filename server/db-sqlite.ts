@@ -647,6 +647,33 @@ export function createSQLiteTables(dbPath: string) {
       metadata TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS content_flags (
+      id TEXT PRIMARY KEY,
+      cid TEXT NOT NULL,
+      file_id TEXT,
+      reporter_username TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      description TEXT,
+      severity TEXT NOT NULL DEFAULT 'moderate',
+      status TEXT NOT NULL DEFAULT 'pending',
+      reviewed_by TEXT,
+      reviewed_at TEXT,
+      flag_count INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS uploader_bans (
+      id TEXT PRIMARY KEY,
+      banned_username TEXT NOT NULL,
+      banned_by TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'local',
+      active INTEGER NOT NULL DEFAULT 1,
+      expires_at TEXT,
+      related_flag_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
   return db;

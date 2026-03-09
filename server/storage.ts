@@ -127,6 +127,13 @@ import {
   type InsertTreasuryVouch,
   type TreasuryTransaction,
   type InsertTreasuryTransaction,
+  // Phase 9: Content Moderation
+  contentFlags,
+  uploaderBans,
+  type ContentFlag,
+  type InsertContentFlag,
+  type UploaderBan,
+  type InsertUploaderBan,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, sql, ilike, or, notInArray, gte, lte, lt } from "drizzle-orm";
@@ -410,6 +417,20 @@ export interface IStorage {
   getNodesPaginated(limit: number, offset: number): Promise<{ data: StorageNode[]; total: number }>;
   getChallengesPaginated(limit: number, offset: number): Promise<{ data: PoaChallenge[]; total: number }>;
   getTransactionsPaginated(limit: number, offset: number): Promise<{ data: HiveTransaction[]; total: number }>;
+
+  // Content Moderation
+  createContentFlag(flag: InsertContentFlag): Promise<ContentFlag>;
+  getContentFlags(status?: string): Promise<ContentFlag[]>;
+  getContentFlagsByCid(cid: string): Promise<ContentFlag[]>;
+  getContentFlagById(id: string): Promise<ContentFlag | undefined>;
+  updateContentFlagStatus(id: string, status: string, reviewedBy: string): Promise<void>;
+  incrementFlagCount(cid: string, reason: string): Promise<ContentFlag>;
+  getFlaggedContentSummary(): Promise<{ cid: string; totalFlags: number; reasons: string[]; maxSeverity: string; status: string }[]>;
+  createUploaderBan(ban: InsertUploaderBan): Promise<UploaderBan>;
+  getUploaderBans(bannedBy?: string): Promise<UploaderBan[]>;
+  isUploaderBanned(username: string, bannedBy?: string): Promise<boolean>;
+  removeUploaderBan(id: string): Promise<void>;
+  getActiveBansForNode(nodeOperator: string): Promise<UploaderBan[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2064,6 +2085,129 @@ export class DatabaseStorage implements IStorage {
     await db.update(treasuryTransactions)
       .set(update)
       .where(eq(treasuryTransactions.id, id));
+  }
+
+  // ============================================================
+  // Content Moderation
+  // ============================================================
+
+  async createContentFlag(flag: InsertContentFlag): Promise<ContentFlag> {
+    const [created] = await db.insert(contentFlags).values(flag).returning();
+    return created;
+  }
+
+  async getContentFlags(status?: string): Promise<ContentFlag[]> {
+    if (status) {
+      return db.select().from(contentFlags)
+        .where(eq(contentFlags.status, status))
+        .orderBy(desc(contentFlags.createdAt));
+    }
+    return db.select().from(contentFlags).orderBy(desc(contentFlags.createdAt));
+  }
+
+  async getContentFlagsByCid(cid: string): Promise<ContentFlag[]> {
+    return db.select().from(contentFlags)
+      .where(eq(contentFlags.cid, cid))
+      .orderBy(desc(contentFlags.createdAt));
+  }
+
+  async getContentFlagById(id: string): Promise<ContentFlag | undefined> {
+    const [flag] = await db.select().from(contentFlags).where(eq(contentFlags.id, id));
+    return flag;
+  }
+
+  async updateContentFlagStatus(id: string, status: string, reviewedBy: string): Promise<void> {
+    await db.update(contentFlags)
+      .set({ status, reviewedBy, reviewedAt: new Date() })
+      .where(eq(contentFlags.id, id));
+  }
+
+  async incrementFlagCount(cid: string, reason: string): Promise<ContentFlag> {
+    // Check if there's an existing pending flag for this CID + reason
+    const [existing] = await db.select().from(contentFlags)
+      .where(and(
+        eq(contentFlags.cid, cid),
+        eq(contentFlags.reason, reason),
+        eq(contentFlags.status, "pending")
+      ));
+    if (existing) {
+      await db.update(contentFlags)
+        .set({ flagCount: existing.flagCount + 1 })
+        .where(eq(contentFlags.id, existing.id));
+      return { ...existing, flagCount: existing.flagCount + 1 };
+    }
+    // Should not reach here — caller should create first
+    throw new Error("No pending flag found for this CID and reason");
+  }
+
+  async getFlaggedContentSummary(): Promise<{ cid: string; totalFlags: number; reasons: string[]; maxSeverity: string; status: string }[]> {
+    const allFlags = await db.select().from(contentFlags).orderBy(desc(contentFlags.flagCount));
+    const grouped = new Map<string, { totalFlags: number; reasons: Set<string>; maxSeverity: string; status: string }>();
+    const severityOrder = ["low", "moderate", "severe", "critical"];
+
+    for (const flag of allFlags) {
+      const existing = grouped.get(flag.cid);
+      if (existing) {
+        existing.totalFlags += flag.flagCount;
+        existing.reasons.add(flag.reason);
+        if (severityOrder.indexOf(flag.severity) > severityOrder.indexOf(existing.maxSeverity)) {
+          existing.maxSeverity = flag.severity;
+        }
+        // Worst status wins
+        if (flag.status === "pending" || existing.status === "pending") existing.status = "pending";
+      } else {
+        grouped.set(flag.cid, {
+          totalFlags: flag.flagCount,
+          reasons: new Set([flag.reason]),
+          maxSeverity: flag.severity,
+          status: flag.status,
+        });
+      }
+    }
+
+    return Array.from(grouped.entries()).map(([cid, data]) => ({
+      cid,
+      totalFlags: data.totalFlags,
+      reasons: Array.from(data.reasons),
+      maxSeverity: data.maxSeverity,
+      status: data.status,
+    }));
+  }
+
+  async createUploaderBan(ban: InsertUploaderBan): Promise<UploaderBan> {
+    const [created] = await db.insert(uploaderBans).values(ban).returning();
+    return created;
+  }
+
+  async getUploaderBans(bannedBy?: string): Promise<UploaderBan[]> {
+    if (bannedBy) {
+      return db.select().from(uploaderBans)
+        .where(and(eq(uploaderBans.bannedBy, bannedBy), eq(uploaderBans.active, true)))
+        .orderBy(desc(uploaderBans.createdAt));
+    }
+    return db.select().from(uploaderBans)
+      .where(eq(uploaderBans.active, true))
+      .orderBy(desc(uploaderBans.createdAt));
+  }
+
+  async isUploaderBanned(username: string, bannedBy?: string): Promise<boolean> {
+    const conditions = [eq(uploaderBans.bannedUsername, username), eq(uploaderBans.active, true)];
+    if (bannedBy) conditions.push(eq(uploaderBans.bannedBy, bannedBy));
+    const [result] = await db.select().from(uploaderBans).where(and(...conditions)).limit(1);
+    return !!result;
+  }
+
+  async removeUploaderBan(id: string): Promise<void> {
+    await db.update(uploaderBans).set({ active: false }).where(eq(uploaderBans.id, id));
+  }
+
+  async getActiveBansForNode(nodeOperator: string): Promise<UploaderBan[]> {
+    return db.select().from(uploaderBans)
+      .where(and(
+        eq(uploaderBans.bannedBy, nodeOperator),
+        eq(uploaderBans.active, true)
+      ))
+      .orderBy(desc(uploaderBans.createdAt));
   }
 }
 

@@ -95,6 +95,38 @@ Every 10 minutes, the coordinator compares on-chain authority with the database 
 | DELETE | `/api/wot/treasury-vouch` | Witness | Revoke treasury vouch |
 | GET | `/api/wot/treasury-vouches` | Public | All active treasury vouches |
 
+## Content Moderation
+
+Community-driven content flagging and uploader ban system to protect storage nodes from harmful content.
+
+### Community Flagging
+
+Any authenticated user can flag content by CID. Flags accumulate — when multiple users flag the same content, the count increases signaling urgency. Validators review flags and confirm or dismiss them.
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| POST | `/api/flags` | Bearer | Flag content (reason: illegal, copyright, malware, spam, harassment) |
+| GET | `/api/flags` | Public | List all flags (filter by `?status=pending`) |
+| GET | `/api/flags/summary` | Public | Aggregated flagged content dashboard |
+| GET | `/api/flags/cid/:cid` | Public | Flags for a specific CID |
+| PATCH | `/api/flags/:id/review` | Bearer | Confirm or dismiss a flag |
+
+Critical confirmed flags are **auto-added to the network blocklist** — storage nodes will refuse to pin that CID.
+
+### Uploader Bans
+
+Node operators can ban uploaders by Hive username. Bans have two scopes:
+
+- **Local**: Applies to your node only
+- **Network**: Broadcast as recommendation to other validators
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| POST | `/api/bans` | Bearer | Ban an uploader |
+| GET | `/api/bans` | Public | List active bans |
+| GET | `/api/bans/check/:username` | Public | Check if user is banned |
+| DELETE | `/api/bans/:id` | Bearer | Remove a ban |
+
 ## Quick Start
 
 ### Prerequisites

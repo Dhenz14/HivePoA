@@ -1113,6 +1113,183 @@ export async function registerRoutes(
   });
 
   // ============================================================
+  // Content Flagging & Uploader Bans (Phase 9)
+  // ============================================================
+
+  // Flag content as harmful/illegal
+  app.post("/api/flags", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        cid: z.string().min(1),
+        fileId: z.string().optional(),
+        reason: z.enum(["illegal", "copyright", "malware", "spam", "harassment", "other"]),
+        description: z.string().max(1000).optional(),
+        severity: z.enum(["low", "moderate", "severe", "critical"]).optional(),
+      });
+      const data = schema.parse(req.body);
+
+      // Check if this user already flagged this CID for this reason
+      const existing = await storage.getContentFlagsByCid(data.cid);
+      const userAlreadyFlagged = existing.find(
+        f => f.reporterUsername === req.authenticatedUser && f.reason === data.reason
+      );
+      if (userAlreadyFlagged) {
+        res.status(409).json({ error: "You have already flagged this content for this reason" });
+        return;
+      }
+
+      // Try to increment existing flag count, otherwise create new
+      const pendingFlag = existing.find(f => f.reason === data.reason && f.status === "pending");
+      if (pendingFlag) {
+        const updated = await storage.incrementFlagCount(data.cid, data.reason);
+        res.json(updated);
+        return;
+      }
+
+      const flag = await storage.createContentFlag({
+        cid: data.cid,
+        fileId: data.fileId || null,
+        reporterUsername: req.authenticatedUser!,
+        reason: data.reason,
+        description: data.description || null,
+        severity: data.severity || "moderate",
+        status: "pending",
+        flagCount: 1,
+        reviewedBy: null,
+      });
+      res.json(flag);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  // Get all flags (optionally filter by status)
+  app.get("/api/flags", async (req, res) => {
+    const status = req.query.status as string | undefined;
+    const flags = await storage.getContentFlags(status);
+    res.json(flags);
+  });
+
+  // Get flags for a specific CID
+  app.get("/api/flags/cid/:cid", async (req, res) => {
+    const flags = await storage.getContentFlagsByCid(req.params.cid);
+    res.json(flags);
+  });
+
+  // Get flagged content summary (aggregated view for moderation dashboard)
+  app.get("/api/flags/summary", async (req, res) => {
+    const summary = await storage.getFlaggedContentSummary();
+    res.json(summary);
+  });
+
+  // Review a flag (confirm or dismiss) — validators only
+  app.patch("/api/flags/:id/review", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        status: z.enum(["confirmed", "dismissed"]),
+      });
+      const data = schema.parse(req.body);
+      const flag = await storage.getContentFlagById(req.params.id);
+      if (!flag) {
+        res.status(404).json({ error: "Flag not found" });
+        return;
+      }
+      await storage.updateContentFlagStatus(req.params.id, data.status, req.authenticatedUser!);
+
+      // If confirmed with severity critical, auto-add to blocklist
+      if (data.status === "confirmed" && flag.severity === "critical") {
+        await blocklistService.addToBlocklist({
+          scope: "validator",
+          scopeOwnerId: req.authenticatedUser!,
+          targetType: "cid",
+          targetValue: flag.cid,
+          reason: `Community flagged: ${flag.reason} (${flag.flagCount} reports)`,
+          severity: "critical",
+        });
+      }
+
+      res.json({ success: true, status: data.status });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  // Ban an uploader
+  app.post("/api/bans", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        bannedUsername: z.string().min(1).max(16),
+        reason: z.string().min(1).max(500),
+        scope: z.enum(["local", "network"]).optional(),
+        expiresAt: z.string().datetime().optional(),
+        relatedFlagId: z.string().optional(),
+      });
+      const data = schema.parse(req.body);
+
+      // Check if already banned by this operator
+      const alreadyBanned = await storage.isUploaderBanned(data.bannedUsername, req.authenticatedUser!);
+      if (alreadyBanned) {
+        res.status(409).json({ error: "User is already banned" });
+        return;
+      }
+
+      const ban = await storage.createUploaderBan({
+        bannedUsername: data.bannedUsername,
+        bannedBy: req.authenticatedUser!,
+        reason: data.reason,
+        scope: data.scope || "local",
+        active: true,
+        expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
+        relatedFlagId: data.relatedFlagId || null,
+      });
+
+      // Also add to blocklist for enforcement
+      await blocklistService.addToBlocklist({
+        scope: "local",
+        scopeOwnerId: req.authenticatedUser!,
+        targetType: "account",
+        targetValue: data.bannedUsername,
+        reason: data.reason,
+        severity: "severe",
+      });
+
+      res.json(ban);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  // Get active bans (optionally for a specific operator)
+  app.get("/api/bans", async (req, res) => {
+    const bannedBy = req.query.bannedBy as string | undefined;
+    const bans = await storage.getUploaderBans(bannedBy);
+    res.json(bans);
+  });
+
+  // Check if a user is banned
+  app.get("/api/bans/check/:username", async (req, res) => {
+    const bannedBy = req.query.bannedBy as string | undefined;
+    const banned = await storage.isUploaderBanned(req.params.username, bannedBy);
+    res.json({ banned, username: req.params.username });
+  });
+
+  // Remove a ban
+  app.delete("/api/bans/:id", requireAuth, async (req, res) => {
+    try {
+      await storage.removeUploaderBan(req.params.id);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  // Get bans for a node operator
+  app.get("/api/bans/node/:operator", async (req, res) => {
+    const bans = await storage.getActiveBansForNode(req.params.operator);
+    res.json(bans);
+  });
+
+  // ============================================================
   // Encryption API (Phase 4)
   // ============================================================
   

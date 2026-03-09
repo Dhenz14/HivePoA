@@ -526,6 +526,37 @@ export const fileRefs = sqliteTable("file_refs", {
 });
 
 // ============================================================
+// PHASE 9: Community Content Moderation
+// ============================================================
+
+export const contentFlags = sqliteTable("content_flags", {
+  id: text("id").primaryKey(),
+  cid: text("cid").notNull(),
+  fileId: text("file_id"),
+  reporterUsername: text("reporter_username").notNull(),
+  reason: text("reason").notNull(),
+  description: text("description"),
+  severity: text("severity").notNull().default("moderate"),
+  status: text("status").notNull().default("pending"),
+  reviewedBy: text("reviewed_by"),
+  reviewedAt: text("reviewed_at"),
+  flagCount: integer("flag_count").notNull().default(1),
+  createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+});
+
+export const uploaderBans = sqliteTable("uploader_bans", {
+  id: text("id").primaryKey(),
+  bannedUsername: text("banned_username").notNull(),
+  bannedBy: text("banned_by").notNull(),
+  reason: text("reason").notNull(),
+  scope: text("scope").notNull().default("local"),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  expiresAt: text("expires_at"),
+  relatedFlagId: text("related_flag_id"),
+  createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+});
+
+// ============================================================
 // PHASE 6: P2P CDN
 // ============================================================
 

@@ -53,6 +53,8 @@ import type {
   TreasurySigner, InsertTreasurySigner,
   TreasuryVouch, InsertTreasuryVouch,
   TreasuryTransaction, InsertTreasuryTransaction,
+  ContentFlag, InsertContentFlag,
+  UploaderBan, InsertUploaderBan,
 } from "@shared/schema";
 
 // ============================================================
@@ -2150,5 +2152,114 @@ export class SQLiteStorage implements IStorage {
     const update: any = { status };
     if (broadcastTxId) update.broadcastTxId = broadcastTxId;
     await db().update(S.treasuryTransactions).set(update).where(eq(S.treasuryTransactions.id, id));
+  }
+
+  // ============================================================
+  // Content Moderation
+  // ============================================================
+
+  async createContentFlag(flag: InsertContentFlag): Promise<ContentFlag> {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    await db().insert(S.contentFlags).values({ ...flag, id, createdAt: now } as any);
+    return this.getContentFlagById(id) as Promise<ContentFlag>;
+  }
+
+  async getContentFlags(status?: string): Promise<ContentFlag[]> {
+    if (status) {
+      const rows = await db().select().from(S.contentFlags)
+        .where(eq(S.contentFlags.status, status))
+        .orderBy(desc(S.contentFlags.createdAt));
+      return rows.map(r => mapRow<ContentFlag>(r)) as ContentFlag[];
+    }
+    const rows = await db().select().from(S.contentFlags).orderBy(desc(S.contentFlags.createdAt));
+    return rows.map(r => mapRow<ContentFlag>(r)) as ContentFlag[];
+  }
+
+  async getContentFlagsByCid(cid: string): Promise<ContentFlag[]> {
+    const rows = await db().select().from(S.contentFlags)
+      .where(eq(S.contentFlags.cid, cid))
+      .orderBy(desc(S.contentFlags.createdAt));
+    return rows.map(r => mapRow<ContentFlag>(r)) as ContentFlag[];
+  }
+
+  async getContentFlagById(id: string): Promise<ContentFlag | undefined> {
+    const [row] = await db().select().from(S.contentFlags).where(eq(S.contentFlags.id, id));
+    return row ? mapRow<ContentFlag>(row) as ContentFlag : undefined;
+  }
+
+  async updateContentFlagStatus(id: string, status: string, reviewedBy: string): Promise<void> {
+    await db().update(S.contentFlags)
+      .set({ status, reviewedBy, reviewedAt: new Date().toISOString() } as any)
+      .where(eq(S.contentFlags.id, id));
+  }
+
+  async incrementFlagCount(cid: string, reason: string): Promise<ContentFlag> {
+    const [existing] = await db().select().from(S.contentFlags)
+      .where(and(eq(S.contentFlags.cid, cid), eq(S.contentFlags.reason, reason), eq(S.contentFlags.status, "pending")));
+    if (!existing) throw new Error("No pending flag found for this CID and reason");
+    await db().update(S.contentFlags)
+      .set({ flagCount: existing.flagCount + 1 } as any)
+      .where(eq(S.contentFlags.id, existing.id));
+    return mapRow<ContentFlag>({ ...existing, flagCount: existing.flagCount + 1 }) as ContentFlag;
+  }
+
+  async getFlaggedContentSummary(): Promise<{ cid: string; totalFlags: number; reasons: string[]; maxSeverity: string; status: string }[]> {
+    const allFlags = await db().select().from(S.contentFlags).orderBy(desc(S.contentFlags.flagCount));
+    const grouped = new Map<string, { totalFlags: number; reasons: Set<string>; maxSeverity: string; status: string }>();
+    const severityOrder = ["low", "moderate", "severe", "critical"];
+    for (const flag of allFlags) {
+      const existing = grouped.get(flag.cid);
+      if (existing) {
+        existing.totalFlags += flag.flagCount;
+        existing.reasons.add(flag.reason);
+        if (severityOrder.indexOf(flag.severity) > severityOrder.indexOf(existing.maxSeverity)) existing.maxSeverity = flag.severity;
+        if (flag.status === "pending" || existing.status === "pending") existing.status = "pending";
+      } else {
+        grouped.set(flag.cid, { totalFlags: flag.flagCount, reasons: new Set([flag.reason]), maxSeverity: flag.severity, status: flag.status });
+      }
+    }
+    return Array.from(grouped.entries()).map(([cid, data]) => ({
+      cid, totalFlags: data.totalFlags, reasons: Array.from(data.reasons), maxSeverity: data.maxSeverity, status: data.status,
+    }));
+  }
+
+  async createUploaderBan(ban: InsertUploaderBan): Promise<UploaderBan> {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    await db().insert(S.uploaderBans).values({ ...ban, id, createdAt: now } as any);
+    const [row] = await db().select().from(S.uploaderBans).where(eq(S.uploaderBans.id, id));
+    return mapRow<UploaderBan>(row) as UploaderBan;
+  }
+
+  async getUploaderBans(bannedBy?: string): Promise<UploaderBan[]> {
+    if (bannedBy) {
+      const rows = await db().select().from(S.uploaderBans)
+        .where(and(eq(S.uploaderBans.bannedBy, bannedBy), eq(S.uploaderBans.active, true)))
+        .orderBy(desc(S.uploaderBans.createdAt));
+      return rows.map(r => mapRow<UploaderBan>(r)) as UploaderBan[];
+    }
+    const rows = await db().select().from(S.uploaderBans)
+      .where(eq(S.uploaderBans.active, true))
+      .orderBy(desc(S.uploaderBans.createdAt));
+    return rows.map(r => mapRow<UploaderBan>(r)) as UploaderBan[];
+  }
+
+  async isUploaderBanned(username: string, bannedBy?: string): Promise<boolean> {
+    const conditions = [eq(S.uploaderBans.bannedUsername, username), eq(S.uploaderBans.active, true)];
+    if (bannedBy) conditions.push(eq(S.uploaderBans.bannedBy, bannedBy));
+    const [result] = await db().select().from(S.uploaderBans).where(and(...conditions)).limit(1);
+    return !!result;
+  }
+
+  async removeUploaderBan(id: string): Promise<void> {
+    await db().update(S.uploaderBans).set({ active: false } as any).where(eq(S.uploaderBans.id, id));
+  }
+
+  async getActiveBansForNode(nodeOperator: string): Promise<UploaderBan[]> {
+    const rows = await db().select().from(S.uploaderBans)
+      .where(and(eq(S.uploaderBans.bannedBy, nodeOperator), eq(S.uploaderBans.active, true)))
+      .orderBy(desc(S.uploaderBans.createdAt));
+    return rows.map(r => mapRow<UploaderBan>(r)) as UploaderBan[];
   }
 }
