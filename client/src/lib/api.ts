@@ -1,5 +1,9 @@
 // API client for HivePoA backend
-const API_BASE = "/api";
+import { getApiBase } from "./api-mode";
+
+function getBase(): string {
+  return `${getApiBase()}/api`;
+}
 
 export interface File {
   id: string;
@@ -118,7 +122,7 @@ export interface UserSettings {
 export const api = {
   // Files
   async getFiles(): Promise<File[]> {
-    const res = await fetch(`${API_BASE}/files`);
+    const res = await fetch(`${getBase()}/files`);
     return res.json();
   },
 
@@ -129,17 +133,17 @@ export const api = {
     limit: number;
     totalPages: number;
   }> {
-    const res = await fetch(`${API_BASE}/files?page=${page}&limit=${limit}`);
+    const res = await fetch(`${getBase()}/files?page=${page}&limit=${limit}`);
     return res.json();
   },
 
   async getFile(cid: string): Promise<File> {
-    const res = await fetch(`${API_BASE}/files/${cid}`);
+    const res = await fetch(`${getBase()}/files/${cid}`);
     return res.json();
   },
 
   async createFile(data: Partial<File>): Promise<File> {
-    const res = await fetch(`${API_BASE}/files`, {
+    const res = await fetch(`${getBase()}/files`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
@@ -148,7 +152,7 @@ export const api = {
   },
 
   async deleteFile(id: string): Promise<{ success: boolean; message: string }> {
-    const res = await fetch(`${API_BASE}/files/${id}`, {
+    const res = await fetch(`${getBase()}/files/${id}`, {
       method: "DELETE",
     });
     if (!res.ok) {
@@ -160,39 +164,39 @@ export const api = {
 
   // Storage Nodes
   async getNodes(): Promise<StorageNode[]> {
-    const res = await fetch(`${API_BASE}/nodes`);
+    const res = await fetch(`${getBase()}/nodes`);
     return res.json();
   },
 
   async searchNodes(query: string): Promise<StorageNode[]> {
-    const res = await fetch(`${API_BASE}/nodes?search=${encodeURIComponent(query)}`);
+    const res = await fetch(`${getBase()}/nodes?search=${encodeURIComponent(query)}`);
     return res.json();
   },
 
   async getNode(peerId: string): Promise<StorageNode> {
-    const res = await fetch(`${API_BASE}/nodes/${peerId}`);
+    const res = await fetch(`${getBase()}/nodes/${peerId}`);
     return res.json();
   },
 
   // Validators
   async getValidators(): Promise<Validator[]> {
-    const res = await fetch(`${API_BASE}/validators`);
+    const res = await fetch(`${getBase()}/validators`);
     return res.json();
   },
 
   async getValidator(username: string): Promise<Validator> {
-    const res = await fetch(`${API_BASE}/validators/${username}`);
+    const res = await fetch(`${getBase()}/validators/${username}`);
     return res.json();
   },
 
   // Validator Blacklist
   async getBlacklist(validatorUsername: string): Promise<ValidatorBlacklist[]> {
-    const res = await fetch(`${API_BASE}/validators/${validatorUsername}/blacklist`);
+    const res = await fetch(`${getBase()}/validators/${validatorUsername}/blacklist`);
     return res.json();
   },
 
   async addToBlacklist(validatorUsername: string, nodeId: string, reason: string): Promise<ValidatorBlacklist> {
-    const res = await fetch(`${API_BASE}/validators/${validatorUsername}/blacklist`, {
+    const res = await fetch(`${getBase()}/validators/${validatorUsername}/blacklist`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ nodeId, reason }),
@@ -205,38 +209,38 @@ export const api = {
   },
 
   async removeFromBlacklist(validatorUsername: string, nodeId: string): Promise<void> {
-    await fetch(`${API_BASE}/validators/${validatorUsername}/blacklist/${nodeId}`, {
+    await fetch(`${getBase()}/validators/${validatorUsername}/blacklist/${nodeId}`, {
       method: "DELETE",
     });
   },
 
   // PoA Challenges
   async getChallenges(limit: number = 50): Promise<PoaChallenge[]> {
-    const res = await fetch(`${API_BASE}/challenges?limit=${limit}`);
+    const res = await fetch(`${getBase()}/challenges?limit=${limit}`);
     return res.json();
   },
 
   // Hive Transactions
   async getTransactions(limit: number = 50): Promise<HiveTransaction[]> {
-    const res = await fetch(`${API_BASE}/transactions?limit=${limit}`);
+    const res = await fetch(`${getBase()}/transactions?limit=${limit}`);
     return res.json();
   },
 
   // Dashboard Stats
   async getStats(): Promise<DashboardStats> {
-    const res = await fetch(`${API_BASE}/stats`);
+    const res = await fetch(`${getBase()}/stats`);
     return res.json();
   },
 
   // User Settings
   async getSettings(username: string): Promise<UserSettings | null> {
-    const res = await fetch(`${API_BASE}/settings/${username}`);
+    const res = await fetch(`${getBase()}/settings/${username}`);
     if (!res.ok) return null;
     return res.json();
   },
 
   async updateSettings(username: string, data: Partial<UserSettings>): Promise<UserSettings> {
-    const res = await fetch(`${API_BASE}/settings/${username}`, {
+    const res = await fetch(`${getBase()}/settings/${username}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
@@ -250,7 +254,7 @@ export const api = {
 
   // Network Downloads
   async startNetworkDownload(username: string): Promise<{ started: boolean; message: string; downloadCount: number }> {
-    const res = await fetch(`${API_BASE}/downloads/start/${username}`, {
+    const res = await fetch(`${getBase()}/downloads/start/${username}`, {
       method: "POST",
     });
     if (!res.ok) {
@@ -267,13 +271,13 @@ export const api = {
     inProgress: boolean;
     availableFiles: number;
   }> {
-    const res = await fetch(`${API_BASE}/downloads/stats/${username}`);
+    const res = await fetch(`${getBase()}/downloads/stats/${username}`);
     return res.json();
   },
 
   // Wallet
   async getWalletUser(username: string) {
-    const res = await fetch(`${API_BASE}/wallet/user/${username}`);
+    const res = await fetch(`${getBase()}/wallet/user/${username}`);
     if (!res.ok) {
       const err = await res.json();
       throw new Error(err.error || "Failed to fetch wallet");
@@ -282,42 +286,42 @@ export const api = {
   },
 
   async getWalletDashboard() {
-    const res = await fetch(`${API_BASE}/wallet/dashboard`);
+    const res = await fetch(`${getBase()}/wallet/dashboard`);
     if (!res.ok) throw new Error("Failed to fetch wallet dashboard");
     return res.json();
   },
 
   // Earnings
   async getEarnings(username: string) {
-    const res = await fetch(`${API_BASE}/earnings/${username}`);
+    const res = await fetch(`${getBase()}/earnings/${username}`);
     return res.json();
   },
 
   async getEarningsDashboard(username: string) {
-    const res = await fetch(`${API_BASE}/earnings/dashboard/${username}`);
+    const res = await fetch(`${getBase()}/earnings/dashboard/${username}`);
     if (!res.ok) throw new Error("Failed to fetch earnings");
     return res.json();
   },
 
   // Web of Trust
   async getWotVouches() {
-    const res = await fetch(`${API_BASE}/wot`);
+    const res = await fetch(`${getBase()}/wot`);
     return res.json();
   },
 
   async getWotStatus(username: string) {
-    const res = await fetch(`${API_BASE}/wot/${username}`);
+    const res = await fetch(`${getBase()}/wot/${username}`);
     return res.json();
   },
 
   // Encoding
   async getEncodingJobs(limit: number = 50) {
-    const res = await fetch(`${API_BASE}/encoding/jobs?limit=${limit}`);
+    const res = await fetch(`${getBase()}/encoding/jobs?limit=${limit}`);
     return res.json();
   },
 
   async getEncodingAgents() {
-    const res = await fetch(`${API_BASE}/encoding/agents`);
+    const res = await fetch(`${getBase()}/encoding/agents`);
     return res.json();
   },
 };
