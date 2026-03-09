@@ -40,10 +40,11 @@ export async function detectBackendMode(): Promise<BackendMode> {
 
     // On GitHub Pages (or other external host) — probe for desktop agent
     // Try /api/health first (instant, new agents), fall back to /api/status (older agents)
+    // Use mode:"no-cors" as a last resort — opaque response means agent is there but CORS blocked
     for (const endpoint of ["/api/health", "/api/status"]) {
       try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 2000);
+        const timeout = setTimeout(() => controller.abort(), 3000);
         const res = await fetch(`${AGENT_URL}${endpoint}`, {
           signal: controller.signal,
           mode: "cors",
@@ -55,8 +56,28 @@ export async function detectBackendMode(): Promise<BackendMode> {
           return _mode;
         }
       } catch {
-        // Try next endpoint
+        // Network error or timeout — try next endpoint
       }
+    }
+
+    // Last resort: try no-cors mode — if we get an opaque response, the agent is running
+    // (this handles cases where CORS headers are missing on older agent builds)
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      const res = await fetch(`${AGENT_URL}/api/status`, {
+        signal: controller.signal,
+        mode: "no-cors",
+      });
+      clearTimeout(timeout);
+      // Opaque response (type === "opaque") means something is listening on that port
+      if (res.type === "opaque" || res.ok) {
+        _mode = "agent";
+        notifyListeners();
+        return _mode;
+      }
+    } catch {
+      // Agent truly not available
     }
 
     _mode = "standalone";
