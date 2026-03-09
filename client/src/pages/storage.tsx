@@ -74,12 +74,11 @@ export default function Storage() {
   });
   const nodes = Array.isArray(nodesRaw) ? nodesRaw : [];
 
-  // Fetch user settings (simulated username "demo_user")
+  // Fetch user settings
   const { data: settings } = useQuery({
     queryKey: ["settings", "demo_user"],
     queryFn: () => api.getSettings("demo_user"),
     refetchInterval: 30000,
-    enabled: !agentConnected,
   });
 
   // Update settings mutation
@@ -431,7 +430,7 @@ export default function Storage() {
 
       {/* Agent P2P Network / Download & Auto-Pin Settings */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {agentConnected ? (
+        {agentConnected && (
           /* P2P Network Status Card (shown when agent is connected) */
           <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
             <CardHeader className="pb-4">
@@ -489,40 +488,51 @@ export default function Storage() {
               )}
             </CardContent>
           </Card>
-        ) : (
-          /* Network Download Card (shown when agent is NOT connected) */
-          <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
-            <CardHeader className="pb-4">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <Download className="w-4 h-4 text-primary" />
-                Download Network Videos
-              </CardTitle>
-              <CardDescription>Download existing videos from the network to store and earn HBD</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="download-mode">Download Mode</Label>
-                <Select
-                  data-testid="select-download-mode"
-                  value={settings?.downloadMode || "off"}
-                  onValueChange={(value: "off" | "all" | "quota") => {
-                    updateSettingsMutation.mutate({ downloadMode: value });
-                  }}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Select mode" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="off">Off - No automatic downloads</SelectItem>
-                    <SelectItem value="all">All - Download every video</SelectItem>
-                    <SelectItem value="quota">Quota - Download a set number</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+        )}
 
+        {/* Node Storage Settings — unified card */}
+        <Card className="border-border/50 bg-card/50 backdrop-blur-sm lg:col-span-1">
+          <CardHeader className="pb-4">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <Settings className="w-4 h-4 text-primary" />
+              Storage Settings
+            </CardTitle>
+            <CardDescription>Configure how your node stores and downloads content</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            {/* Storage Limits */}
+            {agentConnected && agentStatus?.storageInfo && (
               <div className="space-y-2">
-                <Label htmlFor="download-quota">Videos to Download</Label>
-                <div className="flex items-center gap-2">
+                <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">Storage Usage</Label>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Used</span>
+                  <span className="font-mono text-xs">{agentStatus.storageInfo.usedFormatted} / {agentStatus.storageInfo.maxFormatted}</span>
+                </div>
+                <Progress value={agentStatus.storageInfo.percentage} className="h-2" />
+              </div>
+            )}
+
+            {/* Download Mode */}
+            <div className="space-y-2">
+              <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">Download Mode</Label>
+              <Select
+                data-testid="select-download-mode"
+                value={settings?.downloadMode || "quota"}
+                onValueChange={(value: "off" | "all" | "quota") => {
+                  updateSettingsMutation.mutate({ downloadMode: value });
+                }}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select mode" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="off">Off - No automatic downloads</SelectItem>
+                  <SelectItem value="quota">Quota - Download up to a daily limit</SelectItem>
+                  <SelectItem value="all">All - Download every available video</SelectItem>
+                </SelectContent>
+              </Select>
+              {settings?.downloadMode === "quota" && (
+                <div className="flex items-center gap-2 mt-1">
                   <Input
                     data-testid="input-download-quota"
                     id="download-quota"
@@ -530,80 +540,24 @@ export default function Storage() {
                     min={1}
                     max={1000}
                     value={settings?.downloadQuota || 10}
-                    disabled={settings?.downloadMode !== "quota"}
                     onChange={(e) => {
                       const value = parseInt(e.target.value) || 10;
                       updateSettingsMutation.mutate({ downloadQuota: value });
                     }}
-                    className="w-24"
+                    className="w-20"
                   />
-                  <span className="text-sm text-muted-foreground">videos</span>
+                  <span className="text-xs text-muted-foreground">videos/day</span>
+                  <span className="text-xs text-muted-foreground ml-auto">{settings?.downloadedToday || 0} downloaded today</span>
                 </div>
-              </div>
+              )}
+            </div>
 
-              <div className="space-y-2">
-                <Label>Download Progress</Label>
-                <div className="flex items-center gap-3">
-                  <div className="flex-1">
-                    <Progress
-                      value={settings?.downloadMode === "quota" && settings?.downloadQuota
-                        ? ((settings?.downloadedToday || 0) / settings.downloadQuota) * 100
-                        : 0
-                      }
-                      className="h-2"
-                    />
-                  </div>
-                  <span className="text-sm font-medium">
-                    {settings?.downloadedToday || 0}
-                    {settings?.downloadMode === "quota" && `/${settings?.downloadQuota || 10}`}
-                  </span>
-                </div>
-              </div>
-
-              <Button
-                data-testid="button-start-download"
-                onClick={() => startDownloadMutation.mutate()}
-                disabled={settings?.downloadMode === "off" || settings?.downloadInProgress || startDownloadMutation.isPending}
-                className="w-full"
-              >
-                {settings?.downloadInProgress || startDownloadMutation.isPending ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Downloading...
-                  </>
-                ) : (
-                  <>
-                    <Download className="w-4 h-4 mr-2" />
-                    Start Download
-                  </>
-                )}
-              </Button>
-
-              <p className="text-xs text-muted-foreground">
-                {settings?.downloadMode === "off" && "Enable a download mode to start downloading videos"}
-                {settings?.downloadMode === "all" && `Will download all ${files.length} available videos`}
-                {settings?.downloadMode === "quota" && `${(settings?.downloadQuota || 10) - (settings?.downloadedToday || 0)} videos remaining to download`}
-              </p>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Auto-Pin Settings Card */}
-        <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
-          <CardHeader className="pb-4">
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <Pin className="w-4 h-4 text-primary" />
-              Auto-Pin New Videos
-            </CardTitle>
-            <CardDescription>Automatically pin new videos as they appear on the network</CardDescription>
-          </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {/* Auto-Pin Mode */}
             <div className="space-y-2">
-              <Label htmlFor="auto-pin-mode">Auto-Pin Mode</Label>
+              <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">Auto-Pin New Content</Label>
               <Select
                 data-testid="select-auto-pin-mode"
-                value={settings?.autoPinMode || "off"}
+                value={settings?.autoPinMode || "daily_limit"}
                 onValueChange={(value: "off" | "all" | "daily_limit") => {
                   updateSettingsMutation.mutate({
                     autoPinMode: value,
@@ -616,58 +570,57 @@ export default function Storage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="off">Off - Manual pinning only</SelectItem>
-                  <SelectItem value="all">All - Pin every new video</SelectItem>
-                  <SelectItem value="daily_limit">Daily Limit - Set max per day</SelectItem>
+                  <SelectItem value="daily_limit">Daily Limit - Pin up to a set number per day</SelectItem>
+                  <SelectItem value="all">All - Pin every new video automatically</SelectItem>
                 </SelectContent>
               </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="daily-limit">Daily Limit</Label>
-              <div className="flex items-center gap-2">
-                <Input
-                  data-testid="input-daily-limit"
-                  id="daily-limit"
-                  type="number"
-                  min={1}
-                  max={100}
-                  value={settings?.autoPinDailyLimit || 10}
-                  disabled={settings?.autoPinMode !== "daily_limit"}
-                  onChange={(e) => {
-                    const value = parseInt(e.target.value) || 10;
-                    updateSettingsMutation.mutate({ autoPinDailyLimit: value });
-                  }}
-                  className="w-24"
-                />
-                <span className="text-sm text-muted-foreground">videos/day</span>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Today's Progress</Label>
-              <div className="flex items-center gap-3">
-                <div className="flex-1">
-                  <Progress
-                    value={settings?.autoPinMode === "daily_limit" && settings?.autoPinDailyLimit
-                      ? ((settings?.autoPinTodayCount || 0) / settings.autoPinDailyLimit) * 100
-                      : 0
-                    }
-                    className="h-2"
+              {settings?.autoPinMode === "daily_limit" && (
+                <div className="flex items-center gap-2 mt-1">
+                  <Input
+                    data-testid="input-daily-limit"
+                    id="daily-limit"
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={settings?.autoPinDailyLimit || 10}
+                    onChange={(e) => {
+                      const value = parseInt(e.target.value) || 10;
+                      updateSettingsMutation.mutate({ autoPinDailyLimit: value });
+                    }}
+                    className="w-20"
                   />
+                  <span className="text-xs text-muted-foreground">pins/day</span>
+                  <span className="text-xs text-muted-foreground ml-auto">{settings?.autoPinTodayCount || 0} pinned today</span>
                 </div>
-                <span className="text-sm font-medium">
-                  {settings?.autoPinTodayCount || 0}
-                  {settings?.autoPinMode === "daily_limit" && `/${settings?.autoPinDailyLimit || 10}`}
-                </span>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {settings?.autoPinMode === "off" && "Auto-pinning is disabled"}
-                {settings?.autoPinMode === "all" && "Pinning all incoming videos"}
-                {settings?.autoPinMode === "daily_limit" && `${(settings?.autoPinDailyLimit || 10) - (settings?.autoPinTodayCount || 0)} slots remaining today`}
-              </p>
+              )}
             </div>
-          </div>
-        </CardContent>
+
+            {/* Download Action */}
+            <Button
+              type="button"
+              data-testid="button-start-download"
+              onClick={() => startDownloadMutation.mutate()}
+              disabled={settings?.downloadMode === "off" || settings?.downloadInProgress || startDownloadMutation.isPending}
+              className="w-full"
+              variant="outline"
+            >
+              {settings?.downloadInProgress || startDownloadMutation.isPending ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Downloading...
+                </>
+              ) : (
+                <>
+                  <Download className="w-4 h-4 mr-2" />
+                  Download Now
+                </>
+              )}
+            </Button>
+            <p className="text-[11px] text-muted-foreground/60 leading-relaxed">
+              Storing more content increases your chances of being challenged and earning HBD rewards.
+              Defaults are optimized for most users.
+            </p>
+          </CardContent>
         </Card>
       </div>
 
