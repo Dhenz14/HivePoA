@@ -48,37 +48,60 @@ interface ChallengeStats {
 }
 
 async function fetchChallenges(sessionToken?: string): Promise<ChallengeStats> {
+  const base = getApiBase();
   const headers: HeadersInit = {};
   if (sessionToken) {
     headers['Authorization'] = `Bearer ${sessionToken}`;
   }
-  
-  const res = await fetch(`${getApiBase()}/api/validator/challenges`, { headers });
-  if (!res.ok) {
-    throw new Error(`Failed to fetch challenges: ${res.status} ${res.statusText}`);
+
+  // Try the full server endpoint first
+  try {
+    const res = await fetch(`${base}/api/validator/challenges`, { headers });
+    if (res.ok) {
+      const data = await res.json();
+      return {
+        pendingCount: data.pendingCount || 0,
+        completedToday: data.completedToday || 0,
+        failedToday: data.failedToday || 0,
+        challenges: (data.challenges || []).map((c: any) => ({
+          id: c.id,
+          nodeUsername: c.nodeUsername || c.node?.username || "unknown",
+          nodeId: c.nodeId || c.node?.id || "",
+          fileName: c.fileName || c.file?.name || "unknown",
+          fileCid: c.fileCid || c.file?.cid || "",
+          latencyMs: c.latencyMs || 0,
+          result: mapResult(c.result),
+          timestamp: c.timestamp || c.createdAt || new Date().toISOString(),
+          salt: c.salt || "",
+          byteRangeStart: c.byteRangeStart || 0,
+          byteRangeEnd: c.byteRangeEnd || 0,
+          expectedHash: c.expectedHash,
+          receivedHash: c.receivedHash,
+          responseTimeBreakdown: c.responseTimeBreakdown,
+        })),
+      };
+    }
+  } catch {
+    // Endpoint not available — try agent fallback
   }
-  const data = await res.json();
-  return {
-    pendingCount: data.pendingCount || 0,
-    completedToday: data.completedToday || 0,
-    failedToday: data.failedToday || 0,
-    challenges: (data.challenges || []).map((c: any) => ({
-      id: c.id,
-      nodeUsername: c.nodeUsername || c.node?.username || "unknown",
-      nodeId: c.nodeId || c.node?.id || "",
-      fileName: c.fileName || c.file?.name || "unknown",
-      fileCid: c.fileCid || c.file?.cid || "",
-      latencyMs: c.latencyMs || 0,
-      result: mapResult(c.result),
-      timestamp: c.timestamp || c.createdAt || new Date().toISOString(),
-      salt: c.salt || "",
-      byteRangeStart: c.byteRangeStart || 0,
-      byteRangeEnd: c.byteRangeEnd || 0,
-      expectedHash: c.expectedHash,
-      receivedHash: c.receivedHash,
-      responseTimeBreakdown: c.responseTimeBreakdown,
-    })),
-  };
+
+  // Fallback: use desktop agent's validation stats endpoint
+  try {
+    const res = await fetch(`${base}/api/validation/stats`);
+    if (res.ok) {
+      const agentStats = await res.json();
+      return {
+        pendingCount: 0,
+        completedToday: agentStats.passed || 0,
+        failedToday: agentStats.failed || 0,
+        challenges: [],
+      };
+    }
+  } catch {
+    // Agent not available either
+  }
+
+  return { pendingCount: 0, completedToday: 0, failedToday: 0, challenges: [] };
 }
 
 function mapResult(result: string): ChallengeResult {
