@@ -274,9 +274,11 @@ export function ValidatorAuthProvider({ children }: { children: ReactNode }) {
     }
   }, [user, updateUser]);
 
-  const isEligibleValidator = !!user && (user.isTopWitness || user.isVouched);
-  const isValidator = isEligibleValidator && user!.validatorOptedIn === true;
-  const needsValidatorChoice = isEligibleValidator && user!.validatorOptedIn === null;
+  // In agent mode, the user is running a validator node — always eligible and active
+  const isAgentMode = getBackendMode() === "agent";
+  const isEligibleValidator = !!user && (user.isTopWitness || user.isVouched || isAgentMode);
+  const isValidator = !!user && (isAgentMode || (isEligibleValidator && user.validatorOptedIn === true));
+  const needsValidatorChoice = !isAgentMode && isEligibleValidator && user!.validatorOptedIn === null;
 
   return (
     <ValidatorAuthContext.Provider value={{ user, isLoading, isAuthenticated: !!user, isValidator, isEligibleValidator, needsValidatorChoice, login, logout, optIn, resign }}>

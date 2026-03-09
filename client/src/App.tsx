@@ -88,29 +88,29 @@ function AppRoutes() {
         <Route path="/download" component={Download} />
         <Route path="/validator-login" component={ValidatorLogin} />
 
-        {/* Server-only pages — need full server deployment */}
-        <Route path="/validators">{() => <AgentRequired serverOnly><Validators /></AgentRequired>}</Route>
-        <Route path="/marketplace">{() => <AgentRequired serverOnly><Marketplace /></AgentRequired>}</Route>
-        <Route path="/analytics">{() => <AgentRequired serverOnly><Analytics /></AgentRequired>}</Route>
-        <Route path="/wallet-dashboard">{() => <AgentRequired serverOnly><WalletDashboard /></AgentRequired>}</Route>
-        <Route path="/encoding">{() => <AgentRequired serverOnly><Encoding /></AgentRequired>}</Route>
+        {/* Backend-dependent pages — need agent or server */}
+        <Route path="/validators">{() => <AgentRequired><Validators /></AgentRequired>}</Route>
+        <Route path="/marketplace">{() => <AgentRequired><Marketplace /></AgentRequired>}</Route>
+        <Route path="/analytics">{() => <AgentRequired><Analytics /></AgentRequired>}</Route>
+        <Route path="/wallet-dashboard">{() => <AgentRequired><WalletDashboard /></AgentRequired>}</Route>
+        <Route path="/encoding">{() => <AgentRequired><Encoding /></AgentRequired>}</Route>
         <Route path="/validator-dashboard">
-          {() => <AgentRequired serverOnly><ProtectedValidatorRoute component={ValidatorDashboard} /></AgentRequired>}
+          {() => <AgentRequired><ProtectedValidatorRoute component={ValidatorDashboard} /></AgentRequired>}
         </Route>
         <Route path="/node-monitoring">
-          {() => <AgentRequired serverOnly><ProtectedValidatorRoute component={NodeMonitoring} /></AgentRequired>}
+          {() => <AgentRequired><ProtectedValidatorRoute component={NodeMonitoring} /></AgentRequired>}
         </Route>
         <Route path="/challenge-queue">
-          {() => <AgentRequired serverOnly><ProtectedValidatorRoute component={ChallengeQueue} /></AgentRequired>}
+          {() => <AgentRequired><ProtectedValidatorRoute component={ChallengeQueue} /></AgentRequired>}
         </Route>
         <Route path="/fraud-detection">
-          {() => <AgentRequired serverOnly><ProtectedValidatorRoute component={FraudDetection} /></AgentRequired>}
+          {() => <AgentRequired><ProtectedValidatorRoute component={FraudDetection} /></AgentRequired>}
         </Route>
         <Route path="/payout-generator">
-          {() => <AgentRequired serverOnly><ProtectedValidatorRoute component={PayoutGenerator} /></AgentRequired>}
+          {() => <AgentRequired><ProtectedValidatorRoute component={PayoutGenerator} /></AgentRequired>}
         </Route>
         <Route path="/treasury">
-          {() => <AgentRequired serverOnly><Treasury /></AgentRequired>}
+          {() => <AgentRequired><Treasury /></AgentRequired>}
         </Route>
 
         <Route component={NotFound} />
