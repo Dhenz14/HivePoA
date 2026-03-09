@@ -670,6 +670,8 @@ export const treasuryTransactions = sqliteTable("treasury_transactions", {
   initiatedBy: text("initiated_by").notNull(),
   broadcastTxId: text("broadcast_tx_id"),
   metadata: text("metadata"),
+  broadcastAfter: text("broadcast_after"),
+  delaySeconds: integer("delay_seconds"),
   createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 
@@ -683,7 +685,20 @@ export const treasuryAuditLog = sqliteTable("treasury_audit_log", {
   rejectReason: text("reject_reason"),
   txDigest: text("tx_digest"),
   metadata: text("metadata"),
+  anomalyFlags: text("anomaly_flags"),
   createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+});
+
+// Treasury Freeze State — Emergency kill switch
+export const treasuryFreezeState = sqliteTable("treasury_freeze_state", {
+  id: text("id").primaryKey(),
+  frozen: integer("frozen", { mode: "boolean" }).notNull().default(false),
+  frozenBy: text("frozen_by"),
+  frozenAt: text("frozen_at"),
+  unfreezeVotes: text("unfreeze_votes").notNull().default("[]"),
+  unfreezeThreshold: integer("unfreeze_threshold"),
+  reason: text("reason"),
+  updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
 
 // ============================================================

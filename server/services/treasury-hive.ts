@@ -14,7 +14,7 @@ import {
   cryptoUtils,
 } from "@hiveio/dhive";
 import { logHive } from "../logger";
-import { TREASURY_ACCOUNT } from "../../shared/treasury-types";
+import { TREASURY_ACCOUNT, THRESHOLD_RATIO, AUTHORITY_UPDATE_THRESHOLD_RATIO } from "../../shared/treasury-types";
 
 // dhive types that may not have explicit exports — use structural typing
 interface Transaction {
@@ -204,10 +204,15 @@ export function authorityMatchesSigners(
 }
 
 /**
- * Compute the threshold for a given number of signers (60% quorum).
+ * Compute the threshold for a given number of signers.
+ * Transfers: 60% quorum. Authority updates: 80% quorum.
  */
-export function computeThreshold(signerCount: number): number {
-  return Math.ceil(signerCount * 0.6);
+export function computeThreshold(
+  signerCount: number,
+  txType: "transfer" | "authority_update" = "transfer",
+): number {
+  const ratio = txType === "authority_update" ? AUTHORITY_UPDATE_THRESHOLD_RATIO : THRESHOLD_RATIO;
+  return Math.ceil(signerCount * ratio);
 }
 
 /**

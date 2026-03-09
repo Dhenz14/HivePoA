@@ -2280,4 +2280,88 @@ export class SQLiteStorage implements IStorage {
     }).returning();
     return mapRow<TreasuryAuditLog>(row) as TreasuryAuditLog;
   }
+
+  // Treasury Freeze State
+  async getTreasuryFreezeState(): Promise<any | undefined> {
+    const [row] = await db().select().from(S.treasuryFreezeState)
+      .where(eq(S.treasuryFreezeState.id, "singleton")).limit(1);
+    return row ? mapRow<any>(row) : undefined;
+  }
+
+  async setTreasuryFrozen(frozenBy: string, reason: string, unfreezeThreshold: number): Promise<void> {
+    const existing = await this.getTreasuryFreezeState();
+    const now = new Date().toISOString();
+    if (existing) {
+      await db().update(S.treasuryFreezeState).set({
+        frozen: true, frozenBy, frozenAt: now, reason, unfreezeThreshold,
+        unfreezeVotes: "[]", updatedAt: now,
+      }).where(eq(S.treasuryFreezeState.id, "singleton"));
+    } else {
+      await db().insert(S.treasuryFreezeState).values({
+        id: "singleton", frozen: true, frozenBy, frozenAt: now, reason,
+        unfreezeThreshold, unfreezeVotes: "[]", updatedAt: now,
+      });
+    }
+  }
+
+  async addUnfreezeVote(username: string): Promise<{ frozen: boolean; voteCount: number; threshold: number }> {
+    const state = await this.getTreasuryFreezeState();
+    if (!state || !state.frozen) return { frozen: false, voteCount: 0, threshold: 0 };
+
+    const votes: string[] = typeof state.unfreezeVotes === "string"
+      ? JSON.parse(state.unfreezeVotes) : (state.unfreezeVotes || []);
+    if (!votes.includes(username)) votes.push(username);
+    const threshold = state.unfreezeThreshold || 1;
+
+    if (votes.length >= threshold) {
+      await this.clearTreasuryFreeze();
+      return { frozen: false, voteCount: votes.length, threshold };
+    }
+    await db().update(S.treasuryFreezeState).set({
+      unfreezeVotes: JSON.stringify(votes), updatedAt: new Date().toISOString(),
+    }).where(eq(S.treasuryFreezeState.id, "singleton"));
+    return { frozen: true, voteCount: votes.length, threshold };
+  }
+
+  async clearTreasuryFreeze(): Promise<void> {
+    await db().update(S.treasuryFreezeState).set({
+      frozen: false, frozenBy: null, frozenAt: null, unfreezeVotes: "[]",
+      reason: null, unfreezeThreshold: null, updatedAt: new Date().toISOString(),
+    }).where(eq(S.treasuryFreezeState.id, "singleton"));
+  }
+
+  // Treasury Transaction Extensions
+  async updateTreasuryTxDelayed(id: string, broadcastAfter: Date, delaySeconds: number): Promise<void> {
+    await db().update(S.treasuryTransactions).set({
+      status: "delayed", broadcastAfter: broadcastAfter.toISOString(), delaySeconds,
+    }).where(eq(S.treasuryTransactions.id, id));
+  }
+
+  async updateTreasuryTxSignatures(id: string, signatures: Record<string, string>): Promise<void> {
+    await db().update(S.treasuryTransactions).set({ signatures: JSON.stringify(signatures) })
+      .where(eq(S.treasuryTransactions.id, id));
+  }
+
+  async updateTreasuryTransaction(id: string, fields: Partial<{ operationsJson: string; txDigest: string; status: string; expiresAt: Date }>): Promise<void> {
+    const sqlFields: any = { ...fields };
+    if (fields.expiresAt) sqlFields.expiresAt = fields.expiresAt.toISOString();
+    await db().update(S.treasuryTransactions).set(sqlFields).where(eq(S.treasuryTransactions.id, id));
+  }
+
+  async getDelayedTreasuryTransactions(): Promise<TreasuryTransaction[]> {
+    const rows = await db().select().from(S.treasuryTransactions)
+      .where(eq(S.treasuryTransactions.status, "delayed"));
+    return rows.map(r => mapRow<TreasuryTransaction>(r)) as TreasuryTransaction[];
+  }
+
+  async hasReceivedTreasuryPayment(recipient: string): Promise<boolean> {
+    const rows = await db().select({ id: S.treasuryTransactions.id })
+      .from(S.treasuryTransactions)
+      .where(and(
+        eq(S.treasuryTransactions.status, "broadcast"),
+        sql`json_extract(metadata, '$.recipient') = ${recipient}`,
+      ))
+      .limit(1);
+    return rows.length > 0;
+  }
 }

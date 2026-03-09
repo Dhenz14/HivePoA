@@ -33,9 +33,17 @@ import {
   TREASURY_ACCOUNT,
   AUTHORITY_SYNC_INTERVAL_MS,
   MIN_TREASURY_VOUCHES,
+  TREASURY_PROTOCOL_VERSION,
+  MAX_OPS_PER_TRANSACTION,
+  MAX_BATCH_TOTAL_HBD,
+  MIN_RECIPIENT_REPUTATION,
+  AUTHORITY_UPDATE_THRESHOLD_RATIO,
+  IMMEDIATE_BROADCAST_MAX_HBD,
+  TRANSFER_DELAY_SECONDS,
+  AUTHORITY_UPDATE_DELAY_SECONDS,
 } from "../../shared/treasury-types";
 import type { SigningRequest, SigningMetadata, TreasuryStatus, TreasurySignerInfo } from "../../shared/treasury-types";
-import { TREASURY_PROTOCOL_VERSION } from "../../shared/treasury-types";
+import { TreasuryAnomalyDetector } from "./treasury-anomaly-detector";
 import { randomUUID } from "crypto";
 import { cryptoUtils, PublicKey, Signature } from "@hiveio/dhive";
 
@@ -74,6 +82,15 @@ export class TreasuryCoordinator {
   private dailyServerSpendHbd = 0;
   private dailyServerResetAt = Date.now() + 86_400_000;
 
+  // Emergency freeze state
+  private frozen = false;
+
+  // Delayed broadcasts: txId -> timer handle (Upgrade 5: time-delay)
+  private delayedBroadcasts: Map<string, NodeJS.Timeout> = new Map();
+
+  // Anomaly detection (Upgrade 6)
+  private anomalyDetector = new TreasuryAnomalyDetector();
+
   constructor(opts: {
     client: Client;
     sendToSigner: SendToSignerFn;
@@ -94,6 +111,35 @@ export class TreasuryCoordinator {
 
   start(): void {
     log.info("[Treasury] Coordinator started");
+
+    // Load freeze state from DB
+    storage.getTreasuryFreezeState?.().then((state) => {
+      if (state?.frozen) {
+        this.frozen = true;
+        log.warn({ frozenBy: state.frozenBy }, "[Treasury] Started in FROZEN state");
+      }
+    }).catch(() => { /* ignore — table may not exist yet */ });
+
+    // Reload delayed broadcasts from DB (server restart recovery)
+    storage.getDelayedTreasuryTransactions?.().then((txs) => {
+      for (const tx of txs) {
+        const broadcastAfter = tx.broadcastAfter ? new Date(tx.broadcastAfter).getTime() : 0;
+        const remaining = broadcastAfter - Date.now();
+        if (remaining > 0) {
+          const timer = setTimeout(() => {
+            this.executeDelayedBroadcast(tx.id).catch(err =>
+              log.error({ err, txId: tx.id }, "[Treasury] Delayed broadcast failed"));
+          }, remaining);
+          this.delayedBroadcasts.set(tx.id, timer);
+          log.info({ txId: tx.id, remainingMs: remaining }, "[Treasury] Restored delayed broadcast timer");
+        } else {
+          // Delay already expired — execute immediately
+          this.executeDelayedBroadcast(tx.id).catch(err =>
+            log.error({ err, txId: tx.id }, "[Treasury] Overdue delayed broadcast failed"));
+        }
+      }
+    }).catch(() => { /* ignore */ });
+
     // Run authority sync immediately, then on interval
     this.syncAuthority().catch((err) =>
       log.error({ err }, "[Treasury] Initial authority sync failed"),
@@ -117,6 +163,9 @@ export class TreasuryCoordinator {
       session.resolve({ success: false });
       this.pendingSigningSessions.delete(txId);
     }
+    // Clear all delayed broadcast timers
+    Array.from(this.delayedBroadcasts.values()).forEach((timer) => clearTimeout(timer));
+    this.delayedBroadcasts.clear();
     log.info("[Treasury] Coordinator stopped");
   }
 
@@ -131,6 +180,7 @@ export class TreasuryCoordinator {
    */
   isOperational(): boolean {
     if (!process.env.TREASURY_ENABLED) return false;
+    if (this.frozen) return false;
     if (!this.authorityInSync) return false;
     // Check we have enough connected agents to potentially meet threshold
     const connectedSigners = this.getConnectedSigners();
@@ -155,10 +205,12 @@ export class TreasuryCoordinator {
       operational: this.isOperational(),
       signerCount: signers.length,
       onlineSignerCount: onlineSigners.length,
-      threshold: computeThreshold(signers.length),
+      threshold: computeThreshold(signers.length, "transfer"),
+      authorityThreshold: computeThreshold(signers.length, "authority_update"),
       treasuryAccount: `@${TREASURY_ACCOUNT}`,
       balance,
       authorityInSync: this.authorityInSync,
+      frozen: this.frozen,
     };
   }
 
@@ -292,13 +344,27 @@ export class TreasuryCoordinator {
     amount: string;
     memo: string;
   }): Promise<{ success: boolean; txId?: string }> {
+    // SECURITY: Emergency freeze check
+    if (this.frozen) {
+      log.warn("[Treasury] Transfer blocked — treasury is frozen");
+      return { success: false };
+    }
+
+    // SECURITY: Recipient allowlist — only registered active storage nodes
+    const recipientCheck = await this.validateRecipient(opts.to);
+    if (!recipientCheck.valid) {
+      log.warn({ recipient: opts.to, reason: recipientCheck.reason },
+        "[Treasury] Transfer blocked — recipient not allowed");
+      return { success: false };
+    }
+
     const signers = await storage.getActiveTreasurySigners();
     if (signers.length < MIN_SIGNERS_FOR_OPERATION) {
       log.warn("[Treasury] Not enough signers for transfer");
       return { success: false };
     }
 
-    const threshold = computeThreshold(signers.length);
+    const threshold = computeThreshold(signers.length, "transfer");
 
     // SERVER-SIDE policy check (defense-in-depth — mirrors agent-side caps)
     const transferAmountHbd = parseFloat(opts.amount) || 0;
@@ -312,6 +378,20 @@ export class TreasuryCoordinator {
     }
     if (this.dailyServerSpendHbd + transferAmountHbd > TreasuryCoordinator.SERVER_DAILY_CAP_HBD) {
       log.warn("[Treasury] Transfer exceeds server daily cap");
+      return { success: false };
+    }
+
+    // SECURITY: Anomaly detection (Upgrade 6)
+    const isNewRecipient = !(await storage.hasReceivedTreasuryPayment(opts.to));
+    const anomalyFlags = this.anomalyDetector.recordTransaction(
+      opts.to, transferAmountHbd, randomUUID(), isNewRecipient,
+    );
+    if (anomalyFlags.length > 0) {
+      this.auditLog("n/a", "system", `anomaly_detected:${anomalyFlags.join(",")}`);
+    }
+    if (this.anomalyDetector.shouldAutoFreeze()) {
+      log.error("[Treasury] Auto-freeze triggered by anomaly detection");
+      await this.freeze("system", "auto_freeze:anomaly_threshold");
       return { success: false };
     }
 
@@ -418,13 +498,61 @@ export class TreasuryCoordinator {
   }[]): Promise<{ success: boolean; txId?: string }> {
     if (payments.length === 0) return { success: false };
 
+    // SECURITY: Emergency freeze check
+    if (this.frozen) {
+      log.warn("[Treasury] Batch transfer blocked — treasury is frozen");
+      return { success: false };
+    }
+
+    // SECURITY: Recipient allowlist — validate all recipients
+    for (const p of payments) {
+      const check = await this.validateRecipient(p.to);
+      if (!check.valid) {
+        log.warn({ recipient: p.to, reason: check.reason },
+          "[Treasury] Batch blocked — invalid recipient");
+        return { success: false };
+      }
+    }
+
+    // SECURITY: Batch operation limits
+    if (payments.length > MAX_OPS_PER_TRANSACTION) {
+      log.warn({ count: payments.length, max: MAX_OPS_PER_TRANSACTION },
+        "[Treasury] Batch exceeds max operations per transaction");
+      return { success: false };
+    }
+    const batchTotalHbd = payments
+      .map((p) => parseFloat(p.amount) || 0)
+      .reduce((sum, a) => sum + a, 0);
+    if (batchTotalHbd > MAX_BATCH_TOTAL_HBD) {
+      log.warn({ total: batchTotalHbd, max: MAX_BATCH_TOTAL_HBD },
+        "[Treasury] Batch exceeds max total HBD");
+      return { success: false };
+    }
+
+    // SECURITY: Anomaly detection (Upgrade 6)
+    for (const p of payments) {
+      const amtHbd = parseFloat(p.amount) || 0;
+      const isNewRecipient = !(await storage.hasReceivedTreasuryPayment(p.to));
+      const anomalyFlags = this.anomalyDetector.recordTransaction(
+        p.to, amtHbd, randomUUID(), isNewRecipient,
+      );
+      if (anomalyFlags.length > 0) {
+        this.auditLog("n/a", "system", `anomaly_detected:${anomalyFlags.join(",")}`);
+      }
+      if (this.anomalyDetector.shouldAutoFreeze()) {
+        log.error("[Treasury] Auto-freeze triggered by anomaly detection (batch)");
+        await this.freeze("system", "auto_freeze:anomaly_threshold");
+        return { success: false };
+      }
+    }
+
     const signers = await storage.getActiveTreasurySigners();
     if (signers.length < MIN_SIGNERS_FOR_OPERATION) {
       log.warn("[Treasury] Not enough signers for batch transfer");
       return { success: false };
     }
 
-    const threshold = computeThreshold(signers.length);
+    const threshold = computeThreshold(signers.length, "transfer");
     const transferOps = payments.map((p) => buildTransferOp(p.to, p.amount, p.memo));
 
     try {
@@ -606,6 +734,33 @@ export class TreasuryCoordinator {
           return; // Wait for more signatures
         }
 
+        // UPGRADE 5: Time-delay check — high-value transfers and authority updates get a delay
+        const delaySeconds = this.computeDelay(updated.txType, updated.metadata);
+        if (delaySeconds > 0 && updated.status !== "delayed") {
+          const broadcastAfter = new Date(Date.now() + delaySeconds * 1000);
+          await storage.updateTreasuryTxDelayed(txId, broadcastAfter, delaySeconds);
+
+          const timer = setTimeout(() => {
+            this.executeDelayedBroadcast(txId).catch(err =>
+              log.error({ err, txId }, "[Treasury] Delayed broadcast failed"));
+          }, delaySeconds * 1000);
+          this.delayedBroadcasts.set(txId, timer);
+
+          log.info({ txId, delaySeconds, broadcastAfter: broadcastAfter.toISOString() },
+            "[Treasury] Threshold met — entering delay window");
+          this.auditLog(txId, "system", "delayed", undefined, undefined);
+
+          // Resolve pending session with delayed indicator
+          const session = this.pendingSigningSessions.get(txId);
+          if (session) {
+            clearTimeout(session.timeout);
+            session.resolve({ success: true, txId: `delayed:${txId}` });
+            this.pendingSigningSessions.delete(txId);
+          }
+          this.broadcastingTxIds.delete(txId);
+          return;
+        }
+
         // Parse the ORIGINAL transaction exactly as it was built (same ref_block, expiration)
         const originalTx = JSON.parse(updated.operationsJson);
 
@@ -714,7 +869,7 @@ export class TreasuryCoordinator {
 
       // Compare on-chain authority with expected
       const expectedSigners = activeSigners.map((s) => s.username);
-      const expectedThreshold = computeThreshold(activeSigners.length);
+      const expectedThreshold = computeThreshold(activeSigners.length, "transfer");
 
       try {
         const onChainAuth = await readOnChainAuthority(this.client);
@@ -742,11 +897,15 @@ export class TreasuryCoordinator {
    * Initiate an on-chain authority update to match the current signer set.
    */
   private async initiateAuthorityUpdate(): Promise<void> {
+    if (this.frozen) {
+      log.warn("[Treasury] Authority update blocked — treasury is frozen");
+      return;
+    }
     const signers = await storage.getActiveTreasurySigners();
     if (signers.length < MIN_SIGNERS_FOR_OPERATION) return;
 
     const signerUsernames = signers.map((s) => s.username);
-    const threshold = computeThreshold(signers.length);
+    const threshold = computeThreshold(signers.length, "authority_update");
 
     // Read current account info to preserve memo_key and json_metadata
     let memoKey: string | undefined;
@@ -883,6 +1042,211 @@ export class TreasuryCoordinator {
       log.error({ err: err.message, username }, "[Treasury] Signature verification failed");
       return false;
     }
+  }
+
+  // ============================================================
+  // Recipient Allowlist (Upgrade 3)
+  // ============================================================
+
+  /** Validate that a recipient is a registered, active storage node. */
+  private async validateRecipient(username: string): Promise<{ valid: boolean; reason?: string }> {
+    // Treasury account itself is always allowed (refunds/internal ops)
+    if (username === TREASURY_ACCOUNT) return { valid: true };
+
+    const node = await storage.getStorageNodeByUsername(username);
+    if (!node) return { valid: false, reason: "recipient_not_registered" };
+    if (node.status === "banned") return { valid: false, reason: "recipient_banned" };
+    if (node.status === "probation") return { valid: false, reason: "recipient_on_probation" };
+    if (node.reputation < MIN_RECIPIENT_REPUTATION) {
+      return { valid: false, reason: `recipient_reputation_too_low:${node.reputation}` };
+    }
+    return { valid: true };
+  }
+
+  // ============================================================
+  // Emergency Freeze (Upgrade 4)
+  // ============================================================
+
+  /** Any active signer can freeze the treasury. Halts all operations. */
+  async freeze(username: string, reason: string): Promise<{ success: boolean; error?: string }> {
+    const signer = await storage.getTreasurySignerByUsername(username);
+    // Allow "system" as a virtual signer for auto-freeze
+    if (username !== "system" && (!signer || signer.status !== "active")) {
+      return { success: false, error: "Not an active signer" };
+    }
+
+    const signers = await storage.getActiveTreasurySigners();
+    const unfreezeThreshold = Math.ceil(signers.length * AUTHORITY_UPDATE_THRESHOLD_RATIO);
+
+    await storage.setTreasuryFrozen(username, reason, unfreezeThreshold);
+    this.frozen = true;
+    this.auditLog("system", username, "freeze", undefined, reason);
+    log.warn({ username, reason }, "[Treasury] FROZEN by signer");
+
+    // Cancel all delayed broadcasts
+    const entries = Array.from(this.delayedBroadcasts.entries());
+    for (const [txId, timer] of entries) {
+      clearTimeout(timer);
+      await storage.updateTreasuryTxStatus(txId, "failed");
+      this.auditLog(txId, "system", "delayed_cancelled_by_freeze");
+    }
+    this.delayedBroadcasts.clear();
+
+    return { success: true };
+  }
+
+  /** Active signers vote to unfreeze. Requires 80% supermajority. */
+  async voteUnfreeze(username: string): Promise<{
+    success: boolean; frozen: boolean; voteCount: number; threshold: number; error?: string
+  }> {
+    const signer = await storage.getTreasurySignerByUsername(username);
+    if (!signer || signer.status !== "active") {
+      return { success: false, frozen: true, voteCount: 0, threshold: 0, error: "Not an active signer" };
+    }
+
+    const result = await storage.addUnfreezeVote(username);
+    if (!result.frozen) {
+      this.frozen = false;
+      this.auditLog("system", username, "unfreeze");
+      log.info({ username, voteCount: result.voteCount }, "[Treasury] UNFROZEN by supermajority vote");
+    }
+    return { success: true, ...result };
+  }
+
+  // ============================================================
+  // Time-Delay with Veto (Upgrade 5)
+  // ============================================================
+
+  /** Compute broadcast delay based on tx type and amount. */
+  private computeDelay(txType: string, metadata: any): number {
+    if (txType === "authority_update") return AUTHORITY_UPDATE_DELAY_SECONDS;
+    if (txType === "transfer") {
+      const amount = parseFloat(metadata?.amount || "0");
+      const batchTotal = parseFloat(metadata?.totalAmount || "0");
+      const effective = Math.max(amount, batchTotal);
+      if (effective > IMMEDIATE_BROADCAST_MAX_HBD) return TRANSFER_DELAY_SECONDS;
+    }
+    return 0; // Immediate broadcast
+  }
+
+  /** Execute a delayed broadcast: rebuild tx + run fast re-signing round. */
+  private async executeDelayedBroadcast(txId: string): Promise<void> {
+    this.delayedBroadcasts.delete(txId);
+    const tx = await storage.getTreasuryTransaction(txId);
+    if (!tx || tx.status !== "delayed") return;
+
+    if (this.frozen) {
+      await storage.updateTreasuryTxStatus(txId, "failed");
+      this.auditLog(txId, "system", "delayed_broadcast_frozen");
+      return;
+    }
+
+    // Re-validate signatures still meet threshold (some may have been vetoed)
+    const sigs = (tx.signatures || {}) as Record<string, string>;
+    const activeSigners = await storage.getActiveTreasurySigners();
+    const activeUsernames = new Set(activeSigners.map(s => s.username));
+    const validSigCount = Object.keys(sigs).filter(u => activeUsernames.has(u)).length;
+    const threshold = tx.threshold;
+
+    if (validSigCount < threshold) {
+      await storage.updateTreasuryTxStatus(txId, "failed");
+      this.auditLog(txId, "system", "delayed_insufficient_sigs");
+      log.warn({ txId, validSigCount, threshold }, "[Treasury] Delayed broadcast failed — not enough valid signatures after delay");
+      return;
+    }
+
+    // Rebuild tx with fresh chain props (Hive txs expire in ~50s)
+    const originalTx = JSON.parse(tx.operationsJson);
+    try {
+      const { tx: freshTx, digest } = await buildUnsignedTransaction(this.client, originalTx.operations);
+      const freshDigestHex = digest.toString("hex");
+
+      // Update the stored tx with fresh digest
+      await storage.updateTreasuryTxStatus(txId, "signing");
+
+      // Distribute a fast re-signing round
+      const reSignNonce = randomUUID();
+      this.trackNonce(reSignNonce, txId);
+
+      const request: SigningRequest = {
+        type: "SigningRequest",
+        version: TREASURY_PROTOCOL_VERSION,
+        txId,
+        nonce: reSignNonce,
+        txDigest: freshDigestHex,
+        operations: freshTx.operations,
+        tx: freshTx,
+        expiresAt: new Date(Date.now() + SIGNING_TIMEOUT_MS).toISOString(),
+        metadata: tx.metadata as SigningMetadata || { txType: tx.txType as "transfer" | "authority_update" },
+      };
+
+      // Reset signatures for fresh round and update digest
+      await storage.updateTreasuryTxSignatures(txId, {});
+      // Update operationsJson and digest for the fresh tx
+      await storage.updateTreasuryTransaction(txId, {
+        operationsJson: JSON.stringify(freshTx),
+        txDigest: freshDigestHex,
+        status: "signing",
+        expiresAt: new Date(Date.now() + SIGNING_TIMEOUT_MS),
+      });
+
+      const connectedSigners = this.getConnectedSigners();
+      let sentCount = 0;
+      for (const username of connectedSigners) {
+        if (activeUsernames.has(username)) {
+          if (this.sendToSigner(username, request)) sentCount++;
+        }
+      }
+
+      log.info({ txId, sentCount, threshold }, "[Treasury] Re-signing round for delayed broadcast");
+      this.auditLog(txId, "system", "delayed_re_sign_round");
+
+      if (sentCount < threshold) {
+        await storage.updateTreasuryTxStatus(txId, "failed");
+        this.auditLog(txId, "system", "delayed_not_enough_signers");
+      }
+      // The normal handleSigningResponse() flow will handle collection + broadcast
+    } catch (err) {
+      log.error({ err, txId }, "[Treasury] Delayed broadcast re-signing failed");
+      await storage.updateTreasuryTxStatus(txId, "failed");
+    }
+  }
+
+  /** Veto a delayed transaction — revoke your signature during the delay window. */
+  async veto(txId: string, username: string): Promise<{ success: boolean; error?: string }> {
+    const tx = await storage.getTreasuryTransaction(txId);
+    if (!tx || tx.status !== "delayed") {
+      return { success: false, error: "Transaction not in delay window" };
+    }
+
+    const signer = await storage.getTreasurySignerByUsername(username);
+    if (!signer || signer.status !== "active") {
+      return { success: false, error: "Not an active signer" };
+    }
+
+    const sigs = (tx.signatures || {}) as Record<string, string>;
+    if (!sigs[username]) {
+      return { success: false, error: "You did not sign this transaction" };
+    }
+
+    // Remove signer's signature
+    delete sigs[username];
+    await storage.updateTreasuryTxSignatures(txId, sigs);
+    this.auditLog(txId, username, "veto");
+
+    // Check if remaining signatures still meet threshold
+    if (Object.keys(sigs).length < tx.threshold) {
+      const timer = this.delayedBroadcasts.get(txId);
+      if (timer) {
+        clearTimeout(timer);
+        this.delayedBroadcasts.delete(txId);
+      }
+      await storage.updateTreasuryTxStatus(txId, "failed");
+      this.auditLog(txId, username, "veto_cancelled_tx");
+      log.info({ txId, username }, "[Treasury] Veto cancelled delayed transaction");
+    }
+
+    return { success: true };
   }
 
   /** Write an audit log entry for a treasury signing event. */

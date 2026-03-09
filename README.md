@@ -16,7 +16,7 @@ Decentralized storage validation protocol built on the Hive L1 blockchain. Valid
 
 | Feature | Description |
 |---------|-------------|
-| **Multisig Treasury** | Hive L1 native multisig on `@hivepoa-treasury` — 60% quorum, fluid authority rotation, auto-signing, self-healing |
+| **Multisig Treasury** | Hive L1 native multisig on `@hivepoa-treasury` — tiered quorum (60%/80%), fluid authority rotation, auto-signing, self-healing, emergency freeze, anomaly detection |
 | **Proof of Access (PoA)** | Refs-only verification with 25s anti-cheat timing, consecutive-fail banning, reputation scoring |
 | **Web of Trust** | Witnesses vouch for non-witness validators — cascading trust with automatic revocation. Extended for treasury signer eligibility |
 | **HBD Micropayments** | Contract-funded rewards with batched payouts via multisig treasury (fallback: direct validator transfer) |
@@ -33,8 +33,8 @@ Decentralized storage validation protocol built on the Hive L1 blockchain. Valid
 
 ## Project Scale
 
-- 164+ API endpoints across 25 services
-- 46 database tables (Drizzle ORM schema)
+- 167+ API endpoints across 25 services
+- 47 database tables (Drizzle ORM schema)
 - 25 client pages (including Treasury dashboard, content moderation, and video watch page with P2P)
 - 168 automated tests across 5 test suites (vitest)
 - Full Docker deployment stack
@@ -101,6 +101,9 @@ Every 10 minutes, the coordinator compares on-chain authority with the database 
 | POST | `/api/treasury/leave` | Active signer | Opt out with cooldown |
 | GET | `/api/treasury/transactions` | Signer | Recent treasury transactions |
 | GET | `/api/treasury/transactions/:id` | Signer | Single tx with signature progress |
+| POST | `/api/treasury/freeze` | Active signer | Emergency freeze — halts all operations |
+| POST | `/api/treasury/unfreeze` | Active signer | Vote to unfreeze (80% supermajority) |
+| POST | `/api/treasury/transactions/:id/veto` | Active signer | Veto a delayed transaction |
 | POST | `/api/wot/treasury-vouch` | Witness | Vouch for a treasury signer candidate |
 | DELETE | `/api/wot/treasury-vouch` | Witness | Revoke treasury vouch |
 | GET | `/api/wot/treasury-vouches` | Public | All active treasury vouches |
@@ -361,6 +364,7 @@ Every viewer watching a video automatically redistributes content to other viewe
 - Non-root Docker user
 - **Encrypted Wallet**: Private keys stored with AES-256-GCM encryption, PBKDF2 key derivation (600K iterations, SHA-512). Keys decrypted only at startup, never persisted in plaintext
 - **Treasury**: Agent-side digest + operations verification, nonce replay protection, cryptographic signature verification, server-side spending caps, signer re-validation at broadcast, persistent audit log, local-only policy config
+- **Treasury Hardening (6 layers)**: Batch limits (10 ops/tx, $10 HBD/batch), tiered quorum (80% for authority updates vs 60% for transfers), recipient allowlist (active storage nodes only), emergency freeze (any signer triggers, 80% supermajority to unfreeze), time-delay with veto (1hr for >$1 transfers, 6hr for authority updates), anomaly detection with auto-freeze (burst, amount spike, rapid succession, new-recipient alerts)
 - **Content Moderation**: Community flagging with severity levels, auto-blocklist for confirmed critical threats, uploader bans by Hive username (local/network scope)
 
 ## Build

@@ -4261,6 +4261,54 @@ export async function registerRoutes(
     }
   });
 
+  // POST /api/treasury/freeze — Emergency freeze (any active signer)
+  app.post("/api/treasury/freeze", async (req, res) => {
+    if (!treasuryCoordinator) return res.status(503).json({ error: "Treasury disabled" });
+    const sessionToken = req.headers.authorization?.slice(7);
+    if (!sessionToken) return res.status(401).json({ error: "No session token" });
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid || !validation.username) return res.status(401).json({ error: "Invalid session" });
+    try {
+      const result = await treasuryCoordinator.freeze(validation.username, req.body?.reason || "manual_freeze");
+      if (!result.success) return res.status(403).json({ error: result.error });
+      res.json({ success: true, message: "Treasury frozen" });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to freeze treasury" });
+    }
+  });
+
+  // POST /api/treasury/unfreeze — Vote to unfreeze (active signer, requires 80% supermajority)
+  app.post("/api/treasury/unfreeze", async (req, res) => {
+    if (!treasuryCoordinator) return res.status(503).json({ error: "Treasury disabled" });
+    const sessionToken = req.headers.authorization?.slice(7);
+    if (!sessionToken) return res.status(401).json({ error: "No session token" });
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid || !validation.username) return res.status(401).json({ error: "Invalid session" });
+    try {
+      const result = await treasuryCoordinator.voteUnfreeze(validation.username);
+      if (!result.success) return res.status(403).json({ error: result.error });
+      res.json({ frozen: result.frozen, voteCount: result.voteCount, threshold: result.threshold });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to vote unfreeze" });
+    }
+  });
+
+  // POST /api/treasury/transactions/:id/veto — Veto a delayed transaction
+  app.post("/api/treasury/transactions/:id/veto", async (req, res) => {
+    if (!treasuryCoordinator) return res.status(503).json({ error: "Treasury disabled" });
+    const sessionToken = req.headers.authorization?.slice(7);
+    if (!sessionToken) return res.status(401).json({ error: "No session token" });
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid || !validation.username) return res.status(401).json({ error: "Invalid session" });
+    try {
+      const result = await treasuryCoordinator.veto(req.params.id, validation.username);
+      if (!result.success) return res.status(400).json({ error: result.error });
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to veto transaction" });
+    }
+  });
+
   // POST /api/wot/treasury-vouch — Vouch for a treasury signer candidate (witness-only)
   app.post("/api/wot/treasury-vouch", async (req, res) => {
     const sessionToken = req.headers.authorization?.slice(7);

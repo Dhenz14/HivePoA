@@ -625,6 +625,8 @@ export const treasuryTransactions = pgTable("treasury_transactions", {
   initiatedBy: text("initiated_by").notNull(),                   // 'system' or username
   broadcastTxId: text("broadcast_tx_id"),                        // Hive tx ID after successful broadcast
   metadata: jsonb("metadata"),                                   // Context: recipient, amount, memo, etc.
+  broadcastAfter: timestamp("broadcast_after"),                  // Delayed broadcast time (null = immediate)
+  delaySeconds: integer("delay_seconds"),                        // Delay duration for display
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -809,7 +811,20 @@ export const treasuryAuditLog = pgTable("treasury_audit_log", {
   rejectReason: text("reject_reason"),
   txDigest: text("tx_digest"),
   metadata: jsonb("metadata"),
+  anomalyFlags: text("anomaly_flags"),                           // Comma-separated anomaly types, or null
   createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Treasury Freeze State — Emergency kill switch
+export const treasuryFreezeState = pgTable("treasury_freeze_state", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  frozen: boolean("frozen").notNull().default(false),
+  frozenBy: text("frozen_by"),
+  frozenAt: timestamp("frozen_at"),
+  unfreezeVotes: jsonb("unfreeze_votes").notNull().default([]),  // string[] of usernames who voted to unfreeze
+  unfreezeThreshold: integer("unfreeze_threshold"),              // 80% of signers at freeze time
+  reason: text("reason"),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
 // ============================================================

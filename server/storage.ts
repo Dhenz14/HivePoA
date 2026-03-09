@@ -122,6 +122,7 @@ import {
   treasuryVouches,
   treasuryTransactions,
   treasuryAuditLog,
+  treasuryFreezeState,
   type TreasurySigner,
   type InsertTreasurySigner,
   type TreasuryVouch,
@@ -436,6 +437,18 @@ export interface IStorage {
   getActiveBansForNode(nodeOperator: string): Promise<UploaderBan[]>;
   // Treasury Audit Log
   createTreasuryAuditLog(entry: InsertTreasuryAuditLog): Promise<TreasuryAuditLog>;
+  // Treasury Freeze State
+  getTreasuryFreezeState(): Promise<any | undefined>;
+  setTreasuryFrozen(frozenBy: string, reason: string, unfreezeThreshold: number): Promise<void>;
+  addUnfreezeVote(username: string): Promise<{ frozen: boolean; voteCount: number; threshold: number }>;
+  clearTreasuryFreeze(): Promise<void>;
+  // Treasury Transaction Extensions (delay + veto)
+  updateTreasuryTxDelayed(id: string, broadcastAfter: Date, delaySeconds: number): Promise<void>;
+  updateTreasuryTxSignatures(id: string, signatures: Record<string, string>): Promise<void>;
+  updateTreasuryTransaction(id: string, fields: Partial<{ operationsJson: string; txDigest: string; status: string; expiresAt: Date }>): Promise<void>;
+  getDelayedTreasuryTransactions(): Promise<TreasuryTransaction[]>;
+  // Anomaly Detection
+  hasReceivedTreasuryPayment(recipient: string): Promise<boolean>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2218,6 +2231,84 @@ export class DatabaseStorage implements IStorage {
   async createTreasuryAuditLog(entry: InsertTreasuryAuditLog): Promise<TreasuryAuditLog> {
     const [row] = await db.insert(treasuryAuditLog).values(entry).returning();
     return row;
+  }
+
+  // Treasury Freeze State
+  async getTreasuryFreezeState(): Promise<any | undefined> {
+    const [row] = await db.select().from(treasuryFreezeState).where(eq(treasuryFreezeState.id, "singleton")).limit(1);
+    return row || undefined;
+  }
+
+  async setTreasuryFrozen(frozenBy: string, reason: string, unfreezeThreshold: number): Promise<void> {
+    const existing = await this.getTreasuryFreezeState();
+    if (existing) {
+      await db.update(treasuryFreezeState).set({
+        frozen: true, frozenBy, frozenAt: new Date(), reason, unfreezeThreshold,
+        unfreezeVotes: [], updatedAt: new Date(),
+      }).where(eq(treasuryFreezeState.id, "singleton"));
+    } else {
+      await db.insert(treasuryFreezeState).values({
+        id: "singleton", frozen: true, frozenBy, frozenAt: new Date(), reason,
+        unfreezeThreshold, unfreezeVotes: [], updatedAt: new Date(),
+      });
+    }
+  }
+
+  async addUnfreezeVote(username: string): Promise<{ frozen: boolean; voteCount: number; threshold: number }> {
+    const state = await this.getTreasuryFreezeState();
+    if (!state || !state.frozen) return { frozen: false, voteCount: 0, threshold: 0 };
+
+    const votes: string[] = Array.isArray(state.unfreezeVotes) ? state.unfreezeVotes : [];
+    if (!votes.includes(username)) votes.push(username);
+    const threshold = state.unfreezeThreshold || 1;
+
+    if (votes.length >= threshold) {
+      await this.clearTreasuryFreeze();
+      return { frozen: false, voteCount: votes.length, threshold };
+    }
+    await db.update(treasuryFreezeState).set({ unfreezeVotes: votes, updatedAt: new Date() })
+      .where(eq(treasuryFreezeState.id, "singleton"));
+    return { frozen: true, voteCount: votes.length, threshold };
+  }
+
+  async clearTreasuryFreeze(): Promise<void> {
+    await db.update(treasuryFreezeState).set({
+      frozen: false, frozenBy: null, frozenAt: null, unfreezeVotes: [], reason: null,
+      unfreezeThreshold: null, updatedAt: new Date(),
+    }).where(eq(treasuryFreezeState.id, "singleton"));
+  }
+
+  // Treasury Transaction Extensions (delay + veto)
+  async updateTreasuryTxDelayed(id: string, broadcastAfter: Date, delaySeconds: number): Promise<void> {
+    await db.update(treasuryTransactions).set({
+      status: "delayed", broadcastAfter, delaySeconds,
+    }).where(eq(treasuryTransactions.id, id));
+  }
+
+  async updateTreasuryTxSignatures(id: string, signatures: Record<string, string>): Promise<void> {
+    await db.update(treasuryTransactions).set({ signatures })
+      .where(eq(treasuryTransactions.id, id));
+  }
+
+  async updateTreasuryTransaction(id: string, fields: Partial<{ operationsJson: string; txDigest: string; status: string; expiresAt: Date }>): Promise<void> {
+    await db.update(treasuryTransactions).set(fields).where(eq(treasuryTransactions.id, id));
+  }
+
+  async getDelayedTreasuryTransactions(): Promise<TreasuryTransaction[]> {
+    return db.select().from(treasuryTransactions)
+      .where(eq(treasuryTransactions.status, "delayed"));
+  }
+
+  // Anomaly Detection
+  async hasReceivedTreasuryPayment(recipient: string): Promise<boolean> {
+    const rows = await db.select({ id: treasuryTransactions.id })
+      .from(treasuryTransactions)
+      .where(and(
+        eq(treasuryTransactions.status, "broadcast"),
+        sql`metadata->>'recipient' = ${recipient}`,
+      ))
+      .limit(1);
+    return rows.length > 0;
   }
 }
 

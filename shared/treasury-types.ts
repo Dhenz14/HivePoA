@@ -52,9 +52,15 @@ export interface TreasuryStatus {
   signerCount: number;
   onlineSignerCount: number;
   threshold: number;               // ceil(signerCount * 0.6)
+  authorityThreshold: number;      // ceil(signerCount * 0.8) — higher quorum for authority updates
   treasuryAccount: string;         // e.g., "@hivepoa-treasury"
   balance?: string;                // Current HBD balance
   authorityInSync: boolean;        // On-chain authority matches DB signer set
+  frozen: boolean;                 // Emergency freeze active
+  frozenBy?: string;               // Who triggered the freeze
+  frozenAt?: string;               // ISO8601 when frozen
+  unfreezeVotes?: number;          // Current unfreeze vote count
+  unfreezeThreshold?: number;      // Votes needed to unfreeze (80%)
 }
 
 export interface TreasurySignerInfo {
@@ -92,8 +98,11 @@ export const DEFAULT_SIGNER_CONFIG: TreasurySignerConfig = {
 /** Minimum active signers before treasury accepts payment routing */
 export const MIN_SIGNERS_FOR_OPERATION = 3;
 
-/** Threshold ratio — 60% of active signers must sign */
+/** Threshold ratio — 60% of active signers must sign (transfers) */
 export const THRESHOLD_RATIO = 0.6;
+
+/** Higher threshold for authority updates — 80% quorum */
+export const AUTHORITY_UPDATE_THRESHOLD_RATIO = 0.8;
 
 /** Treasury account on Hive */
 export const TREASURY_ACCOUNT = "hivepoa-treasury";
@@ -118,3 +127,21 @@ export const MIN_TREASURY_VOUCHES = 3;
 
 /** Self-healing authority sync interval (10 minutes) */
 export const AUTHORITY_SYNC_INTERVAL_MS = 10 * 60 * 1000;
+
+/** Maximum operations per transaction (batch limit) */
+export const MAX_OPS_PER_TRANSACTION = 10;
+
+/** Maximum total HBD per batch transaction */
+export const MAX_BATCH_TOTAL_HBD = 10.0;
+
+/** Minimum reputation for a recipient to receive treasury payments */
+export const MIN_RECIPIENT_REPUTATION = 10;
+
+/** Transfers at or below this amount broadcast immediately; above triggers delay */
+export const IMMEDIATE_BROADCAST_MAX_HBD = 1.0;
+
+/** Delay for high-value transfers (1 hour) */
+export const TRANSFER_DELAY_SECONDS = 3600;
+
+/** Delay for authority updates (6 hours) */
+export const AUTHORITY_UPDATE_DELAY_SECONDS = 21600;

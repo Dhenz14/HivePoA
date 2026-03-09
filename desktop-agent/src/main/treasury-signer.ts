@@ -33,6 +33,8 @@ import type {
 import {
   DEFAULT_SIGNER_CONFIG,
   TREASURY_PROTOCOL_VERSION,
+  MAX_OPS_PER_TRANSACTION,
+  MAX_BATCH_TOTAL_HBD,
 } from "../../../shared/treasury-types";
 
 /** Maximum nonces to track before evicting oldest 20% */
@@ -209,6 +211,11 @@ export class TreasurySigner {
     }
     this.signingRequestTimestamps.push(now);
 
+    // Batch operation limits
+    if (request.operations.length > MAX_OPS_PER_TRANSACTION) {
+      return { allowed: false, reason: `too_many_operations:${request.operations.length}>${MAX_OPS_PER_TRANSACTION}` };
+    }
+
     // Operation type whitelist
     for (const op of request.operations) {
       const opType = Array.isArray(op) ? op[0] : op.type;
@@ -231,6 +238,11 @@ export class TreasurySigner {
           }
           totalAmount += opAmount;
         }
+      }
+
+      // Batch total HBD limit
+      if (totalAmount > MAX_BATCH_TOTAL_HBD) {
+        return { allowed: false, reason: `batch_total_exceeds_cap:${totalAmount}>${MAX_BATCH_TOTAL_HBD}` };
       }
 
       // Daily cap against batch total

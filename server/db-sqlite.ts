@@ -645,6 +645,8 @@ export function createSQLiteTables(dbPath: string) {
       initiated_by TEXT NOT NULL,
       broadcast_tx_id TEXT,
       metadata TEXT,
+      broadcast_after TEXT,
+      delay_seconds INTEGER,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -657,7 +659,19 @@ export function createSQLiteTables(dbPath: string) {
       reject_reason TEXT,
       tx_digest TEXT,
       metadata TEXT,
+      anomaly_flags TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS treasury_freeze_state (
+      id TEXT PRIMARY KEY,
+      frozen INTEGER NOT NULL DEFAULT 0,
+      frozen_by TEXT,
+      frozen_at TEXT,
+      unfreeze_votes TEXT NOT NULL DEFAULT '[]',
+      unfreeze_threshold INTEGER,
+      reason TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS content_flags (
