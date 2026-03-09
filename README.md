@@ -16,7 +16,7 @@ Decentralized storage validation protocol built on the Hive L1 blockchain. Valid
 
 | Feature | Description |
 |---------|-------------|
-| **Multisig Treasury** | Hive L1 native multisig on `@hivepoa-treasury` — tiered quorum (60%/80%), fluid authority rotation, auto-signing, self-healing, emergency freeze, anomaly detection |
+| **Multisig Treasury** | Hive L1 native multisig on `@hivepoa-treasury` — tiered quorum (60%/80%), fluid authority rotation, auto-signing, self-healing, emergency freeze, time-delay veto, anomaly detection |
 | **Proof of Access (PoA)** | Refs-only verification with 25s anti-cheat timing, consecutive-fail banning, reputation scoring |
 | **Web of Trust** | Witnesses vouch for non-witness validators — cascading trust with automatic revocation. Extended for treasury signer eligibility |
 | **HBD Micropayments** | Contract-funded rewards with batched payouts via multisig treasury (fallback: direct validator transfer) |
@@ -26,16 +26,17 @@ Decentralized storage validation protocol built on the Hive L1 blockchain. Valid
 | **P2P CDN** | WebRTC peer-to-peer video delivery via p2p-media-loader with segment caching in IndexedDB |
 | **Storage Contracts** | Uploader-funded storage with per-challenge rewards, budget tracking, and automatic expiry |
 | **Validator Dashboard** | Real-time challenge monitoring, reputation history, blacklist management |
-| **Treasury Dashboard** | Authority ring visualization, signer status, WoT vouching, signature progress, transaction history |
+| **Treasury Dashboard** | Authority ring visualization, signer status, WoT vouching, signature progress, transaction history, audit log viewer |
+| **Governance** | Live validator rankings by reputation, network health stats, treasury status sidebar |
 | **Validator Opt-In/Out** | Eligible users choose whether to activate as a validator — resign any time from the dashboard |
 | **Content Moderation** | Community flagging, uploader bans, auto-blocklist for confirmed threats |
 | **Dark / Light Theme** | Toggle in the sidebar footer, persisted to localStorage |
 
 ## Project Scale
 
-- 168+ API endpoints across 25 services
-- 46 database tables (Drizzle ORM schema)
-- 26 client pages (including Treasury dashboard, governance, content moderation, and video watch page with P2P)
+- 177 API endpoints across 30 services
+- 47 database tables (Drizzle ORM, dual PostgreSQL + SQLite dialect)
+- 26 client pages (Treasury dashboard, governance, content moderation, video watch with P2P, and more)
 - 168 automated tests across 5 test suites (vitest)
 - Full Docker deployment stack
 - GitHub Pages static site with auto-deploy
@@ -104,6 +105,7 @@ Every 10 minutes, the coordinator compares on-chain authority with the database 
 | POST | `/api/treasury/freeze` | Active signer | Emergency freeze — halts all operations |
 | POST | `/api/treasury/unfreeze` | Active signer | Vote to unfreeze (80% supermajority) |
 | POST | `/api/treasury/transactions/:id/veto` | Active signer | Veto a delayed transaction |
+| GET | `/api/treasury/audit-log` | Signer | Recent audit log entries (limit, max 200) |
 | POST | `/api/wot/treasury-vouch` | Witness | Vouch for a treasury signer candidate |
 | DELETE | `/api/wot/treasury-vouch` | Witness | Revoke treasury vouch |
 | GET | `/api/wot/treasury-vouches` | Public | All active treasury vouches |
