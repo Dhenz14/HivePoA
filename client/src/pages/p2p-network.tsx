@@ -3,8 +3,20 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Users, Download, Upload, Globe, TrendingUp, Activity, Award, Clock } from 'lucide-react';
+import { Users, Download, Upload, Globe, TrendingUp, Activity, Award, Clock, Wifi, HardDrive, Shield, CheckCircle2, XCircle } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
+import { getApiBase, getBackendMode } from '@/lib/api-mode';
+
+interface AgentPeer {
+  hiveUsername: string;
+  peerId: string;
+  version: string;
+  storageGB: number;
+  pinCount: number;
+  lastAnnounce: number;
+  reputation: number;
+  challengeResults: { success: number; fail: number };
+}
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -44,7 +56,33 @@ export default function P2PNetworkPage() {
     queryKey: ['/api/p2p/contributors'],
   });
 
+  // Desktop agent peers (discovered via Hive blockchain announcements)
+  const isAgent = getBackendMode() === 'agent';
+  const { data: agentPeers } = useQuery<{ peers: AgentPeer[]; count: number }>({
+    queryKey: ['agent-peers'],
+    queryFn: async () => {
+      const res = await fetch(`${getApiBase()}/api/peers`);
+      if (!res.ok) return { peers: [], count: 0 };
+      return res.json();
+    },
+    refetchInterval: 10000,
+    enabled: isAgent,
+  });
+
+  // Agent's own status (for displaying own node)
+  const { data: agentStatus } = useQuery<any>({
+    queryKey: ['agent-status'],
+    queryFn: async () => {
+      const res = await fetch(`${getApiBase()}/api/status`);
+      if (!res.ok) return null;
+      return res.json();
+    },
+    refetchInterval: 10000,
+    enabled: isAgent,
+  });
+
   const combinedStats = stats?.combined || { activePeers: 0, activeRooms: 0, totalBytesShared: 0, avgP2pRatio: 0 };
+  const peerCount = isAgent ? (agentPeers?.count || 0) + 1 : combinedStats.activePeers; // +1 for self
 
   return (
     <div className="space-y-6 p-6">
@@ -74,7 +112,7 @@ export default function P2PNetworkPage() {
             <div className="flex items-center">
               <Users className="h-8 w-8 text-primary mr-3" />
               <span className="text-3xl font-bold" data-testid="text-active-peers">
-                {combinedStats.activePeers}
+                {peerCount}
               </span>
             </div>
             <p className="text-xs text-muted-foreground mt-2">
@@ -133,12 +171,117 @@ export default function P2PNetworkPage() {
         </Card>
       </div>
 
-      <Tabs defaultValue="rooms" className="space-y-4">
+      <Tabs defaultValue={isAgent ? "peers" : "rooms"} className="space-y-4">
         <TabsList>
+          {isAgent && <TabsTrigger value="peers" data-testid="tab-peers">Network Peers</TabsTrigger>}
           <TabsTrigger value="rooms" data-testid="tab-rooms">Active Rooms</TabsTrigger>
           <TabsTrigger value="contributors" data-testid="tab-contributors">Top Contributors</TabsTrigger>
           <TabsTrigger value="history" data-testid="tab-history">Network History</TabsTrigger>
         </TabsList>
+
+        {isAgent && (
+          <TabsContent value="peers" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center">
+                  <Wifi className="h-5 w-5 mr-2 text-primary" />
+                  Live Network Peers
+                </CardTitle>
+                <CardDescription>
+                  Nodes discovered via Hive blockchain announcements. Your node + all discovered peers.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {/* Own node */}
+                  {agentStatus?.config?.hiveUsername && (
+                    <div className="flex items-center justify-between p-4 border rounded-lg border-primary/30 bg-primary/5">
+                      <div className="flex items-center">
+                        <span className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center mr-3">
+                          <Shield className="w-5 h-5 text-primary" />
+                        </span>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <p className="font-semibold">@{agentStatus.config.hiveUsername}</p>
+                            <Badge variant="default" className="text-[10px] h-5">YOU</Badge>
+                          </div>
+                          <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground">
+                            <span>{agentStatus?.ipfs?.pinnedCount || 0} pins</span>
+                            <span>{agentStatus?.network?.peerCount || 0} IPFS peers</span>
+                            <span className="flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
+                              Online
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      <Badge variant="outline" className="font-mono text-xs">
+                        {agentStatus?.version || 'v1.0.0'}
+                      </Badge>
+                    </div>
+                  )}
+
+                  {/* Discovered peers */}
+                  {(!agentPeers?.peers || agentPeers.peers.length === 0) ? (
+                    <div className="text-center py-6 text-muted-foreground">
+                      <Users className="h-10 w-10 mx-auto mb-3 opacity-40" />
+                      <p className="text-sm">No other peers discovered yet</p>
+                      <p className="text-xs mt-1">Peers announce themselves via Hive blockchain — check back soon</p>
+                    </div>
+                  ) : (
+                    agentPeers.peers.map((peer: AgentPeer) => {
+                      const isOnline = Date.now() - peer.lastAnnounce < 30 * 60 * 1000; // 30 min
+                      const totalChallenges = peer.challengeResults.success + peer.challengeResults.fail;
+                      const successRate = totalChallenges > 0
+                        ? ((peer.challengeResults.success / totalChallenges) * 100).toFixed(0)
+                        : '—';
+                      return (
+                        <div
+                          key={peer.hiveUsername}
+                          className="flex items-center justify-between p-4 border rounded-lg"
+                        >
+                          <div className="flex items-center">
+                            <span className="w-10 h-10 rounded-full bg-muted flex items-center justify-center mr-3">
+                              <HardDrive className="w-5 h-5 text-muted-foreground" />
+                            </span>
+                            <div>
+                              <p className="font-semibold">@{peer.hiveUsername}</p>
+                              <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground">
+                                <span>{peer.pinCount} pins</span>
+                                <span>{peer.storageGB.toFixed(1)} GB</span>
+                                <span>Rep: {peer.reputation}</span>
+                                <span className="flex items-center gap-1">
+                                  <span className={`w-1.5 h-1.5 rounded-full inline-block ${isOnline ? 'bg-green-500' : 'bg-yellow-500'}`} />
+                                  {isOnline ? 'Online' : 'Last seen ' + new Date(peer.lastAnnounce).toLocaleTimeString()}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            {totalChallenges > 0 && (
+                              <div className="text-right text-xs">
+                                <div className="flex items-center gap-1">
+                                  <CheckCircle2 className="w-3 h-3 text-green-500" />
+                                  <span>{peer.challengeResults.success}</span>
+                                  <XCircle className="w-3 h-3 text-red-500 ml-1" />
+                                  <span>{peer.challengeResults.fail}</span>
+                                </div>
+                                <span className="text-muted-foreground">{successRate}% pass</span>
+                              </div>
+                            )}
+                            <Badge variant="outline" className="font-mono text-xs">
+                              {peer.version}
+                            </Badge>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
 
         <TabsContent value="rooms" className="space-y-4">
           <Card>
