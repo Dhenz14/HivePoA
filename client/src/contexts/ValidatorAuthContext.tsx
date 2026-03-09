@@ -91,6 +91,7 @@ export function ValidatorAuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const verifyStoredSession = async () => {
+      // 1. Check localStorage for existing session
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
         try {
@@ -100,6 +101,8 @@ export function ValidatorAuthProvider({ children }: { children: ReactNode }) {
             if (validatedUser) {
               setUser(validatedUser);
               syncToDesktopAgent(validatedUser.username);
+              setIsLoading(false);
+              return;
             } else {
               localStorage.removeItem(STORAGE_KEY);
             }
@@ -110,6 +113,35 @@ export function ValidatorAuthProvider({ children }: { children: ReactNode }) {
           localStorage.removeItem(STORAGE_KEY);
         }
       }
+
+      // 2. No localStorage session — check if the desktop agent has a username configured
+      //    If so, auto-login (the user already authenticated in the desktop app)
+      await detectBackendMode();
+      if (getBackendMode() === "agent") {
+        try {
+          const res = await fetch(`${getApiBase()}/api/config`);
+          if (res.ok) {
+            const config = await res.json();
+            if (config.hiveUsername) {
+              const localToken = `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+              const autoUser: ValidatorUser = {
+                username: config.hiveUsername,
+                witnessRank: null,
+                isTopWitness: false,
+                isVouched: false,
+                sessionToken: localToken,
+                validatorOptedIn: null,
+              };
+              setUser(autoUser);
+              const session = { user: autoUser, expiresAt: Date.now() + 24 * 60 * 60 * 1000 };
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+            }
+          }
+        } catch {
+          // Agent not reachable — stay logged out
+        }
+      }
+
       setIsLoading(false);
     };
 
