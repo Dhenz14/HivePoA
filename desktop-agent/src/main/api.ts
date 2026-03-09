@@ -863,16 +863,6 @@ export class ApiServer {
           return res.status(401).json({ error: 'Invalid signature' });
         }
 
-        // Generate session token
-        const sessionToken = crypto.randomBytes(32).toString('hex');
-        this.cleanExpiredSessions();
-        this.sessions.set(sessionToken, {
-          username,
-          expiresAt: Date.now() + 24 * 60 * 60 * 1000,
-          isTopWitness,
-          witnessRank,
-        });
-
         // Check witness status from Hive blockchain
         let isTopWitness = false;
         let witnessRank: number | null = null;
@@ -884,6 +874,16 @@ export class ApiServer {
         } catch {
           // Hive API unavailable — default to false
         }
+
+        // Generate session token
+        const sessionToken = crypto.randomBytes(32).toString('hex');
+        this.cleanExpiredSessions();
+        this.sessions.set(sessionToken, {
+          username,
+          expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+          isTopWitness,
+          witnessRank,
+        });
 
         // Store username in agent config
         this.config.setConfig({ hiveUsername: username });
@@ -930,6 +930,14 @@ export class ApiServer {
     const now = Date.now();
     for (const [token, session] of this.sessions) {
       if (now > session.expiresAt) this.sessions.delete(token);
+    }
+    // Hard cap to prevent memory exhaustion from login spam
+    if (this.sessions.size > 1000) {
+      const entries = Array.from(this.sessions.entries())
+        .sort((a, b) => a[1].expiresAt - b[1].expiresAt);
+      for (let i = 0; i < entries.length - 1000; i++) {
+        this.sessions.delete(entries[i][0]);
+      }
     }
   }
 

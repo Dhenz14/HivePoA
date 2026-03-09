@@ -161,6 +161,7 @@ export class PoAEngine {
     totalReward: number;
     cids: string[];
     nodeUsername: string;
+    createdAt: number;
   }> = new Map();
 
   // Financial safety: track daily spend and prevent concurrent flushes
@@ -486,6 +487,15 @@ export class PoAEngine {
 
     // Sweep expired and exhausted contracts before selecting challenges
     await this.sweepContractLifecycle();
+
+    // Purge stale proof accumulator entries (older than 24h) to prevent memory leaks
+    const staleThreshold = Date.now() - 86_400_000;
+    Array.from(this.proofAccumulator.entries()).forEach(([nodeId, acc]) => {
+      if (acc.createdAt < staleThreshold) {
+        logPoA.warn(`[PoA] Purging stale proof accumulator entry for ${acc.nodeUsername} (${acc.count} proofs, ${acc.totalReward.toFixed(4)} HBD)`);
+        this.proofAccumulator.delete(nodeId);
+      }
+    });
 
     // Get only eligible nodes (excludes blacklisted ones)
     let nodes = await storage.getEligibleNodesForValidator(this.validatorId);
@@ -1119,6 +1129,7 @@ export class PoAEngine {
       totalReward: 0,
       cids: [],
       nodeUsername,
+      createdAt: Date.now(),
     };
 
     acc.count++;

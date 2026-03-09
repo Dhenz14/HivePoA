@@ -47,7 +47,9 @@ export class SegmentCache {
       console.log(`[SegmentCache] Ready — ${this.index.size} segments, ${this.formatBytes(this.totalSize)}`);
     } catch (err) {
       console.warn('[SegmentCache] Failed to initialize:', err);
-      this.initPromise = null;
+      // Mark as initialized even on failure to prevent infinite retry loops.
+      // Cache operations will gracefully no-op when this.db is null.
+      this.initialized = true;
     }
   }
 

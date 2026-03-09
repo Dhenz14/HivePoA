@@ -109,16 +109,17 @@ export class TreasuryCoordinator {
   // Lifecycle
   // ============================================================
 
-  start(): void {
+  async start(): Promise<void> {
     log.info("[Treasury] Coordinator started");
 
-    // Load freeze state from DB
-    storage.getTreasuryFreezeState?.().then((state) => {
+    // Load freeze state from DB (blocking — must complete before accepting operations)
+    try {
+      const state = await storage.getTreasuryFreezeState?.();
       if (state?.frozen) {
         this.frozen = true;
         log.warn({ frozenBy: state.frozenBy }, "[Treasury] Started in FROZEN state");
       }
-    }).catch(() => { /* ignore — table may not exist yet */ });
+    } catch { /* ignore — table may not exist yet */ }
 
     // Reload delayed broadcasts from DB (server restart recovery)
     storage.getDelayedTreasuryTransactions?.().then((txs) => {
@@ -1069,6 +1070,9 @@ export class TreasuryCoordinator {
 
   /** Any active signer can freeze the treasury. Halts all operations. */
   async freeze(username: string, reason: string): Promise<{ success: boolean; error?: string }> {
+    if (this.frozen) {
+      return { success: false, error: "Treasury already frozen" };
+    }
     const signer = await storage.getTreasurySignerByUsername(username);
     // Allow "system" as a virtual signer for auto-freeze
     if (username !== "system" && (!signer || signer.status !== "active")) {
@@ -1124,7 +1128,7 @@ export class TreasuryCoordinator {
       const amount = parseFloat(metadata?.amount || "0");
       const batchTotal = parseFloat(metadata?.totalAmount || "0");
       const effective = Math.max(amount, batchTotal);
-      if (effective > IMMEDIATE_BROADCAST_MAX_HBD) return TRANSFER_DELAY_SECONDS;
+      if (effective >= IMMEDIATE_BROADCAST_MAX_HBD) return TRANSFER_DELAY_SECONDS;
     }
     return 0; // Immediate broadcast
   }
@@ -1215,7 +1219,13 @@ export class TreasuryCoordinator {
   /** Veto a delayed transaction — revoke your signature during the delay window. */
   async veto(txId: string, username: string): Promise<{ success: boolean; error?: string }> {
     const tx = await storage.getTreasuryTransaction(txId);
-    if (!tx || tx.status !== "delayed") {
+    if (!tx) {
+      return { success: false, error: "Transaction not found" };
+    }
+    if (tx.status === "broadcast") {
+      return { success: false, error: "Transaction already broadcast" };
+    }
+    if (tx.status !== "delayed") {
       return { success: false, error: "Transaction not in delay window" };
     }
 

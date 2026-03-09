@@ -188,11 +188,18 @@ export default function ChallengeQueue() {
     });
   };
 
-  const handleRetry = (challenge: Challenge) => {
-    toast({
-      title: "Retry Initiated",
-      description: `Retrying challenge for ${challenge.fileName} on ${challenge.nodeUsername}`,
-    });
+  const handleRetry = async (challenge: Challenge) => {
+    try {
+      const res = await fetch(`${getApiBase()}/api/challenges/retry`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionToken}` },
+        body: JSON.stringify({ nodeId: challenge.nodeId, cid: challenge.fileName }),
+      });
+      if (!res.ok) throw new Error("Server rejected retry request");
+      toast({ title: "Retry Queued", description: `Challenge for ${challenge.fileName} on ${challenge.nodeUsername} will be retried next round.` });
+    } catch {
+      toast({ title: "Retry Unavailable", description: "Challenges are retried automatically in the next round.", variant: "default" });
+    }
   };
 
   const filteredChallenges = stats?.challenges.filter(c => {

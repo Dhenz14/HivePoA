@@ -121,7 +121,8 @@ export async function computeProofHash(
     blocksToFetch.push(seed);
     const simulatedHash = hashString(`block_${seed}_${salt}`);
     tempProofHash += simulatedHash;
-    seed = seed + getIntFromHash(salt + tempProofHash, length);
+    const increment = getIntFromHash(salt + tempProofHash, length);
+    seed = seed + (increment === 0 ? 1 : increment); // Prevent infinite loop when hash returns 0
   }
 
   // Parallel block fetching

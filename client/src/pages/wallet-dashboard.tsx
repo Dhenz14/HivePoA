@@ -86,7 +86,7 @@ export default function WalletDashboard() {
               <div>
                 <p className="text-sm text-muted-foreground mb-1">Total Deposits</p>
                 <p className="text-3xl font-bold font-mono" data-testid="text-total-deposits">
-                  {parseFloat(balance.totalDeposits).toFixed(3)} <span className="text-lg opacity-70">HBD</span>
+                  {parseFloat(balance.totalDeposits ?? "0").toFixed(3)} <span className="text-lg opacity-70">HBD</span>
                 </p>
               </div>
               <div className="p-3 bg-green-500/20 rounded-full">
@@ -102,7 +102,7 @@ export default function WalletDashboard() {
               <div>
                 <p className="text-sm text-muted-foreground mb-1">Total Paid Out</p>
                 <p className="text-3xl font-bold font-mono" data-testid="text-total-paid">
-                  {parseFloat(balance.totalPaid).toFixed(3)} <span className="text-lg opacity-70">HBD</span>
+                  {parseFloat(balance.totalPaid ?? "0").toFixed(3)} <span className="text-lg opacity-70">HBD</span>
                 </p>
               </div>
               <div className="p-3 bg-orange-500/20 rounded-full">
@@ -118,7 +118,7 @@ export default function WalletDashboard() {
               <div>
                 <p className="text-sm text-muted-foreground mb-1">Available Balance</p>
                 <p className="text-3xl font-bold font-mono" data-testid="text-available">
-                  {parseFloat(balance.available).toFixed(3)} <span className="text-lg opacity-70">HBD</span>
+                  {parseFloat(balance.available ?? "0").toFixed(3)} <span className="text-lg opacity-70">HBD</span>
                 </p>
               </div>
               <div className="p-3 bg-blue-500/20 rounded-full">

@@ -395,8 +395,9 @@ export class P2PSignalingServer {
       totalBytes += peer.stats.bytesDownloaded;
     });
 
-    const avgP2pRatio = totalBytes > 0
-      ? totalBytesShared / totalBytes
+    const totalTraffic = totalBytesShared + totalBytes;
+    const avgP2pRatio = totalTraffic > 0
+      ? Math.min(1.0, totalBytesShared / totalTraffic)
       : 0;
 
     if (activePeers > 0) {

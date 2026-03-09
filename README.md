@@ -368,6 +368,8 @@ Every viewer watching a video automatically redistributes content to other viewe
 - **Treasury**: Agent-side digest + operations verification, nonce replay protection, cryptographic signature verification, server-side spending caps, signer re-validation at broadcast, persistent audit log, local-only policy config
 - **Treasury Hardening (6 layers)**: Batch limits (10 ops/tx, $10 HBD/batch), tiered quorum (80% for authority updates vs 60% for transfers), recipient allowlist (active storage nodes only), emergency freeze (any signer triggers, 80% supermajority to unfreeze), time-delay with veto (1hr for >$1 transfers, 6hr for authority updates), anomaly detection with auto-freeze (burst, amount spike, rapid succession, new-recipient alerts)
 - **Content Moderation**: Community flagging with severity levels, auto-blocklist for confirmed critical threats, uploader bans by Hive username (local/network scope)
+- **API Auth Enforcement**: All mutation endpoints enforce ownership checks — users cannot modify another user's settings, blacklists, beneficiaries, encryption keys, or encoding offers
+- **PoA Safety**: Proof accumulator auto-purges stale entries (24h TTL), block selection loop guaranteed to terminate, session maps capped to prevent memory exhaustion
 
 ## Build
 

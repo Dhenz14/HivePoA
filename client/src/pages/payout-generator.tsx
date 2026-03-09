@@ -95,17 +95,24 @@ export default function PayoutGenerator() {
   });
 
   const exportReport = async (reportId: string) => {
-    const res = await fetch(`${getApiBase()}/api/validator/payout/reports/${reportId}/export`, {
-      headers: { Authorization: `Bearer ${sessionToken}` },
-    });
-    if (!res.ok) return;
-    const data = await res.json();
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `payout-report-${data.period}.json`;
-    a.click();
+    try {
+      const res = await fetch(`${getApiBase()}/api/validator/payout/reports/${reportId}/export`, {
+        headers: { Authorization: `Bearer ${sessionToken}` },
+      });
+      if (!res.ok) {
+        alert("Failed to export report");
+        return;
+      }
+      const data = await res.json();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `payout-report-${data.period}.json`;
+      a.click();
+    } catch {
+      alert("Export failed — check your connection");
+    }
   };
 
   const getStatusBadge = (status: string) => {

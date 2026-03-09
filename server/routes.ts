@@ -230,7 +230,7 @@ export async function registerRoutes(
       if (ws.readyState === ws.OPEN) {
         ws.send(JSON.stringify({ type: "transactions", data: txs }));
       }
-    });
+    }).catch(() => { /* DB unavailable on connect — non-critical */ });
 
     const handleTransaction = (event: any) => {
       if (ws.readyState === ws.OPEN) {
@@ -1324,6 +1324,9 @@ export async function registerRoutes(
         publicKey: z.string(),
       });
       const data = schema.parse(req.body);
+      if (data.username !== req.authenticatedUser) {
+        return res.status(403).json({ error: "Cannot register keys for another user" });
+      }
       const key = await encryptionService.storePublicKey(data.username, data.publicKey);
       res.json(key);
     } catch (error: any) {
@@ -1342,6 +1345,9 @@ export async function registerRoutes(
 
   app.put("/api/settings/:username", requireAuth, async (req, res) => {
     try {
+      if (req.params.username !== req.authenticatedUser) {
+        return res.status(403).json({ error: "Cannot modify another user's settings" });
+      }
       const schema = z.object({
         autoPinEnabled: z.boolean().optional(),
         autoPinMode: z.enum(["off", "all", "daily_limit"]).optional(),
@@ -1413,6 +1419,9 @@ export async function registerRoutes(
         percentage: z.number().positive().max(100),
       });
       const data = schema.parse(req.body);
+      if (data.fromUsername !== req.authenticatedUser) {
+        return res.status(403).json({ error: "Cannot create beneficiaries for another user" });
+      }
       const allocation = await beneficiaryService.addBeneficiary(data);
       res.json(allocation);
     } catch (error: any) {
@@ -1655,6 +1664,9 @@ export async function registerRoutes(
 
   app.post("/api/validators/:username/blacklist", requireAuth, async (req, res) => {
     try {
+      if (req.params.username !== req.authenticatedUser) {
+        return res.status(403).json({ error: "Cannot modify another validator's blacklist" });
+      }
       const validator = await storage.getValidatorByUsername(req.params.username);
       if (!validator) {
         return res.status(404).json({ error: "Validator not found" });
@@ -3730,10 +3742,7 @@ export async function registerRoutes(
   // Cancel an offer
   app.delete("/api/encoding/offers/:id", requireAuth, async (req, res) => {
     try {
-      const { username } = req.query;
-      if (!username || typeof username !== "string") {
-        return res.status(400).json({ error: "Username required" });
-      }
+      const username = req.authenticatedUser!;
       const cancelled = await storage.cancelEncodingJobOffer(req.params.id, username);
       if (!cancelled) {
         return res.status(404).json({ error: "Offer not found or cannot be cancelled" });
@@ -3780,6 +3789,9 @@ export async function registerRoutes(
 
   app.patch("/api/encoding/settings/:username", requireAuth, async (req, res) => {
     try {
+      if (req.params.username !== req.authenticatedUser) {
+        return res.status(403).json({ error: "Cannot modify another user's settings" });
+      }
       const settings = await encodingService.updateUserSettings(req.params.username, req.body);
       res.json(settings);
     } catch (error: any) {

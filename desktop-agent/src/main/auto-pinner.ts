@@ -70,9 +70,10 @@ export class AutoPinner {
       // Filter to CIDs we don't already have
       const toPin = popular.filter(p => p.cid && !this.pinnedCids.has(p.cid));
 
-      // Pin up to 3 new CIDs per cycle
+      // Pin up to 3 new CIDs per cycle, respecting storage quota
       for (const item of toPin.slice(0, 3)) {
         if (this.autoPinnedCids.size >= 100) break;
+        if (this.currentAutoPinSize >= this.maxAutoPinBytes) break;
 
         try {
           await axios.post(
@@ -82,7 +83,16 @@ export class AutoPinner {
           );
           this.pinnedCids.add(item.cid);
           this.autoPinnedCids.add(item.cid);
-          console.log(`[AutoPinner] Pinned popular CID: ${item.cid} (${item.activePeers} peers)`);
+          // Query object size to track storage usage
+          try {
+            const statRes = await axios.post(
+              `${this.kuboApiUrl}/api/v0/object/stat?arg=${item.cid}`,
+              null,
+              { timeout: 10000 }
+            );
+            this.currentAutoPinSize += statRes.data?.CumulativeSize || 0;
+          } catch { /* size tracking best-effort */ }
+          console.log(`[AutoPinner] Pinned popular CID: ${item.cid} (${item.activePeers} peers, storage: ${Math.round(this.currentAutoPinSize / (1024 * 1024))}MB)`);
         } catch (err: any) {
           console.warn(`[AutoPinner] Failed to pin ${item.cid}: ${err.message}`);
         }

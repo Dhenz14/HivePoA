@@ -129,26 +129,46 @@ export default function FraudDetection() {
     });
   };
 
-  const handleFlagForReview = (nodeUsername: string) => {
-    toast({
-      title: "Flagged for Review",
-      description: `Node ${nodeUsername} has been flagged for manual review.`,
-    });
+  const handleFlagForReview = async (nodeUsername: string) => {
+    try {
+      const res = await fetch(`${getApiBase()}/api/flags`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionToken}` },
+        body: JSON.stringify({ cid: nodeUsername, reason: "fraud_review", notes: `Flagged from fraud detection for ${nodeUsername}` }),
+      });
+      if (!res.ok) throw new Error("Failed to flag");
+      toast({ title: "Flagged for Review", description: `Node ${nodeUsername} has been flagged for manual review.` });
+    } catch (err: any) {
+      toast({ title: "Flag Failed", description: err.message, variant: "destructive" });
+    }
   };
 
-  const handleAddToWatchlist = (nodeUsername: string) => {
-    toast({
-      title: "Added to Watchlist",
-      description: `Node ${nodeUsername} has been added to your watchlist.`,
-    });
+  const handleAddToWatchlist = async (nodeUsername: string) => {
+    try {
+      const res = await fetch(`${getApiBase()}/api/validators/${user?.username}/blacklist`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionToken}` },
+        body: JSON.stringify({ nodeId: nodeUsername, reason: "watchlist:fraud_detection" }),
+      });
+      if (!res.ok) throw new Error("Failed to add to watchlist");
+      toast({ title: "Added to Watchlist", description: `Node ${nodeUsername} has been added to your watchlist.` });
+    } catch (err: any) {
+      toast({ title: "Watchlist Failed", description: err.message, variant: "destructive" });
+    }
   };
 
-  const handleBanNode = (nodeId: string, nodeUsername: string) => {
-    toast({
-      title: "Node Banned",
-      description: `Node ${nodeUsername} has been banned from the network.`,
-      variant: "destructive",
-    });
+  const handleBanNode = async (nodeId: string, nodeUsername: string) => {
+    try {
+      const res = await fetch(`${getApiBase()}/api/bans`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionToken}` },
+        body: JSON.stringify({ username: nodeUsername, reason: "fraud_detected", scope: "network" }),
+      });
+      if (!res.ok) throw new Error("Failed to ban node");
+      toast({ title: "Node Banned", description: `Node ${nodeUsername} has been banned from the network.`, variant: "destructive" });
+    } catch (err: any) {
+      toast({ title: "Ban Failed", description: err.message, variant: "destructive" });
+    }
     setBanningNode(null);
   };
 

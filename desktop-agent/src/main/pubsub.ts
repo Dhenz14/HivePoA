@@ -82,10 +82,15 @@ export class PubSubBridge {
             // Skip our own messages
             if (raw.from === this.myPeerId) continue;
 
+            // SECURITY: Reject oversized messages before decoding (64KB limit, ~87KB base64)
+            if ((raw.data || '').length > 87382) {
+              console.log('[PubSub] Message too large (pre-decode), discarding');
+              continue;
+            }
+
             // Decode base64 data
             const decoded = Buffer.from(raw.data || '', 'base64').toString('utf-8');
 
-            // SECURITY: Reject oversized messages (64KB limit)
             if (decoded.length > 65536) {
               console.log('[PubSub] Message too large, discarding');
               continue;

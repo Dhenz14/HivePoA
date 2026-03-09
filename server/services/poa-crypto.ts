@@ -85,7 +85,8 @@ export async function createProofHash(
     // Simulate the hash progression to get next seed
     const simulatedHash = hashString(`block_${seed}_${hash}`);
     tempProofHash += simulatedHash;
-    seed = seed + getIntFromHash(hash + tempProofHash, length);
+    const increment = getIntFromHash(hash + tempProofHash, length);
+    seed = seed + (increment === 0 ? 1 : increment); // Prevent infinite loop when hash returns 0
   }
   
   // OPTIMIZATION: Parallel block fetching with Promise.all
