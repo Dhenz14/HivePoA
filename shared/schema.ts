@@ -309,18 +309,6 @@ export const userEncodingSettings = pgTable("user_encoding_settings", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
-// Encoder Capabilities - Hardware and codec capabilities per encoder
-export const encoderCapabilities = pgTable("encoder_capabilities", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  encoderNodeId: varchar("encoder_node_id").notNull(),
-  codec: text("codec").notNull(), // h264, h265, vp9, av1
-  maxResolution: text("max_resolution").notNull(), // 480p, 720p, 1080p, 4k
-  hwAccelType: text("hw_accel_type"), // nvenc, vaapi, qsv, videotoolbox
-  estimatedSpeed: real("estimated_speed"), // x realtime (e.g., 2.5 = 2.5x faster than realtime)
-  verified: boolean("verified").notNull().default(false),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-});
-
 // Encoding Job Events - Audit trail for job lifecycle
 export const encodingJobEvents = pgTable("encoding_job_events", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -718,10 +706,6 @@ export const insertUserEncodingSettingsSchema = createInsertSchema(userEncodingS
   updatedAt: true,
 });
 
-export const insertEncoderCapabilitiesSchema = createInsertSchema(encoderCapabilities).omit({
-  id: true,
-  createdAt: true,
-});
 
 export const insertEncodingJobEventSchema = createInsertSchema(encodingJobEvents).omit({
   id: true,
@@ -1048,8 +1032,6 @@ export type InsertEncodingProfile = z.infer<typeof insertEncodingProfileSchema>;
 export type UserEncodingSettings = typeof userEncodingSettings.$inferSelect;
 export type InsertUserEncodingSettings = z.infer<typeof insertUserEncodingSettingsSchema>;
 
-export type EncoderCapability = typeof encoderCapabilities.$inferSelect;
-export type InsertEncoderCapability = z.infer<typeof insertEncoderCapabilitiesSchema>;
 
 export type EncodingJobEvent = typeof encodingJobEvents.$inferSelect;
 export type InsertEncodingJobEvent = z.infer<typeof insertEncodingJobEventSchema>;

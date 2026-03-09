@@ -54,7 +54,7 @@ async function fetchPerformanceData(): Promise<PerformanceData> {
   
   return {
     proofsPerHour: data.proofsPerHour || 0,
-    proofsTrend: Math.random() * 20 - 10,
+    proofsTrend: data.proofsTrend || 0,
     bandwidthPerHour: data.bandwidthPerHour || 0,
     avgLatency: data.latency?.avg || 0,
     minLatency: data.latency?.min || 0,
@@ -62,7 +62,7 @@ async function fetchPerformanceData(): Promise<PerformanceData> {
     healthyNodes: data.nodes?.healthy || 0,
     atRiskNodes: data.nodes?.atRisk || 0,
     totalNodes: data.nodes?.total || 0,
-    yourRank: Math.floor(Math.random() * 10) + 1,
+    yourRank: data.yourRank || 0,
     successRateTrend: (data.trends || []).map((t: any) => ({
       hour: t.hour,
       successRate: t.successRate || 0,

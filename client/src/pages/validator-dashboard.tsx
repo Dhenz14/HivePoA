@@ -63,22 +63,7 @@ async function fetchValidatorDashboard(username: string, sessionToken?: string):
   
   const res = await fetch(`${getApiBase()}/api/validator/dashboard/${username}`, { headers });
   if (!res.ok) {
-    return {
-      validator: {
-        id: "",
-        username: "demo_user",
-        rank: 5,
-        status: "active",
-        performance: 98,
-        version: "1.0.0",
-      },
-      stats: { today: 0, week: 0, month: 0, total: 0 },
-      results: { success: 0, fail: 0, timeout: 0, successRate: "0.0", cheatersCaught: 0 },
-      latency: { avg: 0, p95: 0, min: 0, max: 0 },
-      uptime: "0.0",
-      hourlyActivity: Array.from({ length: 24 }, (_, i) => ({ hour: i, active: 0 })),
-      earnings: 0,
-    };
+    throw new Error("Failed to load validator dashboard");
   }
   return res.json();
 }
@@ -116,19 +101,40 @@ export default function ValidatorDashboard() {
   const username = user?.username || "demo_user";
   const sessionToken = user?.sessionToken;
   
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ["validator", "dashboard", username],
     queryFn: () => fetchValidatorDashboard(username, sessionToken),
     refetchInterval: 5000,
+    retry: 2,
   });
 
-  if (isLoading || !data) {
+  if (isLoading) {
     return (
       <div className="p-8 space-y-8 max-w-7xl mx-auto" data-testid="page-validator-dashboard">
         <div>
           <h1 className="text-3xl font-display font-bold">Validator Operations</h1>
           <p className="text-muted-foreground mt-1">Loading dashboard data...</p>
         </div>
+      </div>
+    );
+  }
+
+  if (error || !data) {
+    return (
+      <div className="p-8 space-y-8 max-w-7xl mx-auto" data-testid="page-validator-dashboard">
+        <div>
+          <h1 className="text-3xl font-display font-bold">Validator Operations</h1>
+          <p className="text-muted-foreground mt-1">Network policing and challenge monitoring</p>
+        </div>
+        <Card className="border-destructive/50 bg-destructive/5">
+          <CardContent className="p-6 flex items-center gap-3">
+            <AlertTriangle className="h-6 w-6 text-destructive" />
+            <div>
+              <p className="font-medium">Failed to load dashboard</p>
+              <p className="text-sm text-muted-foreground">{(error as Error)?.message || "No data available. Is the backend running?"}</p>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     );
   }

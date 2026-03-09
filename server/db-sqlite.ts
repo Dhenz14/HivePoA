@@ -324,17 +324,6 @@ export function createSQLiteTables(dbPath: string) {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    CREATE TABLE IF NOT EXISTS encoder_capabilities (
-      id TEXT PRIMARY KEY,
-      encoder_node_id TEXT NOT NULL,
-      codec TEXT NOT NULL,
-      max_resolution TEXT NOT NULL,
-      hw_accel_type TEXT,
-      estimated_speed REAL,
-      verified INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
     CREATE TABLE IF NOT EXISTS encoding_job_events (
       id TEXT PRIMARY KEY,
       job_id TEXT NOT NULL,

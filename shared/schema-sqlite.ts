@@ -294,17 +294,6 @@ export const userEncodingSettings = sqliteTable("user_encoding_settings", {
   updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
 
-export const encoderCapabilities = sqliteTable("encoder_capabilities", {
-  id: text("id").primaryKey(),
-  encoderNodeId: text("encoder_node_id").notNull(),
-  codec: text("codec").notNull(),
-  maxResolution: text("max_resolution").notNull(),
-  hwAccelType: text("hw_accel_type"),
-  estimatedSpeed: real("estimated_speed"),
-  verified: integer("verified", { mode: "boolean" }).notNull().default(false),
-  createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
-});
-
 export const encodingJobEvents = sqliteTable("encoding_job_events", {
   id: text("id").primaryKey(),
   jobId: text("job_id").notNull(),
@@ -726,7 +715,6 @@ export type {
   EncodingJob, InsertEncodingJob,
   EncodingProfile, InsertEncodingProfile,
   UserEncodingSettings, InsertUserEncodingSettings,
-  EncoderCapability, InsertEncoderCapability,
   EncodingJobEvent, InsertEncodingJobEvent,
   EncodingJobOffer, InsertEncodingJobOffer,
   BlocklistEntry, InsertBlocklistEntry,
@@ -772,7 +760,6 @@ export {
   insertEncodingJobSchema,
   insertEncodingProfileSchema,
   insertUserEncodingSettingsSchema,
-  insertEncoderCapabilitiesSchema,
   insertEncodingJobEventSchema,
   insertEncodingJobOfferSchema,
   insertBlocklistEntrySchema,

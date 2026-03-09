@@ -122,6 +122,7 @@ export function Sidebar() {
       { href: "/payout-generator", label: "Payout Reports", icon: FileText },
       { href: "/treasury", label: "Treasury", icon: Key },
       { href: "/validators", label: "Validators", icon: Globe },
+      { href: "/governance", label: "Governance", icon: Globe },
     ],
   };
 

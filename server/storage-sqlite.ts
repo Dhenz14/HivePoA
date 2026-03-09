@@ -2281,6 +2281,13 @@ export class SQLiteStorage implements IStorage {
     return mapRow<TreasuryAuditLog>(row) as TreasuryAuditLog;
   }
 
+  async getRecentTreasuryAuditLogs(limit = 50): Promise<TreasuryAuditLog[]> {
+    const rows = await db().select().from(S.treasuryAuditLog)
+      .orderBy(desc(S.treasuryAuditLog.createdAt))
+      .limit(limit);
+    return rows.map((r) => mapRow<TreasuryAuditLog>(r) as TreasuryAuditLog);
+  }
+
   // Treasury Freeze State
   async getTreasuryFreezeState(): Promise<any | undefined> {
     const [row] = await db().select().from(S.treasuryFreezeState)

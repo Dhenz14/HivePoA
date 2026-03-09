@@ -38,6 +38,7 @@ import P2PNetwork from "@/pages/p2p-network";
 import Encoding from "@/pages/encoding";
 import Watch from "@/pages/watch";
 import ContentModeration from "@/pages/content-moderation";
+import Governance from "@/pages/governance";
 import generatedImage from '@assets/generated_images/a_dark,_futuristic_abstract_mesh_background_with_red_accents..png';
 
 function ProtectedValidatorRoute({ component: Component }: { component: React.ComponentType }) {
@@ -116,6 +117,7 @@ function AppRoutes() {
         <Route path="/treasury">
           {() => <AgentRequired><Treasury /></AgentRequired>}
         </Route>
+        <Route path="/governance">{() => <AgentRequired><Governance /></AgentRequired>}</Route>
 
         <Route component={NotFound} />
       </Switch>

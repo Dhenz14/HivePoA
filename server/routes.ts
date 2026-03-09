@@ -4261,6 +4261,23 @@ export async function registerRoutes(
     }
   });
 
+  // GET /api/treasury/audit-log — Recent audit log entries (requires signer auth)
+  app.get("/api/treasury/audit-log", async (req, res) => {
+    const sessionToken = req.headers.authorization?.slice(7);
+    if (!sessionToken) return res.status(401).json({ error: "No session token" });
+    const validation = await validateValidatorSession(sessionToken);
+    if (!validation.valid || !validation.username) {
+      return res.status(401).json({ error: "Invalid session" });
+    }
+    try {
+      const limit = parseInt(req.query.limit as string) || 50;
+      const logs = await storage.getRecentTreasuryAuditLogs(Math.min(limit, 200));
+      res.json(logs);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // POST /api/treasury/freeze — Emergency freeze (any active signer)
   app.post("/api/treasury/freeze", async (req, res) => {
     if (!treasuryCoordinator) return res.status(503).json({ error: "Treasury disabled" });

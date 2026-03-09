@@ -9,6 +9,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveCo
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import { getApiBase } from "@/lib/api-mode";
+import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
 
 interface EarningsData {
   todayEarnings: number;
@@ -76,10 +77,14 @@ async function fetchEarnings(username: string): Promise<EarningsData> {
 
 function generateEarningsHistory(weeklyTotal: number): { date: string; hbd: number }[] {
   const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  if (weeklyTotal <= 0) return days.map(date => ({ date, hbd: 0 }));
   const avgDaily = weeklyTotal / 7;
-  return days.map(date => ({
+  // Deterministic distribution — no randomness
+  const weights = [0.8, 1.0, 1.1, 0.9, 1.2, 1.0, 0.9];
+  const totalWeight = weights.reduce((s, w) => s + w, 0);
+  return days.map((date, i) => ({
     date,
-    hbd: Math.max(0, avgDaily * (0.7 + Math.random() * 0.6)),
+    hbd: Math.max(0, avgDaily * (weights[i] / (totalWeight / 7))),
   }));
 }
 
@@ -160,10 +165,13 @@ function truncateCid(cid: string): string {
 }
 
 export default function Earnings() {
+  const { user } = useValidatorAuth();
+  const username = user?.username || "unknown";
+
   const { data: earnings } = useQuery({
-    queryKey: ["earnings", "demo_user"],
-    queryFn: () => fetchEarnings("demo_user"),
-    refetchInterval: 5000,
+    queryKey: ["earnings", username],
+    queryFn: () => fetchEarnings(username),
+    refetchInterval: 15000,
   });
 
   const { data: challengeStats } = useQuery({

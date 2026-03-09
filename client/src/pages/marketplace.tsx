@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { useDesktopAgent } from "@/hooks/use-desktop-agent";
-import { Files, Gem, TrendingUp, Pin, Search, ArrowUpDown, ArrowUp, ArrowDown, Download, Monitor } from "lucide-react";
+import { Files, Gem, TrendingUp, Pin, Search, ArrowUpDown, ArrowUp, ArrowDown, Download, Monitor, AlertTriangle } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { motion } from "framer-motion";
@@ -29,7 +29,7 @@ interface MarketplaceFile {
 async function fetchMarketplaceFiles(): Promise<MarketplaceFile[]> {
   const res = await fetch(`${getApiBase()}/api/files/marketplace`);
   if (!res.ok) {
-    return [];
+    throw new Error("Failed to load marketplace files");
   }
   const data = await res.json();
   const files = data.files || data || [];
@@ -84,10 +84,11 @@ export default function Marketplace() {
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [showAgentPrompt, setShowAgentPrompt] = useState(false);
 
-  const { data: files = [] } = useQuery({
+  const { data: files = [], isLoading: filesLoading, error: filesError } = useQuery({
     queryKey: ["files", "marketplace"],
     queryFn: fetchMarketplaceFiles,
     refetchInterval: 10000,
+    retry: 2,
   });
 
   const stats = useMemo(() => {
@@ -180,6 +181,13 @@ export default function Marketplace() {
           </span>
         </div>
       </div>
+
+      {filesError && (
+        <div className="bg-destructive/10 border border-destructive/30 rounded-lg p-4 flex items-center gap-3">
+          <AlertTriangle className="h-5 w-5 text-destructive" />
+          <p className="text-sm text-destructive">Failed to load marketplace data. Is the backend running?</p>
+        </div>
+      )}
 
       {/* Stats Overview Row */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4" data-testid="stats-overview">

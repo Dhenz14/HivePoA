@@ -437,6 +437,7 @@ export interface IStorage {
   getActiveBansForNode(nodeOperator: string): Promise<UploaderBan[]>;
   // Treasury Audit Log
   createTreasuryAuditLog(entry: InsertTreasuryAuditLog): Promise<TreasuryAuditLog>;
+  getRecentTreasuryAuditLogs(limit?: number): Promise<TreasuryAuditLog[]>;
   // Treasury Freeze State
   getTreasuryFreezeState(): Promise<any | undefined>;
   setTreasuryFrozen(frozenBy: string, reason: string, unfreezeThreshold: number): Promise<void>;
@@ -2231,6 +2232,12 @@ export class DatabaseStorage implements IStorage {
   async createTreasuryAuditLog(entry: InsertTreasuryAuditLog): Promise<TreasuryAuditLog> {
     const [row] = await db.insert(treasuryAuditLog).values(entry).returning();
     return row;
+  }
+
+  async getRecentTreasuryAuditLogs(limit = 50): Promise<TreasuryAuditLog[]> {
+    return db.select().from(treasuryAuditLog)
+      .orderBy(desc(treasuryAuditLog.createdAt))
+      .limit(limit);
   }
 
   // Treasury Freeze State

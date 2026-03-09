@@ -11,7 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import {
   Loader2, Shield, ShieldCheck, Users, Wallet, ArrowRightLeft,
   Key, UserPlus, CheckCircle2, RefreshCw, Activity,
-  Lock, Unlock, Hexagon,
+  Lock, Unlock, Hexagon, AlertTriangle, FileText, Snowflake,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getApiBase } from "@/lib/api-mode";
@@ -24,6 +24,11 @@ interface TreasuryStatus {
   treasuryAccount: string;
   balance?: string;
   authorityInSync: boolean;
+  frozen?: boolean;
+  frozenBy?: string;
+  frozenAt?: string;
+  unfreezeVotes?: number;
+  unfreezeThreshold?: number;
 }
 
 interface TreasurySignerInfo {
@@ -44,6 +49,16 @@ interface TreasuryTransaction {
   signatures: Record<string, string>;
   broadcastTxId: string | null;
   metadata: any;
+  createdAt: string;
+}
+
+interface AuditLogEntry {
+  id: string;
+  txId: string;
+  signerUsername: string;
+  action: string;
+  nonce: string | null;
+  rejectReason: string | null;
   createdAt: string;
 }
 
@@ -185,6 +200,16 @@ export default function Treasury() {
     refetchInterval: 15000,
   });
 
+  const { data: auditLogs } = useQuery<AuditLogEntry[]>({
+    queryKey: ["treasury", "audit-log"],
+    queryFn: () =>
+      fetch(`${apiBase}/api/treasury/audit-log?limit=50`, {
+        headers: { Authorization: `Bearer ${user?.sessionToken}` },
+      }).then((r) => r.json()),
+    enabled: !!user?.sessionToken,
+    refetchInterval: 15000,
+  });
+
   const joinMutation = useMutation({
     mutationFn: () =>
       fetch(`${apiBase}/api/treasury/join`, {
@@ -232,6 +257,40 @@ export default function Treasury() {
       } else {
         toast({ title: "Vouch Failed", description: data.error, variant: "destructive" });
       }
+    },
+  });
+
+  const freezeMutation = useMutation({
+    mutationFn: (reason: string) =>
+      fetch(`${apiBase}/api/treasury/freeze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${user?.sessionToken}` },
+        body: JSON.stringify({ reason }),
+      }).then((r) => r.json()),
+    onSuccess: (data) => {
+      if (data.success) {
+        toast({ title: "Treasury Frozen", description: "All operations halted." });
+        queryClient.invalidateQueries({ queryKey: ["treasury"] });
+      } else {
+        toast({ title: "Freeze Failed", description: data.error, variant: "destructive" });
+      }
+    },
+  });
+
+  const unfreezeMutation = useMutation({
+    mutationFn: () =>
+      fetch(`${apiBase}/api/treasury/unfreeze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${user?.sessionToken}` },
+      }).then((r) => r.json()),
+    onSuccess: (data) => {
+      toast({
+        title: data.unfrozen ? "Treasury Unfrozen" : "Unfreeze Vote Cast",
+        description: data.unfrozen
+          ? "Operations resumed."
+          : `Vote ${data.voteCount}/${data.threshold} — need ${data.threshold - data.voteCount} more`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["treasury"] });
     },
   });
 
@@ -595,6 +654,62 @@ export default function Treasury() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Freeze banner + controls */}
+      {status?.frozen && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Snowflake className="h-5 w-5 text-red-500" />
+            <div>
+              <p className="font-medium text-red-500">Treasury is FROZEN</p>
+              <p className="text-xs text-red-400">All operations halted. {status.unfreezeThreshold ? `${status.unfreezeVotes || 0}/${status.unfreezeThreshold} unfreeze votes` : ""}</p>
+            </div>
+          </div>
+          {user && isSigner && (
+            <Button size="sm" variant="outline" onClick={() => unfreezeMutation.mutate()} disabled={unfreezeMutation.isPending}>
+              <Unlock className="h-4 w-4 mr-1" /> Vote Unfreeze
+            </Button>
+          )}
+        </div>
+      )}
+
+      {user && isSigner && !status?.frozen && (
+        <div className="flex justify-end">
+          <Button size="sm" variant="ghost" className="text-red-500 hover:text-red-600 hover:bg-red-500/10"
+            onClick={() => freezeMutation.mutate("manual_freeze")} disabled={freezeMutation.isPending}>
+            <Snowflake className="h-4 w-4 mr-1" /> Emergency Freeze
+          </Button>
+        </div>
+      )}
+
+      {/* Audit Log */}
+      {user?.sessionToken && auditLogs && auditLogs.length > 0 && (
+        <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <FileText className="h-4 w-4 text-muted-foreground" />
+              Audit Log
+            </CardTitle>
+            <CardDescription>Recent treasury signing events</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {auditLogs.map((log) => (
+                <div key={log.id} className="flex items-center justify-between text-xs p-2 rounded-md bg-muted/30 border border-border/30">
+                  <div className="flex items-center gap-2">
+                    <Badge variant={log.action.includes("reject") || log.action.includes("fail") ? "destructive" : "outline"} className="text-[10px]">
+                      {log.action}
+                    </Badge>
+                    <span className="text-muted-foreground">by</span>
+                    <span className="font-mono font-medium">{log.signerUsername}</span>
+                  </div>
+                  <span className="text-muted-foreground">{new Date(log.createdAt).toLocaleString()}</span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* How it works */}
       <Card className="border-border/50 bg-card/50 backdrop-blur-sm">

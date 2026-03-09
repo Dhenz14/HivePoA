@@ -33,9 +33,9 @@ Decentralized storage validation protocol built on the Hive L1 blockchain. Valid
 
 ## Project Scale
 
-- 167+ API endpoints across 25 services
-- 47 database tables (Drizzle ORM schema)
-- 25 client pages (including Treasury dashboard, content moderation, and video watch page with P2P)
+- 168+ API endpoints across 25 services
+- 46 database tables (Drizzle ORM schema)
+- 26 client pages (including Treasury dashboard, governance, content moderation, and video watch page with P2P)
 - 168 automated tests across 5 test suites (vitest)
 - Full Docker deployment stack
 - GitHub Pages static site with auto-deploy
