@@ -12,11 +12,26 @@ import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
 export default function ValidatorLogin() {
   const [, setLocation] = useLocation();
   const { isAvailable, isChecking, requestSignature } = useHiveKeychain();
-  const { login, isAuthenticated, user } = useValidatorAuth();
+  const { login, isAuthenticated, isLoading: isAuthLoading, user } = useValidatorAuth();
 
   const [username, setUsername] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Wait for auth context to finish loading (agent detection + auto-login)
+  // before showing the login form — prevents brief flash of form
+  if (isAuthLoading) {
+    return (
+      <div className="container max-w-lg py-16" data-testid="page-validator-login">
+        <Card>
+          <CardContent className="flex items-center justify-center py-12">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            <span className="ml-2 text-muted-foreground">Checking authentication...</span>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   if (isAuthenticated && user) {
     return (

@@ -27,6 +27,7 @@ interface ValidatorAuthContextType {
 const ValidatorAuthContext = createContext<ValidatorAuthContextType | null>(null);
 
 const STORAGE_KEY = "spk_validator_session";
+const LOGGED_OUT_KEY = "spk_logged_out"; // prevents auto-re-login after explicit logout
 const DESKTOP_AGENT_URL = "http://127.0.0.1:5111";
 
 /** Sync username to desktop agent if it's running (fire-and-forget).
@@ -116,29 +117,33 @@ export function ValidatorAuthProvider({ children }: { children: ReactNode }) {
 
       // 2. No localStorage session — check if the desktop agent has a username configured
       //    If so, auto-login (the user already authenticated in the desktop app)
-      await detectBackendMode();
-      if (getBackendMode() === "agent") {
-        try {
-          const res = await fetch(`${getApiBase()}/api/config`);
-          if (res.ok) {
-            const config = await res.json();
-            if (config.hiveUsername) {
-              const localToken = `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-              const autoUser: ValidatorUser = {
-                username: config.hiveUsername,
-                witnessRank: null,
-                isTopWitness: false,
-                isVouched: false,
-                sessionToken: localToken,
-                validatorOptedIn: null,
-              };
-              setUser(autoUser);
-              const session = { user: autoUser, expiresAt: Date.now() + 24 * 60 * 60 * 1000 };
-              localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+      //    Skip if user explicitly logged out (prevents auto-re-login loop)
+      const explicitlyLoggedOut = localStorage.getItem(LOGGED_OUT_KEY) === "true";
+      if (!explicitlyLoggedOut) {
+        await detectBackendMode();
+        if (getBackendMode() === "agent") {
+          try {
+            const res = await fetch(`${getApiBase()}/api/config`);
+            if (res.ok) {
+              const config = await res.json();
+              if (config.hiveUsername) {
+                const localToken = `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                const autoUser: ValidatorUser = {
+                  username: config.hiveUsername,
+                  witnessRank: null,
+                  isTopWitness: false,
+                  isVouched: false,
+                  sessionToken: localToken,
+                  validatorOptedIn: null,
+                };
+                setUser(autoUser);
+                const session = { user: autoUser, expiresAt: Date.now() + 24 * 60 * 60 * 1000 };
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+              }
             }
+          } catch {
+            // Agent not reachable — stay logged out
           }
-        } catch {
-          // Agent not reachable — stay logged out
         }
       }
 
@@ -160,6 +165,9 @@ export function ValidatorAuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (username: string, signature: string, challenge: string): Promise<{ success: boolean; error?: string }> => {
     try {
+      // Clear logged-out flag — user is explicitly logging in
+      localStorage.removeItem(LOGGED_OUT_KEY);
+
       // Ensure backend detection is complete before checking
       await detectBackendMode();
       if (!hasBackend()) {
@@ -224,6 +232,7 @@ export function ValidatorAuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(() => {
     localStorage.removeItem(STORAGE_KEY);
+    localStorage.setItem(LOGGED_OUT_KEY, "true"); // prevent auto-re-login from agent
     setUser(null);
   }, []);
 
