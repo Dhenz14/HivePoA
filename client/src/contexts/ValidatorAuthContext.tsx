@@ -42,13 +42,24 @@ function syncToDesktopAgent(username: string): void {
 
 async function validateSession(username: string, sessionToken: string): Promise<ValidatorUser | null> {
   await detectBackendMode();
-  if (!hasBackend()) return null;
+  if (!hasBackend()) {
+    // No backend but we have a local session — trust localStorage (offline-capable)
+    if (sessionToken.startsWith("local-")) {
+      return { username, witnessRank: null, isTopWitness: false, isVouched: false, sessionToken, validatorOptedIn: null };
+    }
+    return null;
+  }
   try {
     const response = await fetch(`${getApiBase()}/api/validator/validate-session`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, sessionToken }),
     });
+
+    // Endpoint doesn't exist on old agent — trust local session
+    if (response.status === 404 && sessionToken.startsWith("local-")) {
+      return { username, witnessRank: null, isTopWitness: false, isVouched: false, sessionToken, validatorOptedIn: null };
+    }
 
     if (!response.ok) return null;
 
@@ -66,6 +77,10 @@ async function validateSession(username: string, sessionToken: string): Promise<
     }
     return null;
   } catch {
+    // Network error — trust local session if we have one
+    if (sessionToken.startsWith("local-")) {
+      return { username, witnessRank: null, isTopWitness: false, isVouched: false, sessionToken, validatorOptedIn: null };
+    }
     return null;
   }
 }
@@ -118,11 +133,33 @@ export function ValidatorAuthProvider({ children }: { children: ReactNode }) {
       if (!hasBackend()) {
         return { success: false, error: "Login requires the desktop agent or server to be running" };
       }
-      const response = await fetch(`${getApiBase()}/api/validator/login`, {
+      const base = getApiBase();
+
+      // Try /api/validator/login first (full server or new agent builds)
+      let response = await fetch(`${base}/api/validator/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, signature, challenge }),
       });
+
+      // If endpoint doesn't exist (404), the agent is an older build.
+      // Hive Keychain already verified the user owns the key by signing the challenge,
+      // so create a local session and sync the username to the agent.
+      if (response.status === 404) {
+        const localToken = `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const validatorUser: ValidatorUser = {
+          username,
+          witnessRank: null,
+          isTopWitness: false,
+          isVouched: false,
+          sessionToken: localToken,
+          validatorOptedIn: null,
+        };
+
+        updateUser(validatorUser);
+        syncToDesktopAgent(username);
+        return { success: true };
+      }
 
       const data = await response.json();
 
