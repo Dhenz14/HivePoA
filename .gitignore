@@ -6,6 +6,8 @@ vite.config.ts.*
 *.tar.gz
 .ipfs-data
 .env
+.soak-env
+soak-journal.json
 *.log
 desktop-agent/dist
 desktop-agent/build

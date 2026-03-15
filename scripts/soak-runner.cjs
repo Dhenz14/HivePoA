@@ -31,7 +31,7 @@ const crypto = require("crypto");
 // Configuration — hard caps
 // ================================================================
 const DAILY_BUDGET_CAP_HBD = 0.050;
-const PER_JOB_BUDGET_HBD = "0.001";
+const PER_JOB_BUDGET_HBD = "0.010";
 const MAX_CONSECUTIVE_ERRORS = 3;
 const MIN_CYCLE_DELAY_MS = 30_000;   // 30s minimum between cycles
 const MAX_CYCLE_JITTER_MS = 60_000;  // up to 60s additional random delay
@@ -40,11 +40,25 @@ const LEASE_SECONDS = 1800;
 const NODE_INSTANCE_ID = "soak-runner-node-001";
 
 // ================================================================
-// Environment
+// Environment — load from .soak-env file (keys never on command line)
 // ================================================================
+const ENV_FILE = path.join(__dirname, "..", ".soak-env");
+if (fs.existsSync(ENV_FILE)) {
+  for (const line of fs.readFileSync(ENV_FILE, "utf-8").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq > 0) {
+      const key = trimmed.slice(0, eq);
+      const val = trimmed.slice(eq + 1);
+      if (!process.env[key]) process.env[key] = val;
+    }
+  }
+}
+
 const BASE_URL = process.env.HIVEPOA_URL || "http://localhost:3000";
-const AUTH_TOKEN = process.env.CANARY_AUTH_TOKEN || "canary-test-token-2026";
-const API_KEY = process.env.CANARY_API_KEY || "canary-agent-key-2026";
+const AUTH_TOKEN = process.env.CANARY_AUTH_TOKEN || "";
+const API_KEY = process.env.CANARY_API_KEY || "";
 const TREASURY_KEY = process.env.TREASURY_ACTIVE_KEY || "";
 const TREASURY_ACCOUNT = process.env.TREASURY_ACCOUNT || "nickhintonnarc";
 const WORKER_ACCOUNT = process.env.WORKER_ACCOUNT || "dandandan123";
@@ -267,18 +281,22 @@ async function runCycle(journal, cycleNum) {
       throw new Error(`DUPLICATE SETTLE: second settle returned ${settled2.settled} (expected 0)`);
     }
 
-    // 8. Treasury transfer (skip in dry-run)
+    // 8. Treasury transfer (skip in dry-run or if amount is zero)
     if (!DRY_RUN && TREASURY_KEY) {
       const payoutAmount = record.payoutsTotalHbd.toFixed(3);
-      const memo = `HIVEPOA_SOAK_${cycleId}`;
-      log(`Treasury transfer: ${payoutAmount} HBD → ${WORKER_ACCOUNT} (memo: ${memo})`);
+      if (parseFloat(payoutAmount) < 0.001) {
+        log(`Payout too small to transfer (${payoutAmount} HBD) — skipping on-chain transfer`);
+      } else {
+        const memo = `HIVEPOA_SOAK_${cycleId}`;
+        log(`Treasury transfer: ${payoutAmount} HBD → ${WORKER_ACCOUNT} (memo: ${memo})`);
 
-      const txId = await sendHbd(TREASURY_ACCOUNT, WORKER_ACCOUNT, payoutAmount, memo);
-      record.treasuryTxId = txId;
-      log(`Transfer broadcast: ${txId}`);
+        const txId = await sendHbd(TREASURY_ACCOUNT, WORKER_ACCOUNT, payoutAmount, memo);
+        record.treasuryTxId = txId;
+        log(`Transfer broadcast: ${txId}`);
 
-      // Wait for confirmation
-      await sleep(4000);
+        // Wait for confirmation
+        await sleep(4000);
+      }
     } else {
       log("DRY RUN — skipping treasury transfer");
     }
