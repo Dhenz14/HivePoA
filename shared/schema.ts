@@ -904,6 +904,155 @@ export const p2pNetworkStats = pgTable("p2p_network_stats", {
   bandwidthSavedBytes: integer("bandwidth_saved_bytes").notNull().default(0),
 });
 
+// ============================================================
+// PHASE 10: GPU Compute Marketplace
+// ============================================================
+
+// Compute Nodes - GPU workers registered to execute typed workloads
+export const computeNodes = pgTable("compute_nodes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  hiveUsername: text("hive_username").notNull(),
+  apiKeyId: varchar("api_key_id"), // references agentKeys, set on registration
+  status: text("status").notNull().default("online"), // online, offline, draining, banned
+  // Hardware specs (queryable columns, not JSON)
+  gpuModel: text("gpu_model").notNull(), // "RTX 4090", "A100-80GB"
+  gpuVramGb: integer("gpu_vram_gb").notNull(),
+  cudaVersion: text("cuda_version"),
+  cpuCores: integer("cpu_cores"),
+  ramGb: integer("ram_gb"),
+  // Capabilities
+  supportedWorkloads: text("supported_workloads").notNull().default(""), // comma-separated: eval_sweep,benchmark_run,domain_lora_train
+  cachedModels: text("cached_models").notNull().default(""), // comma-separated model IDs cached locally
+  workerVersion: text("worker_version"),
+  // Economics
+  pricePerHourHbd: text("price_per_hour_hbd").notNull().default("0.50"),
+  // Trust
+  reputationScore: integer("reputation_score").notNull().default(0), // 0-100, starts at 0 (warm-up)
+  totalJobsCompleted: integer("total_jobs_completed").notNull().default(0),
+  totalJobsFailed: integer("total_jobs_failed").notNull().default(0),
+  totalHbdEarned: text("total_hbd_earned").notNull().default("0"),
+  // State
+  jobsInProgress: integer("jobs_in_progress").notNull().default(0),
+  lastHeartbeatAt: timestamp("last_heartbeat_at"),
+  metadataJson: text("metadata_json"), // overflow for non-queryable fields
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Compute Jobs - Typed workload execution requests
+export const computeJobs = pgTable("compute_jobs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  creatorUsername: text("creator_username").notNull(), // Hive username
+  workloadType: text("workload_type").notNull(), // eval_sweep, benchmark_run, weakness_targeted_generation, domain_lora_train, adapter_validation
+  state: text("state").notNull().default("queued"), // queued, leased, running, submitted, verifying, accepted, rejected, expired, cancelled
+  priority: integer("priority").notNull().default(0), // higher = more urgent
+  // Job manifest (immutable definition of what to execute)
+  manifestJson: text("manifest_json").notNull(), // full workload manifest (model, config, data CIDs, runtime versions)
+  manifestSha256: text("manifest_sha256").notNull(), // integrity hash
+  // Resource requirements
+  minVramGb: integer("min_vram_gb").notNull().default(16),
+  requiredModels: text("required_models").notNull().default(""), // comma-separated base models needed
+  // Budget & lifecycle
+  budgetHbd: text("budget_hbd").notNull().default("0"),
+  reservedBudgetHbd: text("reserved_budget_hbd").notNull().default("0"), // held during execution
+  leaseSeconds: integer("lease_seconds").notNull().default(3600), // max time for a single attempt
+  maxAttempts: integer("max_attempts").notNull().default(3),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  // Verification
+  verificationPolicyJson: text("verification_policy_json"), // workload-specific verification config
+  // Timestamps
+  deadlineAt: timestamp("deadline_at"), // hard deadline for entire job
+  cancelledAt: timestamp("cancelled_at"),
+  completedAt: timestamp("completed_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Compute Job Attempts - Each lease/execution attempt of a job
+export const computeJobAttempts = pgTable("compute_job_attempts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  jobId: varchar("job_id").notNull().references(() => computeJobs.id),
+  nodeId: varchar("node_id").notNull().references(() => computeNodes.id),
+  leaseToken: text("lease_token").notNull(), // random token for this attempt
+  state: text("state").notNull().default("leased"), // leased, running, submitted, accepted, rejected, timed_out, failed
+  // Progress
+  progressPct: integer("progress_pct").notNull().default(0), // 0-100
+  currentStage: text("current_stage"), // downloading, processing, uploading
+  // Output artifact (one primary output per attempt)
+  outputCid: text("output_cid"),
+  outputSha256: text("output_sha256"),
+  outputSizeBytes: integer("output_size_bytes"),
+  outputTransportUrl: text("output_transport_url"), // optional fast HTTP URL
+  // Telemetry (not trusted for verification, used for debugging)
+  metricsJson: text("metrics_json"), // loss curves, timing, GPU utilization
+  resultJson: text("result_json"), // structured result per output_schema
+  stderrTail: text("stderr_tail"), // last N lines of stderr for debugging
+  failureReason: text("failure_reason"),
+  // Timestamps
+  startedAt: timestamp("started_at"),
+  heartbeatAt: timestamp("heartbeat_at"),
+  submittedAt: timestamp("submitted_at"),
+  finishedAt: timestamp("finished_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Compute Verifications - Trusted verifier outputs
+export const computeVerifications = pgTable("compute_verifications", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  jobId: varchar("job_id").notNull().references(() => computeJobs.id),
+  attemptId: varchar("attempt_id").notNull().references(() => computeJobAttempts.id),
+  verifierType: text("verifier_type").notNull(), // structural, hidden_loss, hidden_eval, merge_candidacy
+  verifierVersion: text("verifier_version").notNull().default("1.0.0"),
+  result: text("result").notNull(), // pass, fail, soft_fail
+  score: real("score"), // 0.0-1.0 for scored verifications
+  detailsJson: text("details_json"), // verification-specific details
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Compute Payouts - Three-stage payment tracking
+export const computePayouts = pgTable("compute_payouts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  jobId: varchar("job_id").notNull().references(() => computeJobs.id),
+  attemptId: varchar("attempt_id").references(() => computeJobAttempts.id),
+  nodeId: varchar("node_id").notNull().references(() => computeNodes.id),
+  amountHbd: text("amount_hbd").notNull(),
+  reason: text("reason").notNull(), // validity_fee, completion_fee, bonus, cancellation_refund, creator_refund
+  status: text("status").notNull().default("pending"), // pending, queued, broadcast, confirmed, failed
+  treasuryTxId: varchar("treasury_tx_id"), // links to treasury transaction
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Phase 10: GPU Compute Insert Schemas
+export const insertComputeNodeSchema = createInsertSchema(computeNodes).omit({
+  id: true,
+  createdAt: true,
+  lastHeartbeatAt: true,
+  totalJobsCompleted: true,
+  totalJobsFailed: true,
+  totalHbdEarned: true,
+});
+
+export const insertComputeJobSchema = createInsertSchema(computeJobs).omit({
+  id: true,
+  createdAt: true,
+  completedAt: true,
+  cancelledAt: true,
+  attemptCount: true,
+});
+
+export const insertComputeJobAttemptSchema = createInsertSchema(computeJobAttempts).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertComputeVerificationSchema = createInsertSchema(computeVerifications).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertComputePayoutSchema = createInsertSchema(computePayouts).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Phase 9: Content Moderation Insert Schemas
 export const insertContentFlagSchema = createInsertSchema(contentFlags).omit({
   id: true,
@@ -1110,3 +1259,19 @@ export type InsertTreasuryTransaction = z.infer<typeof insertTreasuryTransaction
 
 export type TreasuryAuditLog = typeof treasuryAuditLog.$inferSelect;
 export type InsertTreasuryAuditLog = z.infer<typeof insertTreasuryAuditLogSchema>;
+
+// Phase 10: GPU Compute Marketplace Types
+export type ComputeNode = typeof computeNodes.$inferSelect;
+export type InsertComputeNode = z.infer<typeof insertComputeNodeSchema>;
+
+export type ComputeJob = typeof computeJobs.$inferSelect;
+export type InsertComputeJob = z.infer<typeof insertComputeJobSchema>;
+
+export type ComputeJobAttempt = typeof computeJobAttempts.$inferSelect;
+export type InsertComputeJobAttempt = z.infer<typeof insertComputeJobAttemptSchema>;
+
+export type ComputeVerification = typeof computeVerifications.$inferSelect;
+export type InsertComputeVerification = z.infer<typeof insertComputeVerificationSchema>;
+
+export type ComputePayout = typeof computePayouts.$inferSelect;
+export type InsertComputePayout = z.infer<typeof insertComputePayoutSchema>;

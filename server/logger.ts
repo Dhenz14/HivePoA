@@ -39,3 +39,4 @@ export const logUpload = logger.child({ component: "upload" });
 export const logVideo = logger.child({ component: "video-processor" });
 export const logSPK = logger.child({ component: "spk-poa" });
 export const logWoT = logger.child({ component: "web-of-trust" });
+export const logCompute = logger.child({ component: "gpu-compute" });

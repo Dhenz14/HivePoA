@@ -21,7 +21,8 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { getIPFSClient } from "./services/ipfs-client";
-import { logRoutes, logWS, logEncoding, logWoT } from "./logger";
+import { logRoutes, logWS, logEncoding, logWoT, logCompute } from "./logger";
+import { computeService, type WorkloadType, type JobManifest } from "./services/compute-service";
 import { createProofHash } from "./services/poa-crypto";
 
 // Extend Express Request to carry authenticated user
@@ -4576,6 +4577,316 @@ export async function registerRoutes(
 
     const stream = fs.createReadStream(filePath);
     stream.pipe(res);
+  });
+
+  // ============================================================
+  // PHASE 10: GPU Compute Marketplace
+  // ============================================================
+
+  // Start the compute service lease sweeper
+  computeService.start();
+
+  // --- Node Lifecycle ---
+
+  // POST /api/compute/nodes/register — Register a GPU worker node
+  app.post("/api/compute/nodes/register", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        gpuModel: z.string().min(1).max(100),
+        gpuVramGb: z.number().int().min(4).max(1000),
+        cudaVersion: z.string().max(20).optional(),
+        cpuCores: z.number().int().min(1).max(512).optional(),
+        ramGb: z.number().int().min(1).max(10000).optional(),
+        supportedWorkloads: z.string().min(1), // comma-separated
+        cachedModels: z.string().optional(),
+        workerVersion: z.string().max(50).optional(),
+        pricePerHourHbd: z.string().optional(),
+      });
+      const data = schema.parse(req.body);
+      const node = await computeService.registerNode({
+        hiveUsername: req.authenticatedUser!,
+        ...data,
+      });
+      res.json(node);
+    } catch (err: any) {
+      logCompute.error({ err }, "Node registration failed");
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // POST /api/compute/nodes/heartbeat — Heartbeat from a GPU worker
+  app.post("/api/compute/nodes/heartbeat", requireAgentAuth, async (req, res) => {
+    try {
+      const node = await storage.getComputeNodeByUsername(req.authenticatedUser!);
+      if (!node) { res.status(404).json({ error: "Node not registered" }); return; }
+      const { jobsInProgress } = z.object({ jobsInProgress: z.number().int().min(0).max(100) }).parse(req.body);
+      await computeService.heartbeat(node.id, jobsInProgress);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // POST /api/compute/nodes/drain — Mark node as draining (no new jobs)
+  app.post("/api/compute/nodes/drain", requireAgentAuth, async (req, res) => {
+    try {
+      const node = await storage.getComputeNodeByUsername(req.authenticatedUser!);
+      if (!node) { res.status(404).json({ error: "Node not registered" }); return; }
+      await computeService.drainNode(node.id);
+      res.json({ ok: true, status: "draining" });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // GET /api/compute/nodes — List all compute nodes (public)
+  app.get("/api/compute/nodes", async (_req, res) => {
+    try {
+      const nodes = await storage.getAllComputeNodes();
+      res.json(nodes);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/compute/nodes/me — Get current node info
+  app.get("/api/compute/nodes/me", requireAgentAuth, async (req, res) => {
+    try {
+      const node = await storage.getComputeNodeByUsername(req.authenticatedUser!);
+      if (!node) { res.status(404).json({ error: "Node not registered" }); return; }
+      res.json(node);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/compute/nodes/:id — Get specific node details (public)
+  app.get("/api/compute/nodes/:id", async (req, res) => {
+    try {
+      const node = await storage.getComputeNode(req.params.id);
+      if (!node) { res.status(404).json({ error: "Node not found" }); return; }
+      res.json(node);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- Job Lifecycle ---
+
+  // POST /api/compute/jobs — Create a compute job
+  app.post("/api/compute/jobs", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        workloadType: z.string().min(1),
+        manifest: z.record(z.unknown()),
+        budgetHbd: z.string().regex(/^\d+\.\d{3}$/),
+        priority: z.number().int().min(0).max(100).optional(),
+        minVramGb: z.number().int().min(4).max(1000).optional(),
+        requiredModels: z.string().optional(),
+        leaseSeconds: z.number().int().min(60).max(86400).optional(),
+        maxAttempts: z.number().int().min(1).max(10).optional(),
+        deadlineAt: z.string().datetime().optional(),
+        verificationPolicy: z.record(z.unknown()).optional(),
+      });
+      const data = schema.parse(req.body);
+      const job = await computeService.createJob({
+        creatorUsername: req.authenticatedUser!,
+        workloadType: data.workloadType as WorkloadType,
+        manifest: data.manifest as JobManifest,
+        budgetHbd: data.budgetHbd,
+        priority: data.priority,
+        minVramGb: data.minVramGb,
+        requiredModels: data.requiredModels,
+        leaseSeconds: data.leaseSeconds,
+        maxAttempts: data.maxAttempts,
+        deadlineAt: data.deadlineAt ? new Date(data.deadlineAt) : undefined,
+        verificationPolicy: data.verificationPolicy,
+      });
+      res.status(201).json(job);
+    } catch (err: any) {
+      logCompute.error({ err }, "Job creation failed");
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // GET /api/compute/jobs — List jobs for authenticated user
+  app.get("/api/compute/jobs", requireAuth, async (req, res) => {
+    try {
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+      const jobs = await storage.getComputeJobsByCreator(req.authenticatedUser!, limit);
+      res.json(jobs);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/compute/jobs/:id — Get job details
+  app.get("/api/compute/jobs/:id", requireAuth, async (req, res) => {
+    try {
+      const job = await storage.getComputeJob(req.params.id);
+      if (!job) { res.status(404).json({ error: "Job not found" }); return; }
+      const attempts = await storage.getComputeJobAttempts(job.id);
+      const verifications = await storage.getComputeVerifications(job.id);
+      const payouts = await storage.getComputePayoutsByJob(job.id);
+      res.json({ ...job, attempts, verifications, payouts });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/compute/jobs/:id/cancel — Cancel a job (creator only)
+  app.post("/api/compute/jobs/:id/cancel", requireAuth, async (req, res) => {
+    try {
+      await computeService.cancelJob(req.params.id, req.authenticatedUser!);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // GET /api/compute/estimate — Estimate cost for a workload
+  app.get("/api/compute/estimate", async (req, res) => {
+    try {
+      const workloadType = (req.query.workloadType as string) || "eval_sweep";
+      const minVramGb = parseInt(req.query.minVramGb as string) || 16;
+      const estimate = await computeService.estimateCost(workloadType as WorkloadType, minVramGb);
+      res.json(estimate);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- Worker Operations (Agent Auth) ---
+
+  // POST /api/compute/jobs/claim-next — Worker claims next eligible job
+  app.post("/api/compute/jobs/claim-next", requireAgentAuth, async (req, res) => {
+    try {
+      const node = await storage.getComputeNodeByUsername(req.authenticatedUser!);
+      if (!node) { res.status(404).json({ error: "Node not registered" }); return; }
+      const result = await computeService.claimNextJob(node.id);
+      if (!result) { res.json({ job: null }); return; }
+      res.json({
+        job: result.job,
+        attempt: {
+          id: result.attempt.id,
+          leaseToken: result.attempt.leaseToken,
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/compute/jobs/:id/start — Worker signals job execution started
+  app.post("/api/compute/jobs/:id/start", requireAgentAuth, async (req, res) => {
+    try {
+      const { attemptId, leaseToken } = z.object({
+        attemptId: z.string().min(1),
+        leaseToken: z.string().min(1),
+      }).parse(req.body);
+      await computeService.startJob(attemptId, leaseToken);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // POST /api/compute/jobs/:id/progress — Worker reports progress
+  app.post("/api/compute/jobs/:id/progress", requireAgentAuth, async (req, res) => {
+    try {
+      const { attemptId, leaseToken, progressPct, currentStage } = z.object({
+        attemptId: z.string().min(1),
+        leaseToken: z.string().min(1),
+        progressPct: z.number().int().min(0).max(100),
+        currentStage: z.string().optional(),
+      }).parse(req.body);
+      await computeService.reportProgress(attemptId, leaseToken, progressPct, currentStage);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // POST /api/compute/jobs/:id/submit — Worker submits result
+  app.post("/api/compute/jobs/:id/submit", requireAgentAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        attemptId: z.string().min(1),
+        leaseToken: z.string().min(1),
+        outputCid: z.string().min(1),
+        outputSha256: z.string().min(64).max(64),
+        outputSizeBytes: z.number().int().min(0).optional(),
+        outputTransportUrl: z.string().url().optional(),
+        metricsJson: z.string().optional(),
+        resultJson: z.string().optional(),
+      });
+      const data = schema.parse(req.body);
+      const attempt = await computeService.submitResult(data.attemptId, data.leaseToken, {
+        outputCid: data.outputCid,
+        outputSha256: data.outputSha256,
+        outputSizeBytes: data.outputSizeBytes,
+        outputTransportUrl: data.outputTransportUrl,
+        metricsJson: data.metricsJson,
+        resultJson: data.resultJson,
+      });
+      res.json(attempt);
+    } catch (err: any) {
+      logCompute.error({ err }, "Job submission failed");
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // POST /api/compute/jobs/:id/fail — Worker reports failure
+  app.post("/api/compute/jobs/:id/fail", requireAgentAuth, async (req, res) => {
+    try {
+      const { attemptId, leaseToken, reason, stderrTail } = z.object({
+        attemptId: z.string().min(1),
+        leaseToken: z.string().min(1),
+        reason: z.string().min(1).max(1000),
+        stderrTail: z.string().max(4000).optional(),
+      }).parse(req.body);
+      await computeService.failJob(attemptId, leaseToken, reason, stderrTail);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // --- Finance & Stats ---
+
+  // GET /api/compute/jobs/:id/payouts — Get payouts for a job
+  app.get("/api/compute/jobs/:id/payouts", requireAuth, async (req, res) => {
+    try {
+      const payouts = await storage.getComputePayoutsByJob(req.params.id);
+      res.json(payouts);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/compute/jobs/:id/settle — Trigger payout settlement
+  app.post("/api/compute/jobs/:id/settle", requireAuth, async (req, res) => {
+    try {
+      const job = await storage.getComputeJob(req.params.id);
+      if (!job) { res.status(404).json({ error: "Job not found" }); return; }
+      if (job.creatorUsername !== req.authenticatedUser!) {
+        res.status(403).json({ error: "Only the job creator can settle payouts" }); return;
+      }
+      const settled = await computeService.settlePayouts(req.params.id);
+      res.json({ settled: settled.length });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // GET /api/compute/stats — Network-wide compute stats (public)
+  app.get("/api/compute/stats", async (_req, res) => {
+    try {
+      const stats = await storage.getComputeStats();
+      res.json(stats);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   function formatFileSize(bytes: number): string {

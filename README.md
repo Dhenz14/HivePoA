@@ -28,6 +28,7 @@ Decentralized storage validation protocol built on the Hive L1 blockchain. Valid
 | **Validator Dashboard** | Real-time challenge monitoring, reputation history, blacklist management |
 | **Treasury Dashboard** | Authority ring visualization, signer status, WoT vouching, signature progress, transaction history, audit log viewer |
 | **Governance** | Live validator rankings by reputation, network health stats, treasury status sidebar |
+| **GPU Compute Marketplace** | Typed workload execution (eval sweeps, benchmarks, LoRA training, data generation) with lease-based job assignment, three-stage payouts, warm-up reputation, and content-addressed artifacts |
 | **Validator Opt-In/Out** | Eligible users choose whether to activate as a validator — resign any time from the dashboard |
 | **Content Moderation** | Community flagging, uploader bans, auto-blocklist for confirmed threats |
 | **Dark / Light Theme** | Toggle in the sidebar footer, persisted to localStorage |

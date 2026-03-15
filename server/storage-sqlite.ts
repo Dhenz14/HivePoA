@@ -56,6 +56,11 @@ import type {
   TreasuryAuditLog, InsertTreasuryAuditLog,
   ContentFlag, InsertContentFlag,
   UploaderBan, InsertUploaderBan,
+  ComputeNode, InsertComputeNode,
+  ComputeJob, InsertComputeJob,
+  ComputeJobAttempt, InsertComputeJobAttempt,
+  ComputeVerification, InsertComputeVerification,
+  ComputePayout, InsertComputePayout,
 } from "@shared/schema";
 
 // ============================================================
@@ -2370,5 +2375,43 @@ export class SQLiteStorage implements IStorage {
       ))
       .limit(1);
     return rows.length > 0;
+  }
+
+  // ============================================================
+  // Phase 10: GPU Compute Marketplace (stubs — desktop agent doesn't run marketplace)
+  // ============================================================
+  private computeNotSupported(): never { throw new Error("GPU Compute marketplace not supported on desktop agent (SQLite)"); }
+
+  async getComputeNode(_id: string): Promise<ComputeNode | undefined> { return undefined; }
+  async getComputeNodeByUsername(_username: string): Promise<ComputeNode | undefined> { return undefined; }
+  async getAllComputeNodes(): Promise<ComputeNode[]> { return []; }
+  async getAvailableComputeNodes(_workloadType?: string, _minVramGb?: number): Promise<ComputeNode[]> { return []; }
+  async createComputeNode(_node: InsertComputeNode): Promise<ComputeNode> { this.computeNotSupported(); }
+  async updateComputeNode(_id: string, _updates: Partial<ComputeNode>): Promise<void> { }
+  async updateComputeNodeHeartbeat(_id: string, _jobsInProgress: number): Promise<void> { }
+  async updateComputeNodeStats(_id: string, _completed: boolean, _hbdEarned?: string): Promise<void> { }
+
+  async getComputeJob(_id: string): Promise<ComputeJob | undefined> { return undefined; }
+  async getComputeJobsByCreator(_username: string, _limit?: number): Promise<ComputeJob[]> { return []; }
+  async getQueuedComputeJobs(_workloadType?: string): Promise<ComputeJob[]> { return []; }
+  async createComputeJob(_job: InsertComputeJob): Promise<ComputeJob> { this.computeNotSupported(); }
+  async updateComputeJobState(_id: string, _state: string, _extra?: Partial<ComputeJob>): Promise<void> { }
+  async getExpiredComputeLeases(): Promise<ComputeJobAttempt[]> { return []; }
+
+  async createComputeJobAttempt(_attempt: InsertComputeJobAttempt): Promise<ComputeJobAttempt> { this.computeNotSupported(); }
+  async getComputeJobAttempt(_id: string): Promise<ComputeJobAttempt | undefined> { return undefined; }
+  async getComputeJobAttempts(_jobId: string): Promise<ComputeJobAttempt[]> { return []; }
+  async updateComputeJobAttempt(_id: string, _updates: Partial<ComputeJobAttempt>): Promise<void> { }
+
+  async createComputeVerification(_verification: InsertComputeVerification): Promise<ComputeVerification> { this.computeNotSupported(); }
+  async getComputeVerifications(_jobId: string): Promise<ComputeVerification[]> { return []; }
+
+  async createComputePayout(_payout: InsertComputePayout): Promise<ComputePayout> { this.computeNotSupported(); }
+  async getComputePayoutsByJob(_jobId: string): Promise<ComputePayout[]> { return []; }
+  async getComputePayoutsByNode(_nodeId: string, _limit?: number): Promise<ComputePayout[]> { return []; }
+  async updateComputePayoutStatus(_id: string, _status: string, _treasuryTxId?: string): Promise<void> { }
+
+  async getComputeStats(): Promise<{ totalNodes: number; onlineNodes: number; totalJobs: number; completedJobs: number; totalHbdPaid: string }> {
+    return { totalNodes: 0, onlineNodes: 0, totalJobs: 0, completedJobs: 0, totalHbdPaid: "0" };
   }
 }

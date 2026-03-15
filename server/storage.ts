@@ -138,6 +138,22 @@ import {
   type InsertContentFlag,
   type UploaderBan,
   type InsertUploaderBan,
+  // Phase 10: GPU Compute Marketplace
+  computeNodes,
+  computeJobs,
+  computeJobAttempts,
+  computeVerifications,
+  computePayouts,
+  type ComputeNode,
+  type InsertComputeNode,
+  type ComputeJob,
+  type InsertComputeJob,
+  type ComputeJobAttempt,
+  type InsertComputeJobAttempt,
+  type ComputeVerification,
+  type InsertComputeVerification,
+  type ComputePayout,
+  type InsertComputePayout,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, sql, ilike, or, notInArray, gte, lte, lt } from "drizzle-orm";
@@ -450,6 +466,43 @@ export interface IStorage {
   getDelayedTreasuryTransactions(): Promise<TreasuryTransaction[]>;
   // Anomaly Detection
   hasReceivedTreasuryPayment(recipient: string): Promise<boolean>;
+
+  // Phase 10: GPU Compute Marketplace — Nodes
+  getComputeNode(id: string): Promise<ComputeNode | undefined>;
+  getComputeNodeByUsername(username: string): Promise<ComputeNode | undefined>;
+  getAllComputeNodes(): Promise<ComputeNode[]>;
+  getAvailableComputeNodes(workloadType?: string, minVramGb?: number): Promise<ComputeNode[]>;
+  createComputeNode(node: InsertComputeNode): Promise<ComputeNode>;
+  updateComputeNode(id: string, updates: Partial<ComputeNode>): Promise<void>;
+  updateComputeNodeHeartbeat(id: string, jobsInProgress: number): Promise<void>;
+  updateComputeNodeStats(id: string, completed: boolean, hbdEarned?: string): Promise<void>;
+
+  // Phase 10: GPU Compute Marketplace — Jobs
+  getComputeJob(id: string): Promise<ComputeJob | undefined>;
+  getComputeJobsByCreator(username: string, limit?: number): Promise<ComputeJob[]>;
+  getQueuedComputeJobs(workloadType?: string): Promise<ComputeJob[]>;
+  createComputeJob(job: InsertComputeJob): Promise<ComputeJob>;
+  updateComputeJobState(id: string, state: string, extra?: Partial<ComputeJob>): Promise<void>;
+  getExpiredComputeLeases(): Promise<ComputeJobAttempt[]>;
+
+  // Phase 10: GPU Compute Marketplace — Attempts
+  createComputeJobAttempt(attempt: InsertComputeJobAttempt): Promise<ComputeJobAttempt>;
+  getComputeJobAttempt(id: string): Promise<ComputeJobAttempt | undefined>;
+  getComputeJobAttempts(jobId: string): Promise<ComputeJobAttempt[]>;
+  updateComputeJobAttempt(id: string, updates: Partial<ComputeJobAttempt>): Promise<void>;
+
+  // Phase 10: GPU Compute Marketplace — Verifications
+  createComputeVerification(verification: InsertComputeVerification): Promise<ComputeVerification>;
+  getComputeVerifications(jobId: string): Promise<ComputeVerification[]>;
+
+  // Phase 10: GPU Compute Marketplace — Payouts
+  createComputePayout(payout: InsertComputePayout): Promise<ComputePayout>;
+  getComputePayoutsByJob(jobId: string): Promise<ComputePayout[]>;
+  getComputePayoutsByNode(nodeId: string, limit?: number): Promise<ComputePayout[]>;
+  updateComputePayoutStatus(id: string, status: string, treasuryTxId?: string): Promise<void>;
+
+  // Phase 10: GPU Compute Marketplace — Stats
+  getComputeStats(): Promise<{ totalNodes: number; onlineNodes: number; totalJobs: number; completedJobs: number; totalHbdPaid: string }>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2316,6 +2369,199 @@ export class DatabaseStorage implements IStorage {
       ))
       .limit(1);
     return rows.length > 0;
+  }
+
+  // ============================================================
+  // Phase 10: GPU Compute Marketplace
+  // ============================================================
+
+  // --- Nodes ---
+  async getComputeNode(id: string): Promise<ComputeNode | undefined> {
+    const [node] = await db.select().from(computeNodes).where(eq(computeNodes.id, id));
+    return node || undefined;
+  }
+
+  async getComputeNodeByUsername(username: string): Promise<ComputeNode | undefined> {
+    const [node] = await db.select().from(computeNodes).where(eq(computeNodes.hiveUsername, username));
+    return node || undefined;
+  }
+
+  async getAllComputeNodes(): Promise<ComputeNode[]> {
+    return db.select().from(computeNodes).orderBy(desc(computeNodes.reputationScore));
+  }
+
+  async getAvailableComputeNodes(workloadType?: string, minVramGb?: number): Promise<ComputeNode[]> {
+    const conditions = [
+      eq(computeNodes.status, "online"),
+    ];
+    if (minVramGb) {
+      conditions.push(gte(computeNodes.gpuVramGb, minVramGb));
+    }
+    const nodes = await db.select().from(computeNodes)
+      .where(and(...conditions))
+      .orderBy(desc(computeNodes.reputationScore));
+
+    if (workloadType) {
+      return nodes.filter((n: ComputeNode) => n.supportedWorkloads.split(",").includes(workloadType));
+    }
+    return nodes;
+  }
+
+  async createComputeNode(node: InsertComputeNode): Promise<ComputeNode> {
+    const [created] = await db.insert(computeNodes).values(node).returning();
+    return created;
+  }
+
+  async updateComputeNode(id: string, updates: Partial<ComputeNode>): Promise<void> {
+    await db.update(computeNodes).set(updates).where(eq(computeNodes.id, id));
+  }
+
+  async updateComputeNodeHeartbeat(id: string, jobsInProgress: number): Promise<void> {
+    await db.update(computeNodes).set({
+      lastHeartbeatAt: new Date(),
+      jobsInProgress,
+    }).where(eq(computeNodes.id, id));
+  }
+
+  async updateComputeNodeStats(id: string, completed: boolean, hbdEarned?: string): Promise<void> {
+    if (completed) {
+      await db.update(computeNodes).set({
+        totalJobsCompleted: sql`${computeNodes.totalJobsCompleted} + 1`,
+        ...(hbdEarned ? { totalHbdEarned: sql`(CAST(${computeNodes.totalHbdEarned} AS NUMERIC) + ${parseFloat(hbdEarned)})::TEXT` } : {}),
+      }).where(eq(computeNodes.id, id));
+    } else {
+      await db.update(computeNodes).set({
+        totalJobsFailed: sql`${computeNodes.totalJobsFailed} + 1`,
+      }).where(eq(computeNodes.id, id));
+    }
+  }
+
+  // --- Jobs ---
+  async getComputeJob(id: string): Promise<ComputeJob | undefined> {
+    const [job] = await db.select().from(computeJobs).where(eq(computeJobs.id, id));
+    return job || undefined;
+  }
+
+  async getComputeJobsByCreator(username: string, limit = 50): Promise<ComputeJob[]> {
+    return db.select().from(computeJobs)
+      .where(eq(computeJobs.creatorUsername, username))
+      .orderBy(desc(computeJobs.createdAt))
+      .limit(limit);
+  }
+
+  async getQueuedComputeJobs(workloadType?: string): Promise<ComputeJob[]> {
+    const conditions = [eq(computeJobs.state, "queued")];
+    if (workloadType) {
+      conditions.push(eq(computeJobs.workloadType, workloadType));
+    }
+    return db.select().from(computeJobs)
+      .where(and(...conditions))
+      .orderBy(desc(computeJobs.priority), computeJobs.createdAt);
+  }
+
+  async createComputeJob(job: InsertComputeJob): Promise<ComputeJob> {
+    const [created] = await db.insert(computeJobs).values(job).returning();
+    return created;
+  }
+
+  async updateComputeJobState(id: string, state: string, extra?: Partial<ComputeJob>): Promise<void> {
+    await db.update(computeJobs).set({ state, ...extra }).where(eq(computeJobs.id, id));
+  }
+
+  async getExpiredComputeLeases(): Promise<ComputeJobAttempt[]> {
+    return db.select().from(computeJobAttempts)
+      .where(and(
+        or(
+          eq(computeJobAttempts.state, "leased"),
+          eq(computeJobAttempts.state, "running"),
+        ),
+        // Heartbeat older than 2 minutes = stale
+        lte(computeJobAttempts.heartbeatAt, new Date(Date.now() - 2 * 60 * 1000)),
+      ));
+  }
+
+  // --- Attempts ---
+  async createComputeJobAttempt(attempt: InsertComputeJobAttempt): Promise<ComputeJobAttempt> {
+    const [created] = await db.insert(computeJobAttempts).values(attempt).returning();
+    return created;
+  }
+
+  async getComputeJobAttempt(id: string): Promise<ComputeJobAttempt | undefined> {
+    const [attempt] = await db.select().from(computeJobAttempts).where(eq(computeJobAttempts.id, id));
+    return attempt || undefined;
+  }
+
+  async getComputeJobAttempts(jobId: string): Promise<ComputeJobAttempt[]> {
+    return db.select().from(computeJobAttempts)
+      .where(eq(computeJobAttempts.jobId, jobId))
+      .orderBy(desc(computeJobAttempts.createdAt));
+  }
+
+  async updateComputeJobAttempt(id: string, updates: Partial<ComputeJobAttempt>): Promise<void> {
+    await db.update(computeJobAttempts).set(updates).where(eq(computeJobAttempts.id, id));
+  }
+
+  // --- Verifications ---
+  async createComputeVerification(verification: InsertComputeVerification): Promise<ComputeVerification> {
+    const [created] = await db.insert(computeVerifications).values(verification).returning();
+    return created;
+  }
+
+  async getComputeVerifications(jobId: string): Promise<ComputeVerification[]> {
+    return db.select().from(computeVerifications)
+      .where(eq(computeVerifications.jobId, jobId))
+      .orderBy(desc(computeVerifications.createdAt));
+  }
+
+  // --- Payouts ---
+  async createComputePayout(payout: InsertComputePayout): Promise<ComputePayout> {
+    const [created] = await db.insert(computePayouts).values(payout).returning();
+    return created;
+  }
+
+  async getComputePayoutsByJob(jobId: string): Promise<ComputePayout[]> {
+    return db.select().from(computePayouts)
+      .where(eq(computePayouts.jobId, jobId))
+      .orderBy(desc(computePayouts.createdAt));
+  }
+
+  async getComputePayoutsByNode(nodeId: string, limit = 50): Promise<ComputePayout[]> {
+    return db.select().from(computePayouts)
+      .where(eq(computePayouts.nodeId, nodeId))
+      .orderBy(desc(computePayouts.createdAt))
+      .limit(limit);
+  }
+
+  async updateComputePayoutStatus(id: string, status: string, treasuryTxId?: string): Promise<void> {
+    await db.update(computePayouts).set({
+      status,
+      ...(treasuryTxId ? { treasuryTxId } : {}),
+    }).where(eq(computePayouts.id, id));
+  }
+
+  // --- Stats ---
+  async getComputeStats(): Promise<{ totalNodes: number; onlineNodes: number; totalJobs: number; completedJobs: number; totalHbdPaid: string }> {
+    const [nodeStats] = await db.select({
+      total: sql<number>`count(*)`,
+      online: sql<number>`sum(case when ${computeNodes.status} = 'online' then 1 else 0 end)`,
+    }).from(computeNodes);
+
+    const [jobStats] = await db.select({
+      total: sql<number>`count(*)`,
+      completed: sql<number>`sum(case when ${computeJobs.state} = 'accepted' then 1 else 0 end)`,
+    }).from(computeJobs);
+
+    const [payoutStats] = await db.select({
+      totalPaid: sql<string>`COALESCE(SUM(CAST(${computePayouts.amountHbd} AS NUMERIC)), 0)::TEXT`,
+    }).from(computePayouts).where(eq(computePayouts.status, "confirmed"));
+
+    return {
+      totalNodes: Number(nodeStats?.total) || 0,
+      onlineNodes: Number(nodeStats?.online) || 0,
+      totalJobs: Number(jobStats?.total) || 0,
+      completedJobs: Number(jobStats?.completed) || 0,
+      totalHbdPaid: payoutStats?.totalPaid || "0",
+    };
   }
 }
 
