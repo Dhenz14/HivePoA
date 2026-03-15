@@ -2397,6 +2397,7 @@ export class SQLiteStorage implements IStorage {
   async getQueuedComputeJobs(_workloadType?: string): Promise<ComputeJob[]> { return []; }
   async createComputeJob(_job: InsertComputeJob): Promise<ComputeJob> { this.computeNotSupported(); }
   async updateComputeJobState(_id: string, _state: string, _extra?: Partial<ComputeJob>): Promise<void> { }
+  async touchActiveAttemptHeartbeats(_nodeId: string): Promise<void> { }
   async claimComputeJobAtomic(_nodeId: string, _allowedTypes: string[], _minVramGb: number, _cachedModelsList: string[], _leaseToken: string): Promise<{ job: ComputeJob; attempt: ComputeJobAttempt } | null> { return null; }
   async getExpiredComputeLeases(): Promise<ComputeJobAttempt[]> { return []; }
 

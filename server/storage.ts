@@ -484,6 +484,7 @@ export interface IStorage {
   getQueuedComputeJobs(workloadType?: string): Promise<ComputeJob[]>;
   createComputeJob(job: InsertComputeJob): Promise<ComputeJob>;
   updateComputeJobState(id: string, state: string, extra?: Partial<ComputeJob>): Promise<void>;
+  touchActiveAttemptHeartbeats(nodeId: string): Promise<void>;
   claimComputeJobAtomic(nodeId: string, allowedTypes: string[], minVramGb: number, cachedModelsList: string[], leaseToken: string): Promise<{ job: ComputeJob; attempt: ComputeJobAttempt } | null>;
   getExpiredComputeLeases(): Promise<ComputeJobAttempt[]>;
 
@@ -2476,6 +2477,17 @@ export class DatabaseStorage implements IStorage {
     await db.update(computeJobs).set({ state, ...extra }).where(eq(computeJobs.id, id));
   }
 
+  async touchActiveAttemptHeartbeats(nodeId: string): Promise<void> {
+    await db.update(computeJobAttempts).set({ heartbeatAt: new Date() })
+      .where(and(
+        eq(computeJobAttempts.nodeId, nodeId),
+        or(
+          eq(computeJobAttempts.state, "leased"),
+          eq(computeJobAttempts.state, "running"),
+        ),
+      ));
+  }
+
   /**
    * Atomically claim the best eligible job for a node.
    * Uses SELECT ... FOR UPDATE SKIP LOCKED to prevent race conditions.
@@ -2526,7 +2538,10 @@ export class DatabaseStorage implements IStorage {
 
     if (!result.rows || result.rows.length === 0) return null;
 
-    const claimedJob = result.rows[0] as unknown as ComputeJob;
+    // Raw SQL returns snake_case columns — re-fetch via Drizzle ORM for proper camelCase mapping
+    const rawRow = result.rows[0] as any;
+    const claimedJob = await this.getComputeJob(rawRow.id);
+    if (!claimedJob) return null;
 
     // Create the attempt in the same logical operation
     const attempt = await this.createComputeJobAttempt({

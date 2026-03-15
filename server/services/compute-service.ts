@@ -160,6 +160,10 @@ export class ComputeService {
 
   async heartbeat(nodeId: string, jobsInProgress: number): Promise<void> {
     await storage.updateComputeNodeHeartbeat(nodeId, jobsInProgress);
+    // Also update heartbeatAt on any active attempts for this node
+    // This prevents the lease sweeper from expiring active leases
+    // when the worker sends node-level heartbeats but not attempt-level progress
+    await storage.touchActiveAttemptHeartbeats(nodeId);
   }
 
   async drainNode(nodeId: string): Promise<void> {
