@@ -209,23 +209,30 @@ async function test3_structuralCorruptionRejected(): Promise<void> {
 
     await startJob(claimed!.jobId, claimed!.attemptId, claimed!.leaseToken);
 
-    // Submit with missing outputCid and bad resultJson
+    // Submit with valid Zod shape but bad content: wrong hash, no valid result
+    // outputCid is non-empty (passes Zod), outputSha256 is all zeros (wrong hash)
+    // resultJson is missing required fields (no "scores" or "score" key)
     const { status, data } = await api("POST", `/api/compute/jobs/${jobId}/submit`, {
       attemptId: claimed!.attemptId,
       leaseToken: claimed!.leaseToken,
-      outputCid: "",
+      outputCid: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
       outputSha256: "0".repeat(64),
-      resultJson: "not valid json {{{",
+      resultJson: JSON.stringify({ garbage: true }),
     }, "apikey");
 
-    // Should either fail validation at route level or be rejected by verifier
     const job = await getJob(jobId);
-    // Job should be re-queued or rejected (structural fail)
     const attempt = job.attempts?.find((a: any) => a.id === claimed!.attemptId);
-    const isRejected = attempt?.state === "rejected" || job.state === "queued" || status === 400;
-    assert(isRejected, `Expected rejection, got job.state=${job.state}, attempt.state=${attempt?.state}, status=${status}`);
+    // Should be rejected by the workload-specific verifier (missing score fields)
+    // or re-queued for retry
+    const isHandled = attempt?.state === "rejected" || job.state === "queued" || job.state === "rejected";
+    assert(isHandled, `Expected rejection/requeue, got job.state=${job.state}, attempt.state=${attempt?.state}`);
 
-    record(name, true, `Structural corruption correctly rejected`);
+    // Clean up: cancel the job so it doesn't re-queue and interfere with later tests
+    if (job.state === "queued" || job.state === "leased" || job.state === "running") {
+      await api("POST", `/api/compute/jobs/${jobId}/cancel`, undefined, "bearer");
+    }
+
+    record(name, true, `Structural corruption correctly handled (status=${status}, attempt=${attempt?.state})`);
   } catch (e: any) {
     record(name, false, e.message);
   }
@@ -460,14 +467,34 @@ async function main(): Promise<void> {
   await registerNode();
   console.log(`Node registered: ${NODE_INSTANCE_ID}\n`);
 
-  // Run tests in order
+  // Run tests in order — reset node state between tests to prevent cascading failures
+  const resetNode = async () => {
+    // Re-register to reset jobs_in_progress and refresh heartbeat
+    await api("POST", "/api/compute/nodes/register", {
+      nodeInstanceId: NODE_INSTANCE_ID,
+      gpuModel: "Canary-Test-GPU",
+      gpuVramGb: 24,
+      supportedWorkloads: "eval_sweep,benchmark_run",
+      cachedModels: "qwen3:14b",
+      workerVersion: "canary-1.0.0",
+      maxConcurrentJobs: 2,
+    }, "bearer");
+  };
+
   await test1_evalSweepE2E();
+  await resetNode();
   await test2_benchmarkRunE2E();
+  await resetNode();
   await test3_structuralCorruptionRejected();
+  await resetNode();
   await test4_semanticCorruptionDetectable();
+  await resetNode();
   await test5_concurrentSameType();
+  await resetNode();
   await test6_concurrentMixedType();
+  await resetNode();
   await test7_leaseExpiryRecovery();
+  await resetNode();
   await test8_duplicateReplay();
 
   // Summary
