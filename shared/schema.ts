@@ -909,11 +909,14 @@ export const p2pNetworkStats = pgTable("p2p_network_stats", {
 // ============================================================
 
 // Compute Nodes - GPU workers registered to execute typed workloads
+// One Hive account can register multiple nodes (different machines / GPUs)
 export const computeNodes = pgTable("compute_nodes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  hiveUsername: text("hive_username").notNull(),
+  nodeInstanceId: text("node_instance_id").notNull().unique(), // stable per-device identity (worker generates on first run)
+  hiveUsername: text("hive_username").notNull(), // owner — one account can own multiple nodes
   apiKeyId: varchar("api_key_id"), // references agentKeys, set on registration
   status: text("status").notNull().default("online"), // online, offline, draining, banned
+  maxConcurrentJobs: integer("max_concurrent_jobs").notNull().default(1), // how many jobs this node can run at once
   // Hardware specs (queryable columns, not JSON)
   gpuModel: text("gpu_model").notNull(), // "RTX 4090", "A100-80GB"
   gpuVramGb: integer("gpu_vram_gb").notNull(),

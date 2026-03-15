@@ -2383,7 +2383,8 @@ export class SQLiteStorage implements IStorage {
   private computeNotSupported(): never { throw new Error("GPU Compute marketplace not supported on desktop agent (SQLite)"); }
 
   async getComputeNode(_id: string): Promise<ComputeNode | undefined> { return undefined; }
-  async getComputeNodeByUsername(_username: string): Promise<ComputeNode | undefined> { return undefined; }
+  async getComputeNodeByInstanceId(_instanceId: string): Promise<ComputeNode | undefined> { return undefined; }
+  async getComputeNodesByUsername(_username: string): Promise<ComputeNode[]> { return []; }
   async getAllComputeNodes(): Promise<ComputeNode[]> { return []; }
   async getAvailableComputeNodes(_workloadType?: string, _minVramGb?: number): Promise<ComputeNode[]> { return []; }
   async createComputeNode(_node: InsertComputeNode): Promise<ComputeNode> { this.computeNotSupported(); }
@@ -2396,6 +2397,7 @@ export class SQLiteStorage implements IStorage {
   async getQueuedComputeJobs(_workloadType?: string): Promise<ComputeJob[]> { return []; }
   async createComputeJob(_job: InsertComputeJob): Promise<ComputeJob> { this.computeNotSupported(); }
   async updateComputeJobState(_id: string, _state: string, _extra?: Partial<ComputeJob>): Promise<void> { }
+  async claimComputeJobAtomic(_nodeId: string, _allowedTypes: string[], _minVramGb: number, _cachedModelsList: string[], _leaseToken: string): Promise<{ job: ComputeJob; attempt: ComputeJobAttempt } | null> { return null; }
   async getExpiredComputeLeases(): Promise<ComputeJobAttempt[]> { return []; }
 
   async createComputeJobAttempt(_attempt: InsertComputeJobAttempt): Promise<ComputeJobAttempt> { this.computeNotSupported(); }

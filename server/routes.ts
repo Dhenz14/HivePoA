@@ -15,7 +15,7 @@ import { ipfsGateway } from "./services/ipfs-gateway";
 import { p2pSignaling } from "./p2p-signaling";
 import { agentWSManager } from "./services/agent-ws-manager";
 import { WebSocketServer } from "ws";
-import { insertFileSchema, insertValidatorBlacklistSchema, insertEncodingJobSchema, insertEncoderNodeSchema } from "@shared/schema";
+import { insertFileSchema, insertValidatorBlacklistSchema, insertEncodingJobSchema, insertEncoderNodeSchema, type ComputeNode } from "@shared/schema";
 import { z } from "zod";
 import crypto from "crypto";
 import fs from "fs";
@@ -4588,19 +4588,31 @@ export async function registerRoutes(
 
   // --- Node Lifecycle ---
 
+  // Helper: resolve a compute node from nodeInstanceId in request body/query + verify ownership
+  async function resolveComputeNode(req: Request, res: Response): Promise<ComputeNode | null> {
+    const instanceId = (req.body?.nodeInstanceId || req.query?.nodeInstanceId) as string;
+    if (!instanceId) { res.status(400).json({ error: "nodeInstanceId is required" }); return null; }
+    const node = await storage.getComputeNodeByInstanceId(instanceId);
+    if (!node) { res.status(404).json({ error: "Node not registered" }); return null; }
+    if (node.hiveUsername !== req.authenticatedUser!) { res.status(403).json({ error: "Node belongs to a different account" }); return null; }
+    return node;
+  }
+
   // POST /api/compute/nodes/register — Register a GPU worker node
   app.post("/api/compute/nodes/register", requireAuth, async (req, res) => {
     try {
       const schema = z.object({
+        nodeInstanceId: z.string().min(8).max(128), // stable per-device identity
         gpuModel: z.string().min(1).max(100),
         gpuVramGb: z.number().int().min(4).max(1000),
         cudaVersion: z.string().max(20).optional(),
         cpuCores: z.number().int().min(1).max(512).optional(),
         ramGb: z.number().int().min(1).max(10000).optional(),
-        supportedWorkloads: z.string().min(1), // comma-separated
+        supportedWorkloads: z.string().min(1),
         cachedModels: z.string().optional(),
         workerVersion: z.string().max(50).optional(),
         pricePerHourHbd: z.string().optional(),
+        maxConcurrentJobs: z.number().int().min(1).max(16).optional(),
       });
       const data = schema.parse(req.body);
       const node = await computeService.registerNode({
@@ -4617,9 +4629,12 @@ export async function registerRoutes(
   // POST /api/compute/nodes/heartbeat — Heartbeat from a GPU worker
   app.post("/api/compute/nodes/heartbeat", requireAgentAuth, async (req, res) => {
     try {
-      const node = await storage.getComputeNodeByUsername(req.authenticatedUser!);
-      if (!node) { res.status(404).json({ error: "Node not registered" }); return; }
-      const { jobsInProgress } = z.object({ jobsInProgress: z.number().int().min(0).max(100) }).parse(req.body);
+      const node = await resolveComputeNode(req, res);
+      if (!node) return;
+      const { jobsInProgress } = z.object({
+        nodeInstanceId: z.string(),
+        jobsInProgress: z.number().int().min(0).max(100),
+      }).parse(req.body);
       await computeService.heartbeat(node.id, jobsInProgress);
       res.json({ ok: true });
     } catch (err: any) {
@@ -4630,8 +4645,8 @@ export async function registerRoutes(
   // POST /api/compute/nodes/drain — Mark node as draining (no new jobs)
   app.post("/api/compute/nodes/drain", requireAgentAuth, async (req, res) => {
     try {
-      const node = await storage.getComputeNodeByUsername(req.authenticatedUser!);
-      if (!node) { res.status(404).json({ error: "Node not registered" }); return; }
+      const node = await resolveComputeNode(req, res);
+      if (!node) return;
       await computeService.drainNode(node.id);
       res.json({ ok: true, status: "draining" });
     } catch (err: any) {
@@ -4649,12 +4664,19 @@ export async function registerRoutes(
     }
   });
 
-  // GET /api/compute/nodes/me — Get current node info
+  // GET /api/compute/nodes/me — Get current node(s) info for authenticated user
   app.get("/api/compute/nodes/me", requireAgentAuth, async (req, res) => {
     try {
-      const node = await storage.getComputeNodeByUsername(req.authenticatedUser!);
-      if (!node) { res.status(404).json({ error: "Node not registered" }); return; }
-      res.json(node);
+      // If nodeInstanceId provided, return that specific node; otherwise return all nodes for this user
+      const instanceId = req.query.nodeInstanceId as string;
+      if (instanceId) {
+        const node = await storage.getComputeNodeByInstanceId(instanceId);
+        if (!node || node.hiveUsername !== req.authenticatedUser!) { res.status(404).json({ error: "Node not found" }); return; }
+        res.json(node);
+      } else {
+        const nodes = await storage.getComputeNodesByUsername(req.authenticatedUser!);
+        res.json(nodes);
+      }
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -4758,11 +4780,11 @@ export async function registerRoutes(
 
   // --- Worker Operations (Agent Auth) ---
 
-  // POST /api/compute/jobs/claim-next — Worker claims next eligible job
+  // POST /api/compute/jobs/claim-next — Worker claims next eligible job (atomic, race-safe)
   app.post("/api/compute/jobs/claim-next", requireAgentAuth, async (req, res) => {
     try {
-      const node = await storage.getComputeNodeByUsername(req.authenticatedUser!);
-      if (!node) { res.status(404).json({ error: "Node not registered" }); return; }
+      const node = await resolveComputeNode(req, res);
+      if (!node) return;
       const result = await computeService.claimNextJob(node.id);
       if (!result) { res.json({ job: null }); return; }
       res.json({

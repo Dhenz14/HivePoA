@@ -24,9 +24,6 @@ export type WorkloadType = typeof VALID_WORKLOAD_TYPES[number];
 const WARMUP_REPUTATION_THRESHOLD = 20;
 const WARMUP_WORKLOADS: WorkloadType[] = ["eval_sweep", "benchmark_run", "adapter_validation"];
 
-// Heartbeat timeout: 2 minutes without heartbeat = stale lease
-const HEARTBEAT_TIMEOUT_MS = 2 * 60 * 1000;
-
 // Lease sweep interval: check for expired leases every 30 seconds
 const LEASE_SWEEP_INTERVAL_MS = 30 * 1000;
 
@@ -58,6 +55,7 @@ export interface JobManifest {
 
 export interface NodeRegistration {
   hiveUsername: string;
+  nodeInstanceId: string;
   gpuModel: string;
   gpuVramGb: number;
   cudaVersion?: string;
@@ -67,6 +65,7 @@ export interface NodeRegistration {
   cachedModels?: string;
   workerVersion?: string;
   pricePerHourHbd?: string;
+  maxConcurrentJobs?: number;
 }
 
 export interface JobCreation {
@@ -112,9 +111,13 @@ export class ComputeService {
   // ============================================================
 
   async registerNode(reg: NodeRegistration): Promise<ComputeNode> {
-    // Check for existing node by username (upsert pattern)
-    const existing = await storage.getComputeNodeByUsername(reg.hiveUsername);
+    // Lookup by stable node instance ID (not username — one account can have many nodes)
+    const existing = await storage.getComputeNodeByInstanceId(reg.nodeInstanceId);
     if (existing) {
+      // Verify ownership: the same Hive account must own the instance
+      if (existing.hiveUsername !== reg.hiveUsername) {
+        throw new Error("Node instance ID is already registered to a different Hive account");
+      }
       await storage.updateComputeNode(existing.id, {
         status: "online",
         gpuModel: reg.gpuModel,
@@ -126,13 +129,15 @@ export class ComputeService {
         cachedModels: reg.cachedModels || existing.cachedModels,
         workerVersion: reg.workerVersion || existing.workerVersion,
         pricePerHourHbd: reg.pricePerHourHbd || existing.pricePerHourHbd,
+        maxConcurrentJobs: reg.maxConcurrentJobs || existing.maxConcurrentJobs,
         lastHeartbeatAt: new Date(),
       });
-      logCompute.info({ nodeId: existing.id, username: reg.hiveUsername }, "Compute node re-registered");
+      logCompute.info({ nodeId: existing.id, instanceId: reg.nodeInstanceId, username: reg.hiveUsername }, "Compute node re-registered");
       return (await storage.getComputeNode(existing.id))!;
     }
 
     const node = await storage.createComputeNode({
+      nodeInstanceId: reg.nodeInstanceId,
       hiveUsername: reg.hiveUsername,
       gpuModel: reg.gpuModel,
       gpuVramGb: reg.gpuVramGb,
@@ -143,12 +148,13 @@ export class ComputeService {
       cachedModels: reg.cachedModels || "",
       workerVersion: reg.workerVersion,
       pricePerHourHbd: reg.pricePerHourHbd || "0.50",
+      maxConcurrentJobs: reg.maxConcurrentJobs || 1,
       status: "online",
-      reputationScore: 0, // starts at 0, must earn through warm-up jobs
+      reputationScore: 0,
       jobsInProgress: 0,
     });
 
-    logCompute.info({ nodeId: node.id, username: reg.hiveUsername, gpu: reg.gpuModel }, "New compute node registered");
+    logCompute.info({ nodeId: node.id, instanceId: reg.nodeInstanceId, username: reg.hiveUsername, gpu: reg.gpuModel }, "New compute node registered");
     return node;
   }
 
@@ -166,12 +172,10 @@ export class ComputeService {
   // ============================================================
 
   async createJob(params: JobCreation): Promise<ComputeJob> {
-    // Validate workload type
     if (!VALID_WORKLOAD_TYPES.includes(params.workloadType)) {
       throw new Error(`Invalid workload type: ${params.workloadType}. Must be one of: ${VALID_WORKLOAD_TYPES.join(", ")}`);
     }
 
-    // Validate manifest
     const manifestStr = JSON.stringify(params.manifest);
     const manifestSha256 = createHash("sha256").update(manifestStr).digest("hex");
 
@@ -192,7 +196,7 @@ export class ComputeService {
       minVramGb: params.minVramGb || 16,
       requiredModels: params.requiredModels || "",
       budgetHbd: params.budgetHbd,
-      reservedBudgetHbd: params.budgetHbd, // reserve full budget
+      reservedBudgetHbd: params.budgetHbd,
       leaseSeconds: params.leaseSeconds || 3600,
       maxAttempts: params.maxAttempts || 3,
       deadlineAt: params.deadlineAt || null,
@@ -203,14 +207,25 @@ export class ComputeService {
     return job;
   }
 
+  /**
+   * Atomically claim the next eligible job for a node.
+   * Uses SELECT ... FOR UPDATE SKIP LOCKED to prevent race conditions.
+   * Ranking: cache match → priority → age (FIFO anti-starvation).
+   */
   async claimNextJob(nodeId: string): Promise<{ job: ComputeJob; attempt: ComputeJobAttempt } | null> {
     const node = await storage.getComputeNode(nodeId);
     if (!node || node.status !== "online") {
       return null;
     }
 
-    // Get workload types this node supports
+    // Enforce max concurrent jobs per node
+    if (node.jobsInProgress >= node.maxConcurrentJobs) {
+      return null;
+    }
+
+    // Parse capabilities once at ingress (not repeated comma-split in loop)
     const supportedTypes = node.supportedWorkloads.split(",").filter(Boolean);
+    const cachedModelsList = node.cachedModels.split(",").filter(Boolean);
 
     // Enforce warm-up policy: low-rep nodes only get low-stakes workloads
     const allowedTypes = node.reputationScore < WARMUP_REPUTATION_THRESHOLD
@@ -219,47 +234,23 @@ export class ComputeService {
 
     if (allowedTypes.length === 0) return null;
 
-    // Find first eligible queued job
-    const allQueued = await storage.getQueuedComputeJobs();
-    const eligible = allQueued.find(job => {
-      // Type match
-      if (!allowedTypes.includes(job.workloadType)) return false;
-      // VRAM match
-      if (node.gpuVramGb < job.minVramGb) return false;
-      // Model cache preference (soft: still eligible if not cached, just prefer cached)
-      // Attempts remaining
-      if (job.attemptCount >= job.maxAttempts) return false;
-      // Not expired
-      if (job.deadlineAt && new Date(job.deadlineAt) < new Date()) return false;
-      return true;
-    });
-
-    if (!eligible) return null;
-
-    // Create lease
+    // Atomic claim: SELECT FOR UPDATE SKIP LOCKED + state flip in one operation
     const leaseToken = randomBytes(32).toString("hex");
-    const now = new Date();
-
-    const attempt = await storage.createComputeJobAttempt({
-      jobId: eligible.id,
+    const result = await storage.claimComputeJobAtomic(
       nodeId,
+      allowedTypes,
+      node.gpuVramGb,
+      cachedModelsList,
       leaseToken,
-      state: "leased",
-      progressPct: 0,
-      startedAt: now,
-      heartbeatAt: now,
-    });
+    );
 
-    // Update job state
-    await storage.updateComputeJobState(eligible.id, "leased", {
-      attemptCount: eligible.attemptCount + 1,
-    });
+    if (!result) return null;
 
-    // Update node
+    // Update node job count
     await storage.updateComputeNodeHeartbeat(nodeId, node.jobsInProgress + 1);
 
-    logCompute.info({ jobId: eligible.id, nodeId, attemptId: attempt.id }, "Job claimed by node");
-    return { job: (await storage.getComputeJob(eligible.id))!, attempt };
+    logCompute.info({ jobId: result.job.id, nodeId, attemptId: result.attempt.id }, "Job claimed atomically");
+    return result;
   }
 
   async startJob(attemptId: string, leaseToken: string): Promise<void> {
@@ -337,18 +328,16 @@ export class ComputeService {
     await storage.updateComputeJobAttempt(attemptId, {
       state: "failed",
       failureReason: reason,
-      stderrTail: stderrTail?.slice(-4000), // keep last 4KB
+      stderrTail: stderrTail?.slice(-4000),
       finishedAt: new Date(),
     });
 
-    // Update node stats
     await storage.updateComputeNodeStats(attempt.nodeId, false);
     const node = await storage.getComputeNode(attempt.nodeId);
     if (node) {
       await storage.updateComputeNodeHeartbeat(attempt.nodeId, Math.max(0, node.jobsInProgress - 1));
     }
 
-    // Check if job can be retried
     const job = await storage.getComputeJob(attempt.jobId);
     if (job && job.attemptCount < job.maxAttempts) {
       await storage.updateComputeJobState(attempt.jobId, "queued");
@@ -367,27 +356,41 @@ export class ComputeService {
       throw new Error(`Cannot cancel job in state: ${job.state}`);
     }
 
-    // If there's a running attempt, create a prorated validity payout
+    // If there's a running attempt, compute elapsed-fraction payout
     if (job.state === "running" || job.state === "leased") {
       const attempts = await storage.getComputeJobAttempts(jobId);
       const activeAttempt = attempts.find(a => a.state === "running" || a.state === "leased");
-      if (activeAttempt) {
-        // Prorate: pay 30% of budget for work already done
-        const proratedAmount = (parseFloat(job.budgetHbd) * 0.3).toFixed(3);
-        await storage.createComputePayout({
-          jobId,
-          attemptId: activeAttempt.id,
-          nodeId: activeAttempt.nodeId,
-          amountHbd: proratedAmount,
-          reason: "cancellation_refund",
-          status: "pending",
-        });
+      if (activeAttempt && activeAttempt.startedAt) {
+        const elapsedMs = Date.now() - new Date(activeAttempt.startedAt).getTime();
+        const leaseMs = job.leaseSeconds * 1000;
+        // Elapsed fraction of lease, capped at 80% (never pay full budget on cancellation)
+        const elapsedFraction = Math.min(0.8, elapsedMs / leaseMs);
+        // Validity portion (30% of budget) prorated by elapsed time
+        const proratedAmount = (parseFloat(job.budgetHbd) * 0.3 * elapsedFraction).toFixed(3);
+
+        if (parseFloat(proratedAmount) > 0) {
+          await storage.createComputePayout({
+            jobId,
+            attemptId: activeAttempt.id,
+            nodeId: activeAttempt.nodeId,
+            amountHbd: proratedAmount,
+            reason: "cancellation_refund",
+            status: "pending",
+          });
+          logCompute.info({ jobId, nodeId: activeAttempt.nodeId, amount: proratedAmount, elapsedFraction }, "Elapsed-fraction payout for cancelled job");
+        }
+
         await storage.updateComputeJobAttempt(activeAttempt.id, {
           state: "failed",
           failureReason: "Cancelled by creator",
           finishedAt: new Date(),
         });
-        logCompute.info({ jobId, nodeId: activeAttempt.nodeId, amount: proratedAmount }, "Prorated payout for cancelled job");
+
+        // Update node job count
+        const node = await storage.getComputeNode(activeAttempt.nodeId);
+        if (node) {
+          await storage.updateComputeNodeHeartbeat(activeAttempt.nodeId, Math.max(0, node.jobsInProgress - 1));
+        }
       }
     }
 
@@ -424,7 +427,6 @@ export class ComputeService {
     }
 
     // Stage 2: Workload-specific verification
-    // In V1, this is a placeholder — real hidden eval requires the Python verifier
     const semanticResult = await this.verifyWorkloadSpecific(job, attempt);
     await storage.createComputeVerification({
       jobId,
@@ -451,34 +453,30 @@ export class ComputeService {
   ): Promise<{ pass: boolean; score: number; details: Record<string, unknown> }> {
     const checks: Record<string, boolean> = {};
 
-    // Check output artifact exists
     checks.hasOutputCid = !!attempt.outputCid;
     checks.hasOutputSha256 = !!attempt.outputSha256;
 
-    // Check manifest hash matches (job integrity)
-    const manifest = JSON.parse(job.manifestJson) as JobManifest;
     const recomputedHash = createHash("sha256").update(job.manifestJson).digest("hex");
     checks.manifestIntegrity = recomputedHash === job.manifestSha256;
 
-    // Check metrics and result are valid JSON
     if (attempt.metricsJson) {
       try { JSON.parse(attempt.metricsJson); checks.validMetrics = true; }
       catch { checks.validMetrics = false; }
     } else {
-      checks.validMetrics = true; // optional
+      checks.validMetrics = true;
     }
 
     if (attempt.resultJson) {
       try { JSON.parse(attempt.resultJson); checks.validResult = true; }
       catch { checks.validResult = false; }
     } else {
-      checks.validResult = true; // optional
+      checks.validResult = true;
     }
 
-    // Check required outputs from manifest
+    const manifest = JSON.parse(job.manifestJson) as JobManifest;
     if (manifest.outputs?.required) {
       checks.hasRequiredOutputs = manifest.outputs.required.length > 0
-        ? !!attempt.outputCid // at minimum we need the primary artifact
+        ? !!attempt.outputCid
         : true;
     }
 
@@ -492,14 +490,11 @@ export class ComputeService {
     job: ComputeJob,
     attempt: ComputeJobAttempt
   ): Promise<{ pass: boolean; score: number; details: Record<string, unknown> }> {
-    // V1: basic checks per workload type.
-    // Full hidden eval requires a Python verifier service in V2.
     const type = job.workloadType as WorkloadType;
 
     switch (type) {
       case "eval_sweep":
       case "benchmark_run": {
-        // For eval/benchmark, just verify result JSON has expected shape
         if (!attempt.resultJson) return { pass: false, score: 0, details: { error: "Missing result JSON" } };
         try {
           const result = JSON.parse(attempt.resultJson);
@@ -510,13 +505,11 @@ export class ComputeService {
         }
       }
       case "weakness_targeted_generation": {
-        // Verify output contains training pairs
         if (!attempt.outputCid) return { pass: false, score: 0, details: { error: "Missing output CID" } };
         return { pass: true, score: 0.7, details: { note: "Full quality check deferred to coordinator" } };
       }
       case "domain_lora_train":
       case "adapter_validation": {
-        // Verify adapter artifact exists and metrics contain loss
         if (!attempt.outputCid) return { pass: false, score: 0, details: { error: "Missing adapter CID" } };
         let hasLoss = false;
         if (attempt.metricsJson) {
@@ -547,7 +540,6 @@ export class ComputeService {
     await storage.updateComputeNodeStats(attempt.nodeId, true);
     const node = await storage.getComputeNode(attempt.nodeId);
     if (node) {
-      // Increase reputation (capped at 100)
       const newRep = Math.min(100, node.reputationScore + 2);
       await storage.updateComputeNode(attempt.nodeId, {
         reputationScore: newRep,
@@ -555,7 +547,7 @@ export class ComputeService {
       });
     }
 
-    // Create three-stage payouts
+    // Three-stage payouts
     const budget = parseFloat(job.budgetHbd);
     const validityFee = (budget * 0.3).toFixed(3);
     const completionFee = (budget * 0.4).toFixed(3);
@@ -589,7 +581,6 @@ export class ComputeService {
       finishedAt: new Date(),
     });
 
-    // Decrease reputation
     const node = await storage.getComputeNode(attempt.nodeId);
     if (node) {
       const newRep = Math.max(0, node.reputationScore - 5);
@@ -601,7 +592,6 @@ export class ComputeService {
 
     await storage.updateComputeNodeStats(attempt.nodeId, false);
 
-    // Re-queue job if attempts remain
     if (job.attemptCount < job.maxAttempts) {
       await storage.updateComputeJobState(job.id, "queued");
       logCompute.info({ jobId: job.id, reason }, "Attempt rejected, job re-queued");
@@ -612,7 +602,7 @@ export class ComputeService {
   }
 
   // ============================================================
-  // Lease Sweeper — auto-expire stale leases
+  // Lease Sweeper
   // ============================================================
 
   private async sweepExpiredLeases(): Promise<void> {
@@ -633,7 +623,6 @@ export class ComputeService {
           });
         }
 
-        // Re-queue job
         const job = await storage.getComputeJob(attempt.jobId);
         if (job && job.attemptCount < job.maxAttempts) {
           await storage.updateComputeJobState(attempt.jobId, "queued");
@@ -655,8 +644,7 @@ export class ComputeService {
     if (nodes.length === 0) {
       return { estimatedHbd: "0", availableNodes: 0 };
     }
-    // Median price of available nodes
-    const prices = nodes.map(n => parseFloat(n.pricePerHourHbd)).sort((a, b) => a - b);
+    const prices = nodes.map((n: ComputeNode) => parseFloat(n.pricePerHourHbd)).sort((a: number, b: number) => a - b);
     const median = prices[Math.floor(prices.length / 2)];
     return {
       estimatedHbd: median.toFixed(3),
@@ -665,15 +653,14 @@ export class ComputeService {
   }
 
   // ============================================================
-  // Settle Payouts (trigger treasury transfer for pending payouts)
+  // Settle Payouts
   // ============================================================
 
   async settlePayouts(jobId: string): Promise<ComputePayout[]> {
     const payouts = await storage.getComputePayoutsByJob(jobId);
-    const pending = payouts.filter(p => p.status === "pending");
+    const pending = payouts.filter((p: ComputePayout) => p.status === "pending");
 
     for (const payout of pending) {
-      // In V1, mark as queued. Treasury integration wires actual HBD transfer.
       await storage.updateComputePayoutStatus(payout.id, "queued");
     }
 

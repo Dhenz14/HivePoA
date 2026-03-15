@@ -469,7 +469,8 @@ export interface IStorage {
 
   // Phase 10: GPU Compute Marketplace — Nodes
   getComputeNode(id: string): Promise<ComputeNode | undefined>;
-  getComputeNodeByUsername(username: string): Promise<ComputeNode | undefined>;
+  getComputeNodeByInstanceId(instanceId: string): Promise<ComputeNode | undefined>;
+  getComputeNodesByUsername(username: string): Promise<ComputeNode[]>;
   getAllComputeNodes(): Promise<ComputeNode[]>;
   getAvailableComputeNodes(workloadType?: string, minVramGb?: number): Promise<ComputeNode[]>;
   createComputeNode(node: InsertComputeNode): Promise<ComputeNode>;
@@ -483,6 +484,7 @@ export interface IStorage {
   getQueuedComputeJobs(workloadType?: string): Promise<ComputeJob[]>;
   createComputeJob(job: InsertComputeJob): Promise<ComputeJob>;
   updateComputeJobState(id: string, state: string, extra?: Partial<ComputeJob>): Promise<void>;
+  claimComputeJobAtomic(nodeId: string, allowedTypes: string[], minVramGb: number, cachedModelsList: string[], leaseToken: string): Promise<{ job: ComputeJob; attempt: ComputeJobAttempt } | null>;
   getExpiredComputeLeases(): Promise<ComputeJobAttempt[]>;
 
   // Phase 10: GPU Compute Marketplace — Attempts
@@ -2381,9 +2383,15 @@ export class DatabaseStorage implements IStorage {
     return node || undefined;
   }
 
-  async getComputeNodeByUsername(username: string): Promise<ComputeNode | undefined> {
-    const [node] = await db.select().from(computeNodes).where(eq(computeNodes.hiveUsername, username));
+  async getComputeNodeByInstanceId(instanceId: string): Promise<ComputeNode | undefined> {
+    const [node] = await db.select().from(computeNodes).where(eq(computeNodes.nodeInstanceId, instanceId));
     return node || undefined;
+  }
+
+  async getComputeNodesByUsername(username: string): Promise<ComputeNode[]> {
+    return db.select().from(computeNodes)
+      .where(eq(computeNodes.hiveUsername, username))
+      .orderBy(desc(computeNodes.lastHeartbeatAt));
   }
 
   async getAllComputeNodes(): Promise<ComputeNode[]> {
@@ -2466,6 +2474,72 @@ export class DatabaseStorage implements IStorage {
 
   async updateComputeJobState(id: string, state: string, extra?: Partial<ComputeJob>): Promise<void> {
     await db.update(computeJobs).set({ state, ...extra }).where(eq(computeJobs.id, id));
+  }
+
+  /**
+   * Atomically claim the best eligible job for a node.
+   * Uses SELECT ... FOR UPDATE SKIP LOCKED to prevent race conditions.
+   * Ranks jobs by: cache match (desc) → priority (desc) → created_at (asc).
+   */
+  async claimComputeJobAtomic(
+    nodeId: string,
+    allowedTypes: string[],
+    minVramGb: number,
+    cachedModelsList: string[],
+    leaseToken: string,
+  ): Promise<{ job: ComputeJob; attempt: ComputeJobAttempt } | null> {
+    // Build a raw SQL query with FOR UPDATE SKIP LOCKED
+    // This atomically selects and locks one eligible job row
+    const typePlaceholders = allowedTypes.map(t => `'${t.replace(/'/g, "")}'`).join(",");
+    const now = new Date();
+
+    // Cache-aware scoring: jobs whose requiredModels are in cachedModelsList get priority
+    // We use a simple boolean score: 1 if all required models cached, 0 otherwise
+    const cacheCheck = cachedModelsList.length > 0
+      ? cachedModelsList.map(m => `'${m.replace(/'/g, "")}'`).join(",")
+      : "''";
+
+    const result = await db.execute(sql`
+      WITH eligible AS (
+        SELECT id,
+          CASE
+            WHEN required_models = '' OR required_models IS NULL THEN 1
+            WHEN required_models = ANY(ARRAY[${sql.raw(cacheCheck)}]) THEN 1
+            ELSE 0
+          END AS cache_score
+        FROM compute_jobs
+        WHERE state = 'queued'
+          AND workload_type IN (${sql.raw(typePlaceholders)})
+          AND min_vram_gb <= ${minVramGb}
+          AND attempt_count < max_attempts
+          AND (deadline_at IS NULL OR deadline_at > ${now})
+        ORDER BY cache_score DESC, priority DESC, created_at ASC
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+      )
+      UPDATE compute_jobs
+      SET state = 'leased', attempt_count = attempt_count + 1
+      FROM eligible
+      WHERE compute_jobs.id = eligible.id
+      RETURNING compute_jobs.*
+    `);
+
+    if (!result.rows || result.rows.length === 0) return null;
+
+    const claimedJob = result.rows[0] as unknown as ComputeJob;
+
+    // Create the attempt in the same logical operation
+    const attempt = await this.createComputeJobAttempt({
+      jobId: claimedJob.id,
+      nodeId,
+      leaseToken,
+      state: "leased",
+      progressPct: 0,
+      startedAt: now,
+      heartbeatAt: now,
+    });
+
+    return { job: claimedJob, attempt };
   }
 
   async getExpiredComputeLeases(): Promise<ComputeJobAttempt[]> {
