@@ -28,6 +28,24 @@ export interface HiveTransaction {
   timestamp: Date;
 }
 
+/**
+ * Transaction lifecycle statuses from transaction_status_api.find_transaction.
+ * See: https://developers.hive.io/tutorials-recipes/understanding-transaction-status.html
+ */
+export type TxStatus =
+  | "unknown"                  // Not seen by this node
+  | "within_mempool"           // In mempool, not yet in a block
+  | "within_reversible_block"  // In a block, but not yet irreversible
+  | "within_irreversible_block" // Confirmed irreversible — safe
+  | "expired_reversible"       // Expired from a reversible block (fork)
+  | "expired_irreversible"     // Expired past irreversibility — tx is dead
+  | "too_old";                 // Node has no record (too far back)
+
+export interface TxStatusResult {
+  status: TxStatus;
+  blockNum?: number;
+}
+
 export class HiveClient {
   private client: Client;
   private config: HiveConfig;
@@ -244,6 +262,132 @@ export class HiveClient {
     const props = await this.client.database.getDynamicGlobalProperties();
     return props.head_block_id;
   }
+
+  /**
+   * Query the lifecycle status of a transaction by its ID.
+   * Uses transaction_status_api.find_transaction (available on most public nodes).
+   */
+  async findTransaction(trxId: string): Promise<TxStatusResult> {
+    try {
+      const result = await this.client.call("transaction_status_api", "find_transaction", {
+        transaction_id: trxId,
+      });
+      return {
+        status: result.status as TxStatus,
+        blockNum: result.block_num || undefined,
+      };
+    } catch (err) {
+      logHive.warn({ err, trxId }, "find_transaction call failed — node may not support transaction_status_api");
+      return { status: "unknown" };
+    }
+  }
+
+  /**
+   * Reconcile a broadcast whose response was ambiguous (timeout / network error).
+   *
+   * Polls transaction_status_api up to `maxAttempts` times (default 10, ~30s total)
+   * and classifies the outcome as:
+   *   - "confirmed"  → within_irreversible_block
+   *   - "included"   → within_reversible_block (included but not yet irreversible)
+   *   - "pending"    → within_mempool (still propagating)
+   *   - "expired"    → expired_reversible | expired_irreversible (tx is dead, safe to resend)
+   *   - "unknown"    → could not determine status after all attempts
+   *
+   * Callers should only resend when outcome is "expired" or "unknown" after exhausting retries.
+   */
+  async confirmTransaction(
+    trxId: string,
+    opts: { maxAttempts?: number; intervalMs?: number } = {},
+  ): Promise<{ outcome: "confirmed" | "included" | "pending" | "expired" | "unknown"; blockNum?: number }> {
+    const maxAttempts = opts.maxAttempts ?? 10;
+    const intervalMs = opts.intervalMs ?? 3000;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const { status, blockNum } = await this.findTransaction(trxId);
+
+      switch (status) {
+        case "within_irreversible_block":
+          logHive.info({ trxId, blockNum, attempt }, "Transaction confirmed irreversible");
+          return { outcome: "confirmed", blockNum };
+
+        case "within_reversible_block":
+          logHive.info({ trxId, blockNum, attempt }, "Transaction included in reversible block");
+          // Keep polling — we want irreversibility for certainty
+          if (attempt === maxAttempts) return { outcome: "included", blockNum };
+          break;
+
+        case "within_mempool":
+          logHive.debug({ trxId, attempt }, "Transaction in mempool, waiting...");
+          if (attempt === maxAttempts) return { outcome: "pending" };
+          break;
+
+        case "expired_reversible":
+        case "expired_irreversible":
+          logHive.warn({ trxId, status, attempt }, "Transaction expired — safe to resend");
+          return { outcome: "expired" };
+
+        case "too_old":
+          // Node has no record — fall back to condenser_api lookup
+          try {
+            const tx = await this.client.call("condenser_api", "get_transaction", [trxId]);
+            if (tx && tx.block_num) {
+              logHive.info({ trxId, blockNum: tx.block_num }, "Transaction found via condenser fallback");
+              return { outcome: "confirmed", blockNum: tx.block_num };
+            }
+          } catch {
+            // condenser fallback also failed
+          }
+          logHive.warn({ trxId, attempt }, "Transaction too old and not found via condenser");
+          return { outcome: "unknown" };
+
+        case "unknown":
+        default:
+          if (attempt === maxAttempts) {
+            logHive.warn({ trxId }, "Transaction status unknown after all attempts");
+            return { outcome: "unknown" };
+          }
+          break;
+      }
+
+      // Wait before next poll
+      await new Promise(resolve => setTimeout(resolve, intervalMs));
+    }
+
+    return { outcome: "unknown" };
+  }
+
+  /**
+   * Broadcast a transfer with structured logging and trx_id capture.
+   * Wraps the base transfer() — callers that need reconciliation on ambiguous
+   * outcomes should catch errors and call confirmTransaction(trxId).
+   */
+  async transferWithReconciliation(request: HBDTransferRequest): Promise<HiveTransaction> {
+    logHive.info({ to: request.to, amount: request.amount, memo: request.memo }, "Broadcasting HBD transfer");
+    try {
+      const tx = await this.transfer(request);
+      logHive.info({ trxId: tx.id, blockNum: tx.blockNumber, to: request.to, amount: request.amount }, "Transfer broadcast accepted");
+      return tx;
+    } catch (err: any) {
+      // Ambiguous outcome — the tx may have landed even though we got an error
+      logHive.error({ err, to: request.to, amount: request.amount }, "Transfer broadcast error — outcome ambiguous, manual reconciliation needed");
+      throw err;
+    }
+  }
+
+  /**
+   * Broadcast a custom_json with structured logging and trx_id capture.
+   */
+  async broadcastCustomJsonWithReconciliation(request: CustomJsonRequest): Promise<HiveTransaction> {
+    logHive.info({ customJsonId: request.id }, "Broadcasting custom_json");
+    try {
+      const tx = await this.broadcastCustomJson(request);
+      logHive.info({ trxId: tx.id, blockNum: tx.blockNumber, customJsonId: request.id }, "custom_json broadcast accepted");
+      return tx;
+    } catch (err: any) {
+      logHive.error({ err, customJsonId: request.id }, "custom_json broadcast error — outcome ambiguous");
+      throw err;
+    }
+  }
 }
 
 export class MockHiveClient {
@@ -365,6 +509,22 @@ export class MockHiveClient {
       .createHash("sha256")
       .update(`mock-block-${Math.floor(Date.now() / 3000)}`)
       .digest("hex");
+  }
+
+  async findTransaction(trxId: string): Promise<TxStatusResult> {
+    return { status: "within_irreversible_block", blockNum: Math.floor(Date.now() / 3000) };
+  }
+
+  async confirmTransaction(trxId: string): Promise<{ outcome: "confirmed" | "included" | "pending" | "expired" | "unknown"; blockNum?: number }> {
+    return { outcome: "confirmed", blockNum: Math.floor(Date.now() / 3000) };
+  }
+
+  async transferWithReconciliation(request: HBDTransferRequest): Promise<HiveTransaction> {
+    return this.transfer(request);
+  }
+
+  async broadcastCustomJsonWithReconciliation(request: CustomJsonRequest): Promise<HiveTransaction> {
+    return this.broadcastCustomJson(request);
   }
 
   setBalance(username: string, balance: string): void {
