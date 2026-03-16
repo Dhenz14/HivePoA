@@ -1,6 +1,6 @@
 # GPU Sharing Plan — HivePoA Compute Marketplace
 
-## Status: PLAN v2 (revised after systems review)
+## Status: PLAN v3 (protocol-hardened after second review)
 
 **Goal:** Anyone with a GPU can contribute compute to the Hive-AI training pipeline and earn HBD. Bittensor-style economics, Hive-native — no separate token, no validator subnet, just HBD via the existing HivePoA treasury/contract system.
 
@@ -76,18 +76,29 @@
 ```
 
 **2. Artifact storage contract:**
+
 - All outputs > 1 KB go to IPFS (CID is the canonical reference)
 - Result JSON contains: `output_cid` (IPFS CID) + `output_sha256` + `output_size_bytes`
 - Size limits per workload type:
   - `data_generation`: max 50 MB (JSONL batch)
   - `domain_lora_train`: max 500 MB (adapter tar.gz)
   - `eval_sweep` / `benchmark_run`: max 5 MB (result JSON)
-- Retention: pinned for 30 days minimum, then GC unless referenced by active adapter
+
+**IPFS availability policy:**
+
+- **Pinning responsibility:** Worker pins artifact to its local IPFS node and reports CID. Coordinator re-pins to its own node within the verification window. Verification cannot proceed until coordinator has retrieved the artifact.
+- **Retrieval timeout:** Verifier has 5 minutes to fetch artifact by CID. If unretrievable, job is marked `verification_pending` (not failed). Coordinator retries 3x over 15 minutes. If still unavailable, job fails with `artifact_unavailable`.
+- **Minimum replication:** Artifact must be retrievable from at least the worker's IPFS node during the verification window. After coordinator re-pins, 2 copies exist (worker + coordinator).
+- **Retention:** Pinned for 30 days minimum. GC after 30 days unless referenced by an active adapter in the baseline registry.
 
 **3. Replay prevention:**
+
 - Every manifest includes a `job_nonce` (random, assigned by server at creation)
 - Worker must echo `job_nonce` in result provenance
-- Server rejects results where `output_sha256` was already submitted for a different `job_id`
+- **Scoped dedup rule:** `output_sha256` dedup is enforced per `(workload_type, artifact_class)`:
+  - `data_generation` + `domain_lora_train`: reject cross-job identical artifacts (these should always be unique)
+  - `eval_sweep` + `benchmark_run` + `adapter_validation`: allow identical results (deterministic jobs can honestly produce byte-identical outputs)
+- The `job_nonce` echo is the primary anti-replay mechanism. Global hash dedup is a secondary defense, not a blanket ban.
 
 **4. Capability matching (expanded beyond just VRAM):**
 ```json
@@ -179,13 +190,28 @@
 
 ---
 
+### Phase 1.75 — Micro-Training Canary
+
+**What:** Before full paid training, workers must pass a capped micro-training canary: 50-100 steps on a known shard. This catches OOMs, disk exhaustion, checkpoint corruption, and Unsloth/QLoRA compatibility issues that only appear under training load, not validation load.
+
+**Flow:**
+1. Coordinator creates `domain_lora_train` job with `max_steps: 100` and minimal budget
+2. Worker trains 100 steps, submits adapter
+3. Verifier loads adapter, runs quick eval
+4. If PASS: worker reputation upgraded to "training-capable"
+5. If FAIL: worker remains at adapter_validation tier
+
+**Why not skip this:** A worker that can load an adapter and run inference (Phase 1.5) has proved inference compatibility, not sustained training stability. OOMs happen under backward pass, not forward pass.
+
+---
+
 ### Phase 2 — Domain LoRA Training Jobs
 
 **What:** Workers train domain-specific LoRA adapters and upload adapter weights.
 
 **Workload type:** `domain_lora_train`
 
-**Gating:** Workers must have reputation ≥ 5 (passed 5+ eval/validation jobs) to claim training jobs.
+**Gating:** Workers must have reputation ≥ 5 (passed 5+ eval/validation jobs) AND passed a micro-training canary to claim full training jobs.
 
 **Runtime pinning:** Manifest specifies exact runtime requirements:
 ```json
@@ -239,10 +265,39 @@ new_A = diag(sqrt(S[:rank])) @ Vh[:rank, :]
 **Phase 4 production:** Move to FedEx-LoRA residual-carry scheme (pushes residual into frozen base weights instead of discarding). Reference: arXiv 2410.09432.
 
 **Admission control (do NOT merge every passing adapter):**
+
 - Must pass hidden eval
 - Must be non-dominated on at least one target domain
 - Must not regress core baseline beyond threshold (3% on any domain)
 - Merge set is curated, not mechanical
+
+**Merge weighting:** Weight by **normalized improvement over baseline on the target domain**, clipped to [0.1, 2.0]. Do NOT use raw verifier score — it overweights adapters that are good on one hidden slice but broadly mediocre.
+
+**Baseline registry (immutable):**
+
+Every merged adapter version is recorded with:
+```json
+{
+  "version": "v6",
+  "parent_version": "v5",
+  "merged_at": "2026-04-01T12:00:00Z",
+  "contributing_job_ids": ["job-1", "job-2", "job-3"],
+  "contributing_workers": ["worker-a", "worker-b"],
+  "dataset_cids": ["QmAbc...", "QmDef..."],
+  "merge_algorithm": "dense_delta_svd",
+  "merge_rank": 32,
+  "discarded_residual_norm": 0.023,
+  "eval_scores": {"python": 0.94, "rust": 0.96, "go": 0.93, ...},
+  "overall_score": 0.945,
+  "baseline_improvement": 0.012,
+  "adapter_cid": "QmMerged...",
+  "adapter_sha256": "sha256:..."
+}
+```
+
+This enables regression forensics: when a merged round regresses, you can trace exactly which datasets, workers, and verifier versions contributed.
+
+**Round manifest:** Each aggregation round produces a round manifest that lists all inputs, all admission decisions (accepted/rejected + reason), merge weights, and output adapter reference. This is the audit trail for the merge.
 
 ---
 
@@ -292,18 +347,27 @@ This is **not cloud-competitive pricing**. It is **surplus-idle-GPU participatio
 - The appeal is passive income from hardware already owned, not competing with RunPod
 - Compare to Folding@Home or early Bitcoin mining: under-market compute with non-monetary motivation (community, early participation, reputation)
 
-### Pricing Formula (v1)
+### Pricing Formula (v1 — fixed posted prices)
+
+Use fixed posted prices per workload type, not a formula. The market is too thin for dynamic pricing to be meaningful in v1.
 
 ```
-payout = base_rate_per_minute × expected_minutes × vram_tier_multiplier
+payout = posted_price[workload_type]
 
-where:
-  base_rate_per_minute = 0.002 HBD (floor)
-  vram_tier_multiplier = {8GB: 0.5, 16GB: 1.0, 24GB: 1.5, 48GB: 2.0}
-  expected_minutes = from manifest max_wall_clock_seconds / 60
+posted_price = {
+  eval_sweep:          0.020 HBD   (fixed)
+  benchmark_run:       0.020 HBD   (fixed)
+  data_generation:     0.050 HBD   (fixed, per 50-pair batch)
+  adapter_validation:  0.020 HBD   (fixed)
+  domain_lora_train:   0.300 HBD   (fixed, 16GB tier)
+}
 ```
 
-Example: 60-minute training job on 16GB GPU = 0.002 × 60 × 1.0 = **0.120 HBD**
+These are **below cloud market rate** by design (surplus-idle-GPU model). If the market proves too thin at these prices, raise them — do not add complexity with dynamic pricing until there are 10+ active workers.
+
+Example: Training job on 16GB GPU = **0.300 HBD** (posted price, not computed).
+
+> **v1 design choice:** Posted prices. No formula. Adjust by manual repricing when market feedback warrants it.
 
 ---
 
@@ -331,6 +395,20 @@ UNTRUSTED (workers): Data gen, training, eval execution — all verified before 
 | Resource fraud via slow heartbeating | Progress semantics per workload type (e.g., "step 500/2000") |
 | Backdoor triggers in training data | Corpus-level anomaly scans + canary probes in merged adapter eval |
 
+### Verification Throughput Policy
+
+The verifier is an intentional bottleneck. This is acceptable in v1.
+
+| Workload | Verification | Rationale |
+|----------|-------------|-----------|
+| `domain_lora_train` | **Every submission** — full hidden eval | High value, low volume, must catch bad adapters before merge |
+| `adapter_validation` | **Every submission** — full hidden eval | Gate for training access, must be reliable |
+| `data_generation` | **Every submission** — layered structural + corpus + 10% semantic | Medium value, need whole-batch filters |
+| `eval_sweep` | **Every submission for reputation < 10**, probabilistic audit (30%) after | Low value, high volume at scale |
+| `benchmark_run` | Same as eval_sweep | Same economics |
+
+Probabilistic audit is acceptable ONLY for low-value workloads AFTER workers have proven reputation. Never for training or data generation — those produce artifacts that enter the training pipeline.
+
 ### What We Deliberately Do Not Prevent
 
 - Workers seeing training data (open public good)
@@ -356,20 +434,31 @@ UNTRUSTED (workers): Data gen, training, eval execution — all verified before 
 5. Tests + canary
 
 ### Phase 1.5: adapter_validation (Week 2-3)
+
 1. `hiveai/compute/worker.py` — `_execute_adapter_validation()`
 2. `hiveai/compute/verifier.py` — `AdapterValidationVerifier`
-3. Reputation gate: workers must pass this to unlock training jobs
+3. Reputation gate: workers must pass this to unlock micro-training canary
 
-### Phase 2: domain_lora_train (Week 3)
+### Phase 1.75: micro-training canary (Week 3)
+
+1. Coordinator creates 100-step training job on known shard
+2. Worker trains, submits adapter
+3. Verifier loads + evals — catches OOM, disk, checkpoint issues
+4. PASS → worker reputation upgraded to "training-capable"
+
+### Phase 2: domain_lora_train (Week 3-4)
+
 1. `scripts/train_domain_worker.py` — wraps train_v5.py, outputs adapter + provenance
 2. `hiveai/compute/worker.py` — `_execute_domain_lora_train()`
 3. `hiveai/compute/verifier.py` — `DomainLoraTrainVerifier` (full hidden eval, not sampled)
 4. Tests + canary with real adapter training
 
-### Phase 3: Aggregation (Week 4)
+### Phase 3: Aggregation (Week 4-5)
+
 1. `hiveai/compute/aggregator.py` — dense-delta + SVD with residual norm monitoring
-2. `scripts/merge_adapters.py` — CLI with admission control
-3. Integration test: 2 training jobs → curated merge → evaluate
+2. `scripts/merge_adapters.py` — CLI with admission control (domain-improvement weighted, not raw score)
+3. Baseline registry + round manifest for regression forensics
+4. Integration test: 2 training jobs → curated merge → evaluate
 
 ### Phase 4: Federated loop (deferred)
 - Not until 3+ reliable workers, 50k+ pairs, stable artifact layer
@@ -416,12 +505,19 @@ UNTRUSTED (workers): Data gen, training, eval execution — all verified before 
 
 ---
 
-## Review Questions for GPT (Updated)
+## Review Questions for GPT (v3)
 
-1. Is the Phase 0 artifact/provenance contract sufficient, or does it need a formal specification?
-2. Is the layered verification for data_generation (structural + corpus + sampled semantic) the right balance?
-3. Is the reputation gating (eval → adapter_validation → training) the right progression?
-4. Should the pricing formula be dynamic (market-based) or fixed (posted price) for v1?
-5. Is FedEx-LoRA the right target for Phase 4, or is there a simpler residual-carry scheme?
-6. What corpus-level anomaly scans are practical for detecting training data poisoning?
-7. Should the coordinator run verification on every submission or probabilistically audit?
+Previous review resolved:
+- Phase 0 is now a hard prerequisite with formal schema (resolved Q1)
+- Pricing is now fixed posted prices, not formula-based (resolved Q4)
+- Verification policy is explicit: every high-value, probabilistic only for low-value + proven workers (resolved Q7)
+
+Open questions:
+
+1. **Is the provenance schema machine-validatable as written?** Should we publish a JSON Schema / Pydantic model as a versioned contract file, or is the doc-level specification enough for implementors?
+2. **Is the reputation ladder (eval → adapter_validation → micro-training canary → full training) too many gates?** Could we collapse adapter_validation and micro-training into one step?
+3. **Is FedEx-LoRA the right residual-carry scheme for Phase 4?** Are there simpler alternatives that preserve residual without modifying frozen weights?
+4. **What corpus-level anomaly scans are practical for detecting training data poisoning?** Specifically: n-gram trigger detection, embedding drift measurement, and canary probe design.
+5. **Is the IPFS availability policy (5-min timeout, 3 retries, 2-copy minimum) too aggressive or too lenient?** What happens when workers are behind NAT without port forwarding?
+6. **Should the baseline registry be on-chain (Hive custom_json) or off-chain (coordinator DB)?** On-chain is immutable but adds cost. Off-chain is free but requires trust in the coordinator.
+7. **Is domain-improvement weighting for merge the right signal?** Or should we also factor in diversity (adapters that improve different domains weighted higher than redundant ones)?
