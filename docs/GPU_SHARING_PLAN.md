@@ -90,6 +90,9 @@
 - **Retrieval timeout:** Verifier has 5 minutes to fetch artifact by CID. If unretrievable, job is marked `verification_pending` (not failed). Coordinator retries 3x over 15 minutes. If still unavailable, job fails with `artifact_unavailable`.
 - **Minimum replication:** Artifact must be retrievable from at least the worker's IPFS node during the verification window. After coordinator re-pins, 2 copies exist (worker + coordinator).
 - **Retention:** Pinned for 30 days minimum. GC after 30 days unless referenced by an active adapter in the baseline registry.
+- **Onboarding eligibility:** Workers are only eligible for artifact-producing workloads (`data_generation`, `domain_lora_train`) if the coordinator successfully fetches a test artifact from the worker during registration. Workers behind NAT without port forwarding must use a coordinator-managed ingress path (upload via HTTP to coordinator's IPFS node) instead of relying on direct IPFS serving.
+
+> **v1 scope note:** The IPFS availability policy is a verification-window guarantee, not a durability guarantee. This is acceptable for v1 — the coordinator re-pins all verified artifacts.
 
 **3. Replay prevention:**
 
@@ -250,11 +253,20 @@
 
 **Merge algorithm:**
 
+> **Phase 3 is an experiment, not a trust anchor.** The merge algorithm is intentionally provisional. All publish decisions are subordinate to full eval and rollback capability. Dense-delta + SVD is the prototype; it will be replaced when Phase 4's residual-carry method is chosen.
+
 **Phase 3 prototype:** Dense-delta + truncated SVD (simple, debuggable).
 ```python
 # Reconstruct dense deltas, weighted average, compress back to rank
 deltas = [adapter.B @ adapter.A for adapter in adapters]
-merged_delta = weighted_average(deltas, verification_scores)
+
+# Weight by normalized improvement over baseline on target domain, NOT raw verifier score
+# Raw score overweights adapters good on one hidden slice but broadly mediocre
+improvements = [adapter.domain_score - baseline.domain_score for adapter in adapters]
+weights = [clip(imp / max(improvements), 0.1, 2.0) for imp in improvements]
+weights = normalize(weights)
+
+merged_delta = sum(w * d for w, d in zip(weights, deltas))
 U, S, Vh = svd(merged_delta)
 new_B = U[:, :rank] @ diag(sqrt(S[:rank]))
 new_A = diag(sqrt(S[:rank])) @ Vh[:rank, :]
@@ -298,6 +310,8 @@ Every merged adapter version is recorded with:
 This enables regression forensics: when a merged round regresses, you can trace exactly which datasets, workers, and verifier versions contributed.
 
 **Round manifest:** Each aggregation round produces a round manifest that lists all inputs, all admission decisions (accepted/rejected + reason), merge weights, and output adapter reference. This is the audit trail for the merge.
+
+**Registry storage (hybrid):** Keep the authoritative baseline registry off-chain in the coordinator DB for speed and queryability. Periodically anchor immutable snapshots to Hive via `custom_json` containing the registry root hash. This gives cheap operations plus an auditable timestamped anchor without forcing the full registry on-chain.
 
 ---
 
@@ -485,7 +499,7 @@ Probabilistic audit is acceptable ONLY for low-value workloads AFTER workers hav
 | File | Change |
 |------|--------|
 | `server/services/compute-service.ts` | `job_nonce` generation, echo validation, SHA-256 dedup, verification dispatch |
-| `server/routes.ts` | `job_nonce` in manifest, payout formula (duration × VRAM tier) |
+| `server/routes.ts` | `job_nonce` in manifest, posted-price payout lookup by workload type |
 
 ---
 
@@ -501,20 +515,20 @@ Probabilistic audit is acceptable ONLY for low-value workloads AFTER workers hav
 
 **Phase 3 complete when:** 2+ adapters merge into a better adapter than any individual, residual norm tracked.
 
-**Phase 4 complete when:** Automated multi-round loop with monotonic improvement, < 2 HBD per round.
+**Phase 4 complete when:** Automated multi-round loop with monotonic improvement. Cost target: < 2 HBD per prototype round (defined as 3-5 training jobs + verification overhead, NOT a universal ceiling).
 
 ---
 
 ## Review Questions for GPT (v3)
 
-Previous review resolved:
-- Phase 0 is now a hard prerequisite with formal schema (resolved Q1)
-- Pricing is now fixed posted prices, not formula-based (resolved Q4)
-- Verification policy is explicit: every high-value, probabilistic only for low-value + proven workers (resolved Q7)
+Previous review addressed:
+- Phase 0 is now a hard prerequisite with schema examples (Q1 partially addressed — see below)
+- Pricing is now fixed posted prices, not formula-based (Q4 resolved)
+- Verification policy is explicit: every high-value, probabilistic only for low-value + proven workers (Q7 resolved)
 
 Open questions:
 
-1. **Is the provenance schema machine-validatable as written?** Should we publish a JSON Schema / Pydantic model as a versioned contract file, or is the doc-level specification enough for implementors?
+1. **The provenance schema needs a machine-validatable contract.** The doc shows JSON examples but does not publish a versioned JSON Schema or Pydantic model. Implementors on the TypeScript and Python sides will drift without a shared schema file. Should this be a `schemas/provenance_v2.json` file validated on both sides, or a Pydantic model in Python with TypeScript types generated from it?
 2. **Is the reputation ladder (eval → adapter_validation → micro-training canary → full training) too many gates?** Could we collapse adapter_validation and micro-training into one step?
 3. **Is FedEx-LoRA the right residual-carry scheme for Phase 4?** Are there simpler alternatives that preserve residual without modifying frozen weights?
 4. **What corpus-level anomaly scans are practical for detecting training data poisoning?** Specifically: n-gram trigger detection, embedding drift measurement, and canary probe design.
