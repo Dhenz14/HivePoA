@@ -225,7 +225,17 @@ async function runCycle(
   // ── Phase 4: Ledger Invariant Verification ──────────────────
   console.log(`\n${SEPARATOR}\n  Phase 4: Ledger Invariant Verification\n${SEPARATOR}`);
 
-  const verified = await client.verifyTransfer(transferTxId);
+  // verifyTransfer uses condenser_api.get_transaction which may lag behind
+  // irreversibility confirmation — retry up to 3 times with 2s gaps
+  let verified: Awaited<ReturnType<typeof client.verifyTransfer>> = null;
+  for (let vAttempt = 1; vAttempt <= 3; vAttempt++) {
+    verified = await client.verifyTransfer(transferTxId);
+    if (verified) break;
+    if (vAttempt < 3) {
+      log("VERIFY", `condenser lookup returned null, retrying (${vAttempt}/3)...`);
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  }
   const senderEqualsReceiver = verified?.from === username && verified?.to === username;
   const amountExact = verified?.amount === TRANSFER_AMOUNT;
   const memoMatches = verified?.memo === memo;
@@ -355,7 +365,7 @@ async function main() {
   evidence.completedAt = new Date().toISOString();
 
   // ── Save Evidence ───────────────────────────────────────────
-  const evidencePath = path.join(__dirname, "burn-in-evidence.json");
+  const evidencePath = path.resolve(process.cwd(), "scripts", "burn-in-evidence.json");
   fs.writeFileSync(evidencePath, JSON.stringify(evidence, null, 2));
   log("SAVE", `Evidence saved to ${evidencePath}`);
 

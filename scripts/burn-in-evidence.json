@@ -1,0 +1,463 @@
+{
+  "version": "v1",
+  "commitSha": "8acfac60c2325f43a7685a713ac03a001c999ac5",
+  "account": "dandandan123",
+  "nodeList": [
+    "https://api.hive.blog",
+    "https://api.openhive.network",
+    "https://anyx.io",
+    "https://hived.emre.sh"
+  ],
+  "totalCycles": 10,
+  "passedCycles": 10,
+  "failedCycles": 0,
+  "startedAt": "2026-03-16T05:20:36.046Z",
+  "completedAt": "2026-03-16T05:22:10.543Z",
+  "duplicateTransferCheck": {
+    "allTrxIds": [
+      "57279c1bf27d2e1b95c0fa1afdfba011cbc57992",
+      "93877c434c94d1a5cad0fa15cf5ade5b902e01d8",
+      "cfaf717e72742185c998c349b49e87395afe3165",
+      "27f91f2c3ab7fb66214b57b52a27009e50852de5",
+      "61fe8a009bfdb82d8e6dd2e077a487f22119d2f8",
+      "10ea12b7a0a0d45f4890ddbcc79395029dcc9450",
+      "2694f43515daba54246616cfffdbd96e351409f7",
+      "ffdc6f85539ce8413b445250a16a8dcacfda6289",
+      "8c83ce8cb3fac940a70ea6ce47cbdba986ef7b14",
+      "6ae4046637c6e8273fb02ecccd257c414533d83f"
+    ],
+    "hasDuplicates": false
+  },
+  "cycles": [
+    {
+      "cycle": 1,
+      "startedAt": "2026-03-16T05:20:36.047Z",
+      "result": "PASS",
+      "readSmoke": {
+        "account": "dandandan123",
+        "hbdBalance": "7.950 HBD",
+        "reputation": 25,
+        "topWitnesses": [
+          "gtg",
+          "ocd-witness",
+          "stoodkev",
+          "arcange",
+          "steempeak"
+        ],
+        "blockHash": "063d29a0c5955d534373402e90d37ff69722ec8d",
+        "blockchainTime": "2026-03-16T05:20:36.000Z"
+      },
+      "preBalance": "7.950 HBD",
+      "customJson": {
+        "trxId": "147e4140fb1eb9af129541ea7a36ab3b4a6c128e",
+        "outcome": "confirmed",
+        "confirmBlockNum": 104671649
+      },
+      "transfer": {
+        "trxId": "57279c1bf27d2e1b95c0fa1afdfba011cbc57992",
+        "outcome": "confirmed",
+        "confirmBlockNum": 104671649
+      },
+      "ledgerVerification": {
+        "verified": true,
+        "from": "dandandan123",
+        "to": "dandandan123",
+        "amount": "0.001 HBD",
+        "memo": "hivepoa-burnin-c1-1773638436885",
+        "senderEqualsReceiver": true,
+        "amountExact": true,
+        "memoMatches": true
+      },
+      "postBalance": "7.950 HBD",
+      "balanceDelta": "0.000 HBD",
+      "completedAt": "2026-03-16T05:20:40.667Z"
+    },
+    {
+      "cycle": 2,
+      "startedAt": "2026-03-16T05:20:45.682Z",
+      "result": "PASS",
+      "readSmoke": {
+        "account": "dandandan123",
+        "hbdBalance": "7.950 HBD",
+        "reputation": 25,
+        "topWitnesses": [
+          "gtg",
+          "ocd-witness",
+          "stoodkev",
+          "arcange",
+          "steempeak"
+        ],
+        "blockHash": "063d29a369c9c602a82782e32f0e679a58d462fb",
+        "blockchainTime": "2026-03-16T05:20:45.000Z"
+      },
+      "preBalance": "7.950 HBD",
+      "customJson": {
+        "trxId": "aa1a8cbd81ae3e342196800cd0b1018bb3d47faf",
+        "outcome": "confirmed",
+        "confirmBlockNum": 104671652
+      },
+      "transfer": {
+        "trxId": "93877c434c94d1a5cad0fa15cf5ade5b902e01d8",
+        "outcome": "confirmed",
+        "confirmBlockNum": 104671652
+      },
+      "ledgerVerification": {
+        "verified": true,
+        "from": "dandandan123",
+        "to": "dandandan123",
+        "amount": "0.001 HBD",
+        "memo": "hivepoa-burnin-c2-1773638446506",
+        "senderEqualsReceiver": true,
+        "amountExact": true,
+        "memoMatches": true
+      },
+      "postBalance": "7.950 HBD",
+      "balanceDelta": "0.000 HBD",
+      "completedAt": "2026-03-16T05:20:50.376Z"
+    },
+    {
+      "cycle": 3,
+      "startedAt": "2026-03-16T05:20:55.379Z",
+      "result": "PASS",
+      "readSmoke": {
+        "account": "dandandan123",
+        "hbdBalance": "7.950 HBD",
+        "reputation": 25,
+        "topWitnesses": [
+          "gtg",
+          "ocd-witness",
+          "stoodkev",
+          "arcange",
+          "steempeak"
+        ],
+        "blockHash": "063d29a6b22265f20f05e78f34171ab3241dde52",
+        "blockchainTime": "2026-03-16T05:20:54.000Z"
+      },
+      "preBalance": "7.950 HBD",
+      "customJson": {
+        "trxId": "620a4b2e9c44aabcfdb6faa12a0ec5d388c95b42",
+        "outcome": "confirmed",
+        "confirmBlockNum": 104671655
+      },
+      "transfer": {
+        "trxId": "cfaf717e72742185c998c349b49e87395afe3165",
+        "outcome": "confirmed",
+        "confirmBlockNum": 104671655
+      },
+      "ledgerVerification": {
+        "verified": true,
+        "from": "dandandan123",
+        "to": "dandandan123",
+        "amount": "0.001 HBD",
+        "memo": "hivepoa-burnin-c3-1773638456185",
+        "senderEqualsReceiver": true,
+        "amountExact": true,
+        "memoMatches": true
+      },
+      "postBalance": "7.950 HBD",
+      "balanceDelta": "0.000 HBD",
+      "completedAt": "2026-03-16T05:21:00.101Z"
+    },
+    {
+      "cycle": 4,
+      "startedAt": "2026-03-16T05:21:05.107Z",
+      "result": "PASS",
+      "readSmoke": {
+        "account": "dandandan123",
+        "hbdBalance": "7.950 HBD",
+        "reputation": 25,
+        "topWitnesses": [
+          "gtg",
+          "ocd-witness",
+          "stoodkev",
+          "arcange",
+          "steempeak"
+        ],
+        "blockHash": "063d29a924664f7d01b4e9d221b3969fb92f55d0",
+        "blockchainTime": "2026-03-16T05:21:03.000Z"
+      },
+      "preBalance": "7.950 HBD",
+      "customJson": {
+        "trxId": "3b401e21464018905bc81c29a39c9cec52eba729",
+        "outcome": "confirmed",
+        "confirmBlockNum": 104671659
+      },
+      "transfer": {
+        "trxId": "27f91f2c3ab7fb66214b57b52a27009e50852de5",
+        "outcome": "confirmed",
+        "confirmBlockNum": 104671659
+      },
+      "ledgerVerification": {
+        "verified": true,
+        "from": "dandandan123",
+        "to": "dandandan123",
+        "amount": "0.001 HBD",
+        "memo": "hivepoa-burnin-c4-1773638465897",
+        "senderEqualsReceiver": true,
+        "amountExact": true,
+        "memoMatches": true
+      },
+      "postBalance": "7.950 HBD",
+      "balanceDelta": "0.000 HBD",
+      "completedAt": "2026-03-16T05:21:09.695Z"
+    },
+    {
+      "cycle": 5,
+      "startedAt": "2026-03-16T05:21:14.707Z",
+      "result": "PASS",
+      "readSmoke": {
+        "account": "dandandan123",
+        "hbdBalance": "7.950 HBD",
+        "reputation": 25,
+        "topWitnesses": [
+          "gtg",
+          "ocd-witness",
+          "stoodkev",
+          "arcange",
+          "steempeak"
+        ],
+        "blockHash": "063d29acec8e323396fa3fcda2376e247e374d02",
+        "blockchainTime": "2026-03-16T05:21:12.000Z"
+      },
+      "preBalance": "7.950 HBD",
+      "customJson": {
+        "trxId": "c504363c4f7753850baddf8636107d7cc55af6d5",
+        "outcome": "confirmed",
+        "confirmBlockNum": 104671662
+      },
+      "transfer": {
+        "trxId": "61fe8a009bfdb82d8e6dd2e077a487f22119d2f8",
+        "outcome": "confirmed",
+        "confirmBlockNum": 104671662
+      },
+      "ledgerVerification": {
+        "verified": true,
+        "from": "dandandan123",
+        "to": "dandandan123",
+        "amount": "0.001 HBD",
+        "memo": "hivepoa-burnin-c5-1773638475489",
+        "senderEqualsReceiver": true,
+        "amountExact": true,
+        "memoMatches": true
+      },
+      "postBalance": "7.950 HBD",
+      "balanceDelta": "0.000 HBD",
+      "completedAt": "2026-03-16T05:21:19.388Z"
+    },
+    {
+      "cycle": 6,
+      "startedAt": "2026-03-16T05:21:24.397Z",
+      "result": "PASS",
+      "readSmoke": {
+        "account": "dandandan123",
+        "hbdBalance": "7.950 HBD",
+        "reputation": 25,
+        "topWitnesses": [
+          "gtg",
+          "ocd-witness",
+          "stoodkev",
+          "arcange",
+          "steempeak"
+        ],
+        "blockHash": "063d29b05de79b25af8c63f3178991603239b997",
+        "blockchainTime": "2026-03-16T05:21:24.000Z"
+      },
+      "preBalance": "7.950 HBD",
+      "customJson": {
+        "trxId": "36a0d375ef6aa9bbabcbda8f44325069f104de2e",
+        "outcome": "confirmed",
+        "confirmBlockNum": 104671665
+      },
+      "transfer": {
+        "trxId": "10ea12b7a0a0d45f4890ddbcc79395029dcc9450",
+        "outcome": "confirmed",
+        "confirmBlockNum": 104671665
+      },
+      "ledgerVerification": {
+        "verified": true,
+        "from": "dandandan123",
+        "to": "dandandan123",
+        "amount": "0.001 HBD",
+        "memo": "hivepoa-burnin-c6-1773638485182",
+        "senderEqualsReceiver": true,
+        "amountExact": true,
+        "memoMatches": true
+      },
+      "postBalance": "7.950 HBD",
+      "balanceDelta": "0.000 HBD",
+      "completedAt": "2026-03-16T05:21:29.136Z"
+    },
+    {
+      "cycle": 7,
+      "startedAt": "2026-03-16T05:21:34.139Z",
+      "result": "PASS",
+      "readSmoke": {
+        "account": "dandandan123",
+        "hbdBalance": "7.950 HBD",
+        "reputation": 25,
+        "topWitnesses": [
+          "gtg",
+          "ocd-witness",
+          "stoodkev",
+          "arcange",
+          "steempeak"
+        ],
+        "blockHash": "063d29b381aeee591e6604847a72325c42141c74",
+        "blockchainTime": "2026-03-16T05:21:33.000Z"
+      },
+      "preBalance": "7.950 HBD",
+      "customJson": {
+        "trxId": "5abbb9212e77aa1e8a73d550d5e01f23234ece19",
+        "outcome": "confirmed",
+        "confirmBlockNum": 104671668
+      },
+      "transfer": {
+        "trxId": "2694f43515daba54246616cfffdbd96e351409f7",
+        "outcome": "confirmed",
+        "confirmBlockNum": 104671668
+      },
+      "ledgerVerification": {
+        "verified": true,
+        "from": "dandandan123",
+        "to": "dandandan123",
+        "amount": "0.001 HBD",
+        "memo": "hivepoa-burnin-c7-1773638494926",
+        "senderEqualsReceiver": true,
+        "amountExact": true,
+        "memoMatches": true
+      },
+      "postBalance": "7.950 HBD",
+      "balanceDelta": "0.000 HBD",
+      "completedAt": "2026-03-16T05:21:38.690Z"
+    },
+    {
+      "cycle": 8,
+      "startedAt": "2026-03-16T05:21:43.701Z",
+      "result": "PASS",
+      "readSmoke": {
+        "account": "dandandan123",
+        "hbdBalance": "7.950 HBD",
+        "reputation": 25,
+        "topWitnesses": [
+          "gtg",
+          "ocd-witness",
+          "stoodkev",
+          "arcange",
+          "steempeak"
+        ],
+        "blockHash": "063d29b60297211377fec08c6fa9d4e5ff86e5dc",
+        "blockchainTime": "2026-03-16T05:21:42.000Z"
+      },
+      "preBalance": "7.950 HBD",
+      "customJson": {
+        "trxId": "7bcbb28e3fbdf043b32798c65e0342ddba18d551",
+        "outcome": "confirmed",
+        "confirmBlockNum": 104671672
+      },
+      "transfer": {
+        "trxId": "ffdc6f85539ce8413b445250a16a8dcacfda6289",
+        "outcome": "confirmed",
+        "confirmBlockNum": 104671672
+      },
+      "ledgerVerification": {
+        "verified": true,
+        "from": "dandandan123",
+        "to": "dandandan123",
+        "amount": "0.001 HBD",
+        "memo": "hivepoa-burnin-c8-1773638504500",
+        "senderEqualsReceiver": true,
+        "amountExact": true,
+        "memoMatches": true
+      },
+      "postBalance": "7.950 HBD",
+      "balanceDelta": "0.000 HBD",
+      "completedAt": "2026-03-16T05:21:51.360Z"
+    },
+    {
+      "cycle": 9,
+      "startedAt": "2026-03-16T05:21:56.373Z",
+      "result": "PASS",
+      "readSmoke": {
+        "account": "dandandan123",
+        "hbdBalance": "7.950 HBD",
+        "reputation": 25,
+        "topWitnesses": [
+          "gtg",
+          "ocd-witness",
+          "stoodkev",
+          "arcange",
+          "steempeak"
+        ],
+        "blockHash": "063d29ba3d1136779e15e6c102513d2e74c60b95",
+        "blockchainTime": "2026-03-16T05:21:54.000Z"
+      },
+      "preBalance": "7.950 HBD",
+      "customJson": {
+        "trxId": "1ed6c412d737438419305315f50f120593872784",
+        "outcome": "confirmed",
+        "confirmBlockNum": 104671676
+      },
+      "transfer": {
+        "trxId": "8c83ce8cb3fac940a70ea6ce47cbdba986ef7b14",
+        "outcome": "confirmed",
+        "confirmBlockNum": 104671676
+      },
+      "ledgerVerification": {
+        "verified": true,
+        "from": "dandandan123",
+        "to": "dandandan123",
+        "amount": "0.001 HBD",
+        "memo": "hivepoa-burnin-c9-1773638517159",
+        "senderEqualsReceiver": true,
+        "amountExact": true,
+        "memoMatches": true
+      },
+      "postBalance": "7.950 HBD",
+      "balanceDelta": "0.000 HBD",
+      "completedAt": "2026-03-16T05:22:00.940Z"
+    },
+    {
+      "cycle": 10,
+      "startedAt": "2026-03-16T05:22:05.952Z",
+      "result": "PASS",
+      "readSmoke": {
+        "account": "dandandan123",
+        "hbdBalance": "7.950 HBD",
+        "reputation": 25,
+        "topWitnesses": [
+          "gtg",
+          "ocd-witness",
+          "stoodkev",
+          "arcange",
+          "steempeak"
+        ],
+        "blockHash": "063d29bd2f2949bc19c23fbbdb4e9d80c3c2f865",
+        "blockchainTime": "2026-03-16T05:22:03.000Z"
+      },
+      "preBalance": "7.950 HBD",
+      "customJson": {
+        "trxId": "654e47886f44e761ee0be6dddfccbf3c2cd7d90d",
+        "outcome": "confirmed",
+        "confirmBlockNum": 104671679
+      },
+      "transfer": {
+        "trxId": "6ae4046637c6e8273fb02ecccd257c414533d83f",
+        "outcome": "confirmed",
+        "confirmBlockNum": 104671679
+      },
+      "ledgerVerification": {
+        "verified": true,
+        "from": "dandandan123",
+        "to": "dandandan123",
+        "amount": "0.001 HBD",
+        "memo": "hivepoa-burnin-c10-1773638526747",
+        "senderEqualsReceiver": true,
+        "amountExact": true,
+        "memoMatches": true
+      },
+      "postBalance": "7.950 HBD",
+      "balanceDelta": "0.000 HBD",
+      "completedAt": "2026-03-16T05:22:10.543Z"
+    }
+  ]
+}
