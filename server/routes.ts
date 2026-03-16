@@ -13,6 +13,7 @@ import { autoPinService } from "./services/auto-pin-service";
 import { beneficiaryService } from "./services/beneficiary-service";
 import { ipfsGateway } from "./services/ipfs-gateway";
 import { p2pSignaling } from "./p2p-signaling";
+import { STORAGE_TIERS, getTierById, calculateRewardPerChallenge } from "./services/storage-tiers";
 import { agentWSManager } from "./services/agent-ws-manager";
 import { WebSocketServer } from "ws";
 import { insertFileSchema, insertValidatorBlacklistSchema, insertEncodingJobSchema, insertEncoderNodeSchema, type ComputeNode } from "@shared/schema";
@@ -652,7 +653,7 @@ export async function registerRoutes(
       // Enforce tier storage cap
       const activeContract = await storage.getActiveUserTierContract(username);
       if (activeContract?.storageTierId) {
-        const { getTierById } = require("./services/storage-tiers");
+        // getTierById imported at top level
         const tier = getTierById(activeContract.storageTierId);
         if (tier) {
           const usedBytes = await storage.getUserStorageUsed(username);
@@ -701,7 +702,7 @@ export async function registerRoutes(
   // ============================================================
 
   app.get("/api/storage/tiers", (_req, res) => {
-    const { STORAGE_TIERS } = require("./services/storage-tiers");
+    // STORAGE_TIERS imported at top level
     res.json(STORAGE_TIERS);
   });
 
@@ -711,7 +712,7 @@ export async function registerRoutes(
       const username = req.authenticatedUser!;
       const usedBytes = await storage.getUserStorageUsed(username);
       const activeContract = await storage.getActiveUserTierContract(username);
-      const { getTierById } = require("./services/storage-tiers");
+      // getTierById imported at top level
       const tier = activeContract?.storageTierId ? getTierById(activeContract.storageTierId) : null;
 
       res.json({
@@ -753,7 +754,7 @@ export async function registerRoutes(
       });
       const data = schema.parse(req.body);
       const username = req.authenticatedUser!;
-      const { getTierById, calculateRewardPerChallenge } = require("./services/storage-tiers");
+      // getTierById, calculateRewardPerChallenge imported at top level
 
       const tier = getTierById(data.tierId);
       if (!tier) return res.status(400).json({ error: "Invalid tier" });
@@ -854,7 +855,7 @@ export async function registerRoutes(
       const newBudget = parseFloat(contract.hbdBudget) + topupAmount;
       const spent = parseFloat(contract.hbdSpent);
       const remainingDays = Math.max(1, Math.ceil((new Date(contract.expiresAt).getTime() - Date.now()) / 86400000));
-      const { calculateRewardPerChallenge } = require("./services/storage-tiers");
+      // calculateRewardPerChallenge imported at top level
       const newReward = calculateRewardPerChallenge((newBudget - spent).toFixed(3), remainingDays);
 
       await storage.updateStorageContractStatus(contract.id, "active");

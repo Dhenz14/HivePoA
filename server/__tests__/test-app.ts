@@ -17,6 +17,7 @@ export async function createTestApp() {
     credentials: true,
   }));
 
+  app.use('/api/upload', express.raw({ limit: '50mb', type: 'application/octet-stream' }));
   app.use(express.json());
   app.use(express.urlencoded({ extended: false }));
 
