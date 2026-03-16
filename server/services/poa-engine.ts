@@ -144,6 +144,7 @@ export class PoAEngine {
   private hiveClient: HiveClient | MockHiveClient;
   private blocksCache: LRUCache<string[]>;
   private currentHiveBlockHash: string = "";
+  private _ipfsOnline: boolean = false;
 
   // Track consecutive successes for streak bonuses
   private nodeStreaks: Map<string, number> = new Map();
@@ -201,7 +202,10 @@ export class PoAEngine {
     this.treasuryCoordinator = coordinator;
   }
 
+  private _updatingBlockHash = false;
   private async updateHiveBlockHash(): Promise<void> {
+    if (this._updatingBlockHash) return;
+    this._updatingBlockHash = true;
     try {
       const hash = await this.hiveClient.getLatestBlockHash();
       if (hash) {
@@ -213,7 +217,11 @@ export class PoAEngine {
         .createHash("sha256")
         .update(`hive-block-${Math.floor(Date.now() / 3000)}`)
         .digest("hex");
+    } finally {
+      this._updatingBlockHash = false;
     }
+    // Piggyback IPFS status check on the same timer
+    try { this._ipfsOnline = await this.ipfsClient.isOnline(); } catch { this._ipfsOnline = false; }
   }
 
   async start(validatorUsername?: string) {
@@ -546,6 +554,10 @@ export class PoAEngine {
         selectedFile = this.selectWeightedFile(files);
         attempts++;
       }
+      // If still on cooldown after max attempts, skip this challenge
+      if (this.isNodeFileComboCooldown(selectedNode.id, selectedFile.id, selectedNode.reputation)) {
+        continue;
+      }
 
       // Look up contract for this file's CID (for reward calculation)
       const contract = activeContracts.find(c => c.fileCid === selectedFile.cid);
@@ -665,9 +677,9 @@ export class PoAEngine {
             await this.recordChallengeResult(challengeId, node.id, file.id, "COMMITMENT_MISMATCH", "fail", commitElapsed);
             return;
           }
-        } catch {
+        } catch (err) {
           // Can't verify commitment (our IPFS issue) — proceed to phase 2
-          logPoA.info(`[PoA] Phase 1: Can't verify commitment locally, proceeding to phase 2`);
+          logPoA.warn({ err }, "[PoA] Phase 1: Can't verify commitment locally, proceeding to phase 2");
         }
       } else if (commitResult.status === "fail") {
         logPoA.info(`[PoA] Phase 1 FAILED: ${node.hiveUsername} reported error: ${commitResult.error}`);
@@ -1320,7 +1332,7 @@ export class PoAEngine {
       mode: this.config.useMockMode ? "simulation" : "spk-live",
       validator: this.config.validatorUsername,
       spkConnected: this.spkClient?.isConnected ?? false,
-      ipfsOnline: false,
+      ipfsOnline: this._ipfsOnline,
     };
   }
 }

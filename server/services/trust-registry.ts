@@ -106,8 +106,9 @@ export class TrustRegistryService {
       try {
         const still = await this.hiveClient.isTopWitness(v.voucherUsername, policy.autoEligibleWitnessRank);
         if (still) validVouches.push(v.voucherUsername);
-      } catch {
-        // Voucher check failed — skip this vouch (fail-closed)
+      } catch (err) {
+        // Voucher check failed — skip this vouch (fail-closed), but log for observability
+        logWoT.warn({ err, voucher: v.voucherUsername }, "Witness check failed during eligibility — vouch skipped");
       }
     }
 

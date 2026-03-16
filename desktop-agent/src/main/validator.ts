@@ -82,6 +82,8 @@ export class LocalValidator {
 
   /** Start the validator engine. */
   async start(): Promise<void> {
+    // Prevent timer leaks from double-start
+    this.stop();
     console.log(`[Validator] Starting (interval: ${this.challengeIntervalMs / 1000}s)`);
 
     // Get initial block hash
@@ -159,7 +161,13 @@ export class LocalValidator {
    * Backward compat: If commitment times out (peer runs old agent), falls back
    * to single-phase v1 challenge automatically.
    */
+  private static readonly MAX_PENDING = 100;
   private async challengePeer(peer: PeerInfo): Promise<void> {
+    // Safety cap on pending challenges to prevent memory growth from leaked timeouts
+    if (this.pendingChallenges.size >= LocalValidator.MAX_PENDING) {
+      console.warn(`[Validator] Pending challenges at cap (${LocalValidator.MAX_PENDING}), skipping`);
+      return;
+    }
     // Select a CID to challenge from our own pin list (we need the data to verify)
     const cid = await this.selectChallengeCid();
     if (!cid) {

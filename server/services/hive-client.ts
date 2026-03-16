@@ -214,13 +214,14 @@ export class HiveClient {
 
       const messageHash = cryptoUtils.sha256(message);
       const sig = Signature.fromString(signature);
+      const recovered = sig.recover(messageHash);
+      const recoveredStr = recovered.toString();
 
       const postingAuth = account.posting;
       for (const [pubKeyStr] of postingAuth.key_auths) {
         try {
           const pubKey = PublicKey.fromString(pubKeyStr as string);
-          const recovered = sig.recover(messageHash);
-          if (recovered.toString() === pubKey.toString()) {
+          if (recoveredStr === pubKey.toString()) {
             return true;
           }
         } catch {

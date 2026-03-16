@@ -44,6 +44,7 @@ export function P2PVideoPlayer({
     p2pRatio: 0,
   });
   const [connectedPeers, setConnectedPeers] = useState<string[]>([]);
+  const connectedPeersRef = useRef<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isSignalingConnected, setIsSignalingConnected] = useState(false);
@@ -53,11 +54,19 @@ export function P2PVideoPlayer({
   }, []);
 
   const handlePeerConnect = useCallback((peerId: string) => {
-    setConnectedPeers(prev => [...prev, peerId]);
+    setConnectedPeers(prev => {
+      const next = [...prev, peerId];
+      connectedPeersRef.current = next;
+      return next;
+    });
   }, []);
 
   const handlePeerDisconnect = useCallback((peerId: string) => {
-    setConnectedPeers(prev => prev.filter(id => id !== peerId));
+    setConnectedPeers(prev => {
+      const next = prev.filter(id => id !== peerId);
+      connectedPeersRef.current = next;
+      return next;
+    });
   }, []);
 
   useEffect(() => {
@@ -97,7 +106,7 @@ export function P2PVideoPlayer({
           bytesUploaded: currentStats.p2pUploaded,
           bytesDownloaded: currentStats.httpDownloaded + currentStats.p2pDownloaded,
           segmentsShared: Math.floor(currentStats.p2pUploaded / 65536),
-          peersConnected: connectedPeers.length,
+          peersConnected: connectedPeersRef.current.length,
         });
       }
     }, 10000);
@@ -113,7 +122,7 @@ export function P2PVideoPlayer({
         signalingRef.current = null;
       }
     };
-  }, [isP2PEnabled, videoCid, hiveUsername, connectedPeers.length]);
+  }, [isP2PEnabled, videoCid, hiveUsername]);
 
   useEffect(() => {
     if (!videoRef.current || !manifestUrl) return;

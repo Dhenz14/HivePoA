@@ -337,10 +337,7 @@ export class ComputeService {
     });
 
     await storage.updateComputeNodeStats(attempt.nodeId, false);
-    const node = await storage.getComputeNode(attempt.nodeId);
-    if (node) {
-      await storage.updateComputeNodeHeartbeat(attempt.nodeId, Math.max(0, node.jobsInProgress - 1));
-    }
+    await storage.decrementComputeNodeJobs(attempt.nodeId);
 
     const job = await storage.getComputeJob(attempt.jobId);
     if (job && job.attemptCount < job.maxAttempts) {
@@ -588,12 +585,10 @@ export class ComputeService {
     const node = await storage.getComputeNode(attempt.nodeId);
     if (node) {
       const newRep = Math.max(0, node.reputationScore - 5);
-      await storage.updateComputeNode(attempt.nodeId, {
-        reputationScore: newRep,
-        jobsInProgress: Math.max(0, node.jobsInProgress - 1),
-      });
+      await storage.updateComputeNode(attempt.nodeId, { reputationScore: newRep });
     }
 
+    await storage.decrementComputeNodeJobs(attempt.nodeId);
     await storage.updateComputeNodeStats(attempt.nodeId, false);
 
     if (job.attemptCount < job.maxAttempts) {

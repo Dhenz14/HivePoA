@@ -129,12 +129,15 @@ export class BeneficiaryService {
   }> {
     const allocations = await storage.getBeneficiaryAllocations(username);
     
-    // Enrich with node data
+    // Enrich with node data (per-item error handling to avoid single failure breaking all)
     const enriched = await Promise.all(
-      allocations.map(async (a) => ({
-        ...a,
-        node: await storage.getStorageNode(a.toNodeId),
-      }))
+      allocations.map(async (a) => {
+        try {
+          return { ...a, node: await storage.getStorageNode(a.toNodeId) };
+        } catch {
+          return { ...a, node: undefined };
+        }
+      })
     );
 
     const totalPercentage = allocations.reduce((sum, a) => sum + a.percentage, 0);

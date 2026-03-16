@@ -3251,6 +3251,16 @@ export async function registerRoutes(
         res.status(400).json({ error: "status is required" });
         return;
       }
+      // Verify ownership — validators can only modify their own reports
+      const existing = await storage.getPayoutReport(req.params.id);
+      if (!existing) {
+        res.status(404).json({ error: "Report not found" });
+        return;
+      }
+      if (existing.validatorUsername !== validation.username) {
+        res.status(403).json({ error: "Cannot modify another validator's report" });
+        return;
+      }
       await storage.updatePayoutReportStatus(req.params.id, status, executedTxHash);
       const report = await storage.getPayoutReport(req.params.id);
       res.json(report);
@@ -3410,6 +3420,15 @@ export async function registerRoutes(
 
   // POST /api/p2p/report — Client reports P2P session stats on cleanup (no auth, rate limited by IP)
   const p2pReportLimiter = new Map<string, number[]>();
+  // Purge stale IPs every 5 minutes to prevent unbounded memory growth
+  setInterval(() => {
+    const now = Date.now();
+    for (const [ip, timestamps] of Array.from(p2pReportLimiter.entries())) {
+      const recent = timestamps.filter((t: number) => now - t < 60000);
+      if (recent.length === 0) p2pReportLimiter.delete(ip);
+      else p2pReportLimiter.set(ip, recent);
+    }
+  }, 300_000);
   app.post("/api/p2p/report", async (req, res) => {
     try {
       // Simple rate limit: max 30 reports per minute per IP

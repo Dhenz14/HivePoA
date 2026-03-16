@@ -2390,6 +2390,7 @@ export class SQLiteStorage implements IStorage {
   async createComputeNode(_node: InsertComputeNode): Promise<ComputeNode> { this.computeNotSupported(); }
   async updateComputeNode(_id: string, _updates: Partial<ComputeNode>): Promise<void> { }
   async updateComputeNodeHeartbeat(_id: string, _jobsInProgress: number): Promise<void> { }
+  async decrementComputeNodeJobs(_id: string): Promise<void> { }
   async updateComputeNodeStats(_id: string, _completed: boolean, _hbdEarned?: string): Promise<void> { }
 
   async getComputeJob(_id: string): Promise<ComputeJob | undefined> { return undefined; }

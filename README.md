@@ -372,6 +372,44 @@ Every viewer watching a video automatically redistributes content to other viewe
 - **API Auth Enforcement**: All mutation endpoints enforce ownership checks — users cannot modify another user's settings, blacklists, beneficiaries, encryption keys, or encoding offers
 - **PoA Safety**: Proof accumulator auto-purges stale entries (24h TTL), block selection loop guaranteed to terminate, session maps capped to prevent memory exhaustion
 
+## Security Audit (March 2026)
+
+Deep 6-agent audit across the full codebase — 25 fixes applied, 168 tests pass, zero TypeScript errors.
+
+### Phase 1 — Security (5 fixes)
+
+- **SQL injection**: Replaced `sql.raw()` with parameterized `ANY()` arrays in `claimComputeJobAtomic`
+- **Code injection**: Replaced `eval(videoStream.r_frame_rate)` with safe fraction parsing
+- **Authorization bypass**: Added ownership check on `PATCH /api/validator/payout/reports/:id`
+- **Session hijack**: Replaced singleton challenge with concurrent-safe Map in desktop agent auth
+- **Replay attack**: Record PubSub challenge nonce before rate-limit check to prevent replay after window expires
+
+### Phase 2 — Correctness (4 fixes)
+
+- **PoA cooldown bypass**: Skip challenge entirely when node-file combo still on cooldown after max retries
+- **Unhandled rejection**: Per-item error handling in beneficiary node enrichment
+- **TOCTOU race**: Atomic SQL `GREATEST(jobs_in_progress - 1, 0)` for compute node job counter
+- **React infinite loop**: Removed `connectedPeers.length` from P2PVideoPlayer useEffect deps, used ref instead
+
+### Phase 3 — Performance (5 fixes)
+
+- **Memory leak**: Periodic purge of `p2pReportLimiter` Map (was growing unbounded per IP)
+- **N+1 query**: Single SQL query with `OR` conditions for `getEffectiveBlocklist` (was loop of queries)
+- **Client-side filtering**: Pushed compute node workload filtering to SQL `LIKE` clause
+- **Full table scan**: Replaced JS grouping in `getFlaggedContentSummary` with SQL `GROUP BY` / `STRING_AGG`
+- **Redundant crypto**: Compute `sig.recover()` once outside loop in Hive signature verification
+
+### Phase 4 — Hardening (8 fixes)
+
+- Trust registry logs error detail on witness check failure (was silent catch)
+- Block hash refresh has concurrency guard (prevents overlapping Hive API calls)
+- `ipfsOnline` in PoA status now reflects real IPFS status (was hardcoded `false`)
+- Treasury daily cap boundary uses `>=` (was `>`, off-by-one on exact reset second)
+- IPFS commitment verification logs error on catch
+- Validator `start()` calls `stop()` first to prevent timer leaks on restart
+- `pendingChallenges` map capped at 100 entries (prevents unbounded memory growth)
+- Peer stale detection uses local time (prevents TTL manipulation via clock skew)
+
 ## Build
 
 ```bash

@@ -188,7 +188,7 @@ export class PeerDiscovery {
       version: json.version || 'unknown',
       storageGB: json.storageGB || 0,
       pinCount: json.pinCount || 0,
-      lastAnnounce: json.timestamp ? new Date(json.timestamp).getTime() : Date.now(),
+      lastAnnounce: Date.now(), // Always use local time to prevent TTL manipulation via clock skew
       reputation: existing?.reputation || 25, // Will be updated lazily
       lastChallengedAt: existing?.lastChallengedAt || 0,
       challengeResults: existing?.challengeResults || { success: 0, fail: 0 },

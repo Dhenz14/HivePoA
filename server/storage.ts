@@ -476,6 +476,7 @@ export interface IStorage {
   createComputeNode(node: InsertComputeNode): Promise<ComputeNode>;
   updateComputeNode(id: string, updates: Partial<ComputeNode>): Promise<void>;
   updateComputeNodeHeartbeat(id: string, jobsInProgress: number): Promise<void>;
+  decrementComputeNodeJobs(id: string): Promise<void>;
   updateComputeNodeStats(id: string, completed: boolean, hbdEarned?: string): Promise<void>;
 
   // Phase 10: GPU Compute Marketplace — Jobs
@@ -1216,12 +1217,19 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getEffectiveBlocklist(scopes: { scope: string; scopeOwnerId?: string }[]): Promise<BlocklistEntry[]> {
-    const results: BlocklistEntry[] = [];
-    for (const s of scopes) {
-      const entries = await this.getBlocklistEntries(s.scope, s.scopeOwnerId);
-      results.push(...entries);
-    }
-    return results;
+    if (scopes.length === 0) return [];
+    // Single query with OR conditions instead of N+1 loop
+    const scopeConditions = scopes.map(s =>
+      s.scopeOwnerId
+        ? and(eq(blocklistEntries.scope, s.scope), eq(blocklistEntries.scopeOwnerId, s.scopeOwnerId))
+        : eq(blocklistEntries.scope, s.scope)
+    );
+    return db.select().from(blocklistEntries)
+      .where(and(
+        eq(blocklistEntries.active, true),
+        or(...scopeConditions),
+      ))
+      .orderBy(desc(blocklistEntries.createdAt));
   }
 
   // ============================================================
@@ -2216,36 +2224,28 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getFlaggedContentSummary(): Promise<{ cid: string; totalFlags: number; reasons: string[]; maxSeverity: string; status: string }[]> {
-    const allFlags = await db.select().from(contentFlags).orderBy(desc(contentFlags.flagCount));
-    const grouped = new Map<string, { totalFlags: number; reasons: Set<string>; maxSeverity: string; status: string }>();
-    const severityOrder = ["low", "moderate", "severe", "critical"];
+    const rows = await db.select({
+      cid: contentFlags.cid,
+      totalFlags: sql<number>`COALESCE(SUM(${contentFlags.flagCount}), 0)`.as("total_flags"),
+      reasons: sql<string>`STRING_AGG(DISTINCT ${contentFlags.reason}, ',')`.as("reasons"),
+      maxSeverity: sql<string>`MAX(CASE ${contentFlags.severity}
+        WHEN 'critical' THEN '4_critical'
+        WHEN 'severe' THEN '3_severe'
+        WHEN 'moderate' THEN '2_moderate'
+        ELSE '1_low' END)`.as("max_severity"),
+      hasAnyPending: sql<boolean>`BOOL_OR(${contentFlags.status} = 'pending')`.as("has_pending"),
+    })
+      .from(contentFlags)
+      .groupBy(contentFlags.cid)
+      .orderBy(sql`total_flags DESC`)
+      .limit(1000);
 
-    for (const flag of allFlags) {
-      const existing = grouped.get(flag.cid);
-      if (existing) {
-        existing.totalFlags += flag.flagCount;
-        existing.reasons.add(flag.reason);
-        if (severityOrder.indexOf(flag.severity) > severityOrder.indexOf(existing.maxSeverity)) {
-          existing.maxSeverity = flag.severity;
-        }
-        // Worst status wins
-        if (flag.status === "pending" || existing.status === "pending") existing.status = "pending";
-      } else {
-        grouped.set(flag.cid, {
-          totalFlags: flag.flagCount,
-          reasons: new Set([flag.reason]),
-          maxSeverity: flag.severity,
-          status: flag.status,
-        });
-      }
-    }
-
-    return Array.from(grouped.entries()).map(([cid, data]) => ({
-      cid,
-      totalFlags: data.totalFlags,
-      reasons: Array.from(data.reasons),
-      maxSeverity: data.maxSeverity,
-      status: data.status,
+    return rows.map((r: any) => ({
+      cid: r.cid,
+      totalFlags: Number(r.totalFlags),
+      reasons: (r.reasons || "").split(",").filter(Boolean),
+      maxSeverity: (r.maxSeverity || "1_low").replace(/^\d_/, ""),
+      status: r.hasAnyPending ? "pending" : "resolved",
     }));
   }
 
@@ -2400,20 +2400,19 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getAvailableComputeNodes(workloadType?: string, minVramGb?: number): Promise<ComputeNode[]> {
-    const conditions = [
+    const conditions: any[] = [
       eq(computeNodes.status, "online"),
     ];
     if (minVramGb) {
       conditions.push(gte(computeNodes.gpuVramGb, minVramGb));
     }
-    const nodes = await db.select().from(computeNodes)
+    if (workloadType) {
+      // Push workload filtering to SQL — supportedWorkloads is comma-separated
+      conditions.push(sql`',' || ${computeNodes.supportedWorkloads} || ',' LIKE ${'%,' + workloadType + ',%'}`);
+    }
+    return db.select().from(computeNodes)
       .where(and(...conditions))
       .orderBy(desc(computeNodes.reputationScore));
-
-    if (workloadType) {
-      return nodes.filter((n: ComputeNode) => n.supportedWorkloads.split(",").includes(workloadType));
-    }
-    return nodes;
   }
 
   async createComputeNode(node: InsertComputeNode): Promise<ComputeNode> {
@@ -2429,6 +2428,12 @@ export class DatabaseStorage implements IStorage {
     await db.update(computeNodes).set({
       lastHeartbeatAt: new Date(),
       jobsInProgress,
+    }).where(eq(computeNodes.id, id));
+  }
+
+  async decrementComputeNodeJobs(id: string): Promise<void> {
+    await db.update(computeNodes).set({
+      jobsInProgress: sql`GREATEST(${computeNodes.jobsInProgress} - 1, 0)`,
     }).where(eq(computeNodes.id, id));
   }
 
@@ -2502,26 +2507,23 @@ export class DatabaseStorage implements IStorage {
   ): Promise<{ job: ComputeJob; attempt: ComputeJobAttempt } | null> {
     // Build a raw SQL query with FOR UPDATE SKIP LOCKED
     // This atomically selects and locks one eligible job row
-    const typePlaceholders = allowedTypes.map(t => `'${t.replace(/'/g, "")}'`).join(",");
     const now = new Date();
 
-    // Cache-aware scoring: jobs whose requiredModels are in cachedModelsList get priority
-    // We use a simple boolean score: 1 if all required models cached, 0 otherwise
-    const cacheCheck = cachedModelsList.length > 0
-      ? cachedModelsList.map(m => `'${m.replace(/'/g, "")}'`).join(",")
-      : "''";
+    // Build parameterized type array and cache array
+    const typeArray = allowedTypes;
+    const cacheArray = cachedModelsList.length > 0 ? cachedModelsList : [];
 
     const result = await db.execute(sql`
       WITH eligible AS (
         SELECT id,
           CASE
             WHEN required_models = '' OR required_models IS NULL THEN 1
-            WHEN required_models = ANY(ARRAY[${sql.raw(cacheCheck)}]) THEN 1
+            WHEN required_models = ANY(${cacheArray}) THEN 1
             ELSE 0
           END AS cache_score
         FROM compute_jobs
         WHERE state = 'queued'
-          AND workload_type IN (${sql.raw(typePlaceholders)})
+          AND workload_type = ANY(${typeArray})
           AND min_vram_gb <= ${minVramGb}
           AND attempt_count < max_attempts
           AND (deadline_at IS NULL OR deadline_at > ${now})

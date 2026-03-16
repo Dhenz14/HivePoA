@@ -373,7 +373,7 @@ export class TreasuryCoordinator {
       log.warn({ amount: opts.amount }, "[Treasury] Transfer exceeds server per-tx cap");
       return { success: false };
     }
-    if (Date.now() > this.dailyServerResetAt) {
+    if (Date.now() >= this.dailyServerResetAt) {
       this.dailyServerSpendHbd = 0;
       this.dailyServerResetAt = Date.now() + 86_400_000;
     }

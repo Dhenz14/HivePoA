@@ -210,7 +210,8 @@ export class VideoProcessor extends EventEmitter {
             return;
           }
 
-          const fps = eval(videoStream.r_frame_rate) || 30;
+          const fpsParts = (videoStream.r_frame_rate || "30/1").split("/").map(Number);
+          const fps = fpsParts.length === 2 && fpsParts[1] ? fpsParts[0] / fpsParts[1] : (fpsParts[0] || 30);
 
           resolve({
             duration: parseFloat(info.format?.duration || "0"),

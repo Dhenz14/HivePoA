@@ -186,7 +186,7 @@ export class ApiServer {
   private challengeHandler: ChallengeHandler | null = null;
 
   // Keychain auth state
-  private pendingChallenge: { token: string; expiresAt: number } | null = null;
+  private pendingChallenges: Map<string, { expiresAt: number }> = new Map();
   private verifyAttempts: { count: number; windowStart: number } = { count: 0, windowStart: 0 };
   private sessions: Map<string, { username: string; expiresAt: number; isTopWitness: boolean; witnessRank: number | null }> = new Map();
   private static readonly MAX_VERIFY_ATTEMPTS = 5;
@@ -762,12 +762,19 @@ export class ApiServer {
         return res.status(403).send('Forbidden');
       }
 
-      // Generate a one-time challenge
+      // Generate a one-time challenge (supports concurrent logins)
       const token = crypto.randomBytes(32).toString('hex');
-      this.pendingChallenge = {
-        token,
-        expiresAt: Date.now() + ApiServer.CHALLENGE_TTL_MS,
-      };
+      // Prune expired challenges to prevent unbounded growth
+      const now = Date.now();
+      for (const [t, v] of this.pendingChallenges) {
+        if (now > v.expiresAt) this.pendingChallenges.delete(t);
+      }
+      if (this.pendingChallenges.size >= 20) {
+        // Cap at 20 concurrent challenges
+        const oldest = this.pendingChallenges.keys().next().value;
+        if (oldest) this.pendingChallenges.delete(oldest);
+      }
+      this.pendingChallenges.set(token, { expiresAt: now + ApiServer.CHALLENGE_TTL_MS });
 
       const html = AUTH_PAGE_HTML.replace('{{CHALLENGE}}', token);
       res.type('html').send(html);
@@ -797,16 +804,17 @@ export class ApiServer {
       }
 
       // Validate challenge
-      if (!this.pendingChallenge || this.pendingChallenge.token !== challenge) {
+      const pending = this.pendingChallenges.get(challenge);
+      if (!pending) {
         return res.status(400).json({ error: 'Invalid or expired challenge. Reload the page.' });
       }
-      if (Date.now() > this.pendingChallenge.expiresAt) {
-        this.pendingChallenge = null;
+      if (Date.now() > pending.expiresAt) {
+        this.pendingChallenges.delete(challenge);
         return res.status(400).json({ error: 'Challenge expired. Reload the page.' });
       }
 
       // Consume the challenge (single-use)
-      this.pendingChallenge = null;
+      this.pendingChallenges.delete(challenge);
 
       try {
         // Create a temporary Hive client for verification

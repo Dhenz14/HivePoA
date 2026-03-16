@@ -97,13 +97,14 @@ export class ChallengeHandler {
 
     // Check per-validator rate limit
     const lastFromValidator = this.validatorTimestamps.get(challenge.validatorPeer) || 0;
+    // Always record nonce to prevent replay after rate-limit window expires
+    this.seenNonces.set(challenge.nonce, Date.now());
     if (Date.now() - lastFromValidator < 30000) {
       console.log(`[ChallengeHandler] Rate limited: ${challenge.validatorPeer} challenged too recently`);
       return;
     }
 
     this.validatorTimestamps.set(challenge.validatorPeer, Date.now());
-    this.seenNonces.set(challenge.nonce, Date.now());
     this.activeChallenges++;
 
     const startTime = Date.now();
