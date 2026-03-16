@@ -73,14 +73,24 @@ export class TrustRegistryService {
       };
     }
 
-    // Check witness eligibility
-    const isWitness = await this.hiveClient.isTopWitness(username, policy.autoEligibleWitnessRank);
+    // Check witness eligibility (safe: if Hive client is mock or unreachable, treat as not-a-witness)
+    let isWitness = false;
+    let witnessRank: number | null = null;
+    try {
+      isWitness = await this.hiveClient.isTopWitness(username, policy.autoEligibleWitnessRank);
+      if (isWitness) {
+        witnessRank = await this.hiveClient.getWitnessRank(username);
+      }
+    } catch {
+      // Mock client or Hive API unreachable — not a witness
+      isWitness = false;
+    }
+
     if (isWitness) {
-      const rank = await this.hiveClient.getWitnessRank(username);
       return {
         eligible: true,
         eligibilityType: "witness",
-        witnessRank: rank,
+        witnessRank,
         vouchers: [],
         optedIn: !!existing,
         status: existing?.status || "eligible_not_opted_in",
@@ -93,8 +103,12 @@ export class TrustRegistryService {
     // Filter: only count vouches from current top-150 witnesses
     const validVouches: string[] = [];
     for (const v of activeVouches) {
-      const still = await this.hiveClient.isTopWitness(v.voucherUsername, policy.autoEligibleWitnessRank);
-      if (still) validVouches.push(v.voucherUsername);
+      try {
+        const still = await this.hiveClient.isTopWitness(v.voucherUsername, policy.autoEligibleWitnessRank);
+        if (still) validVouches.push(v.voucherUsername);
+      } catch {
+        // Voucher check failed — skip this vouch (fail-closed)
+      }
     }
 
     if (validVouches.length >= policy.vouchesRequired) {
