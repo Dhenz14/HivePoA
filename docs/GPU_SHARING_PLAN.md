@@ -1,433 +1,378 @@
 # GPU Sharing Plan — HivePoA Compute Marketplace
 
-## Status: PLAN (for review by all collaborators)
+## Status: PLAN v2 (revised after systems review)
 
-**Goal:** Anyone with a GPU can contribute compute to the Hive-AI training pipeline and earn HBD. Bittensor-style economics, but Hive-native — no separate token, no validator subnet, just HBD via the existing HivePoA treasury/contract system.
+**Goal:** Anyone with a GPU can contribute compute to the Hive-AI training pipeline and earn HBD. Bittensor-style economics, Hive-native — no separate token, no validator subnet, just HBD via the existing HivePoA treasury/contract system.
 
-**Date:** 2026-03-16
-**Baseline:** HivePoA `v1.1.0` (tag `a4158a9`), Hive-AI compute stack at current main
+**Date:** 2026-03-16 (revised)
+**Baseline:** HivePoA `v1.1.0` (sealed at tag `7f4ad10`). Post-release hardening at `a4158a9` (on main, not tagged). Hive-AI compute stack at current main.
+
+> **Clarification:** `v1.1.0` is the sealed tag at `7f4ad10`. `a4158a9` is post-release hardening on main (advisory lock, SQLite parity). Any implementation branch should fork from `a4158a9` on main, not from the `v1.1.0` tag.
 
 ---
 
 ## What Already Exists (DO NOT REBUILD)
 
 ### HivePoA Server (TypeScript/Express)
-- **20+ compute endpoints** live at `/api/compute/*`
-- **Atomic job claiming** via `SELECT ... FOR UPDATE SKIP LOCKED`
-- **Lease sweeper** — cleans stale leases every 60s
-- **Node registration** with GPU model, VRAM, supported workloads, cached models
-- **Job lifecycle** — create → claim → start → progress → submit → verify → settle
-- **Three-stage payouts** — budget held, verification, then settlement
-- **Warm-up reputation** — new nodes start with restricted workloads (eval_sweep, benchmark_run only)
-- **6 workload types defined:** `eval_sweep`, `benchmark_run`, `adapter_validation`, `domain_lora_train`, `weakness_targeted_generation`, `data_generation`
-- **Only 2 workload types implemented in the worker:** `eval_sweep`, `benchmark_run`
+- 20+ compute endpoints live at `/api/compute/*`
+- Atomic job claiming via `SELECT ... FOR UPDATE SKIP LOCKED`
+- Lease sweeper — cleans stale leases every 60s
+- Node registration with GPU model, VRAM, supported workloads, cached models
+- Job lifecycle: create → claim → start → progress → submit → verify → settle
+- Three-stage payouts: budget held, verification, then settlement
+- Warm-up reputation: new nodes start restricted (eval_sweep, benchmark_run only)
+- 6 workload types defined: `eval_sweep`, `benchmark_run`, `adapter_validation`, `domain_lora_train`, `weakness_targeted_generation`, `data_generation`
+- Only 2 implemented in the worker: `eval_sweep`, `benchmark_run`
 
 ### Hive-AI Worker (Python)
-- **`GPUWorker` class** (413 lines) — registers, polls, claims, executes, heartbeats, submits results
-- **`EvalSweepVerifier` + `BenchmarkRunVerifier`** — server-side re-verification with 15% deviation tolerance
-- **`HivePoAComputeClient`** — full REST client for all compute endpoints
-- **`scripts/gpu_worker.py`** — CLI entry point with all config flags
-- **`scripts/canary_compute.py`** — end-to-end canary with mock mode
-- **17 tests** covering contracts, worker, verifier, client
+- `GPUWorker` class (413 lines) — registers, polls, claims, executes, heartbeats, submits
+- `EvalSweepVerifier` + `BenchmarkRunVerifier` — server-side re-verification (15% tolerance)
+- `HivePoAComputeClient` — full REST client for all compute endpoints
+- `scripts/gpu_worker.py` — CLI entry point
+- `scripts/canary_compute.py` — end-to-end canary with mock mode
+- 17 tests covering contracts, worker, verifier, client
 
-### Training/Eval Scripts (Available but NOT wired to worker)
-- `scripts/regression_eval.py` — 60-probe domain eval (ALREADY wired)
-- `scripts/executable_eval.py` — code gen + sandbox (ALREADY wired)
-- `scripts/train_v5.py` — Unsloth + QLoRA on Qwen2.5-Coder-14B
-- `scripts/train_domain.py` — domain-specific LoRA training
-- `scripts/improve.py` — weakness-targeted pair generation
-- `scripts/gen_multiturn.py` — multi-turn conversation data generation
-- `scripts/gen_verification_pairs.py` — verification data generation
+### Training/Eval Scripts (available, not all wired to worker)
+- `scripts/regression_eval.py` — 60-probe domain eval (WIRED)
+- `scripts/executable_eval.py` — code gen + sandbox (WIRED)
+- `scripts/train_v5.py` — Unsloth + QLoRA on Qwen2.5-Coder-14B (NOT WIRED)
+- `scripts/train_domain.py` — domain-specific LoRA training (NOT WIRED)
+- `scripts/improve.py` — weakness-targeted pair generation (NOT WIRED)
 
 ---
 
-## The Plan: 4 Phases
+## Revised Plan: 5 Phases
 
-### Phase 1 — Data Generation Jobs (Week 1)
+### Phase 0 — Artifact + Provenance Contract (PREREQUISITE)
 
-**What:** Let GPU workers generate training pairs for domains where the model is weak.
+**What:** A durable artifact layer that all subsequent workload types depend on. Content-addressed inputs/outputs, provenance metadata, size limits, hash verification.
 
-**Why first:** Embarrassingly parallel, no merge complexity, immediate value. Each worker produces independent JSONL output. No coordination needed between workers.
+**Why prerequisite:** Without this, data generation batches and adapter weights become an operational mess. You cannot verify, reproduce, or aggregate what you cannot reliably store, reference, and attribute.
 
-**New workload type:** `data_generation`
+**Components:**
 
-**Server-side changes (HivePoA):**
-- No server changes needed — `data_generation` is already a defined workload type
-- Job creation: coordinator specifies domain, count, model, prompt template in manifest
-- Verification: structural validation (valid JSONL, correct field schema, no duplicates, no empty responses)
-
-**Worker-side changes (Hive-AI):**
-```
-hiveai/compute/worker.py:
-  Add _execute_data_generation(job) method:
-    1. Parse manifest: domain, pair_count, model_name, server_url, prompt_template
-    2. Spawn: python scripts/gen_pairs_worker.py \
-         --domain {domain} --count {pair_count} \
-         --server-url {server_url} --output /tmp/pairs_{job_id}.jsonl
-    3. Parse output JSONL, validate structure
-    4. Compute SHA-256, submit result with pair_count and sample pairs in result_json
-```
-
-**New script:**
-```
-scripts/gen_pairs_worker.py:
-  - Takes domain + count + server_url
-  - Uses existing improve.py weakness_hunter logic to generate prompts
-  - Sends to local model (llama-server / Ollama)
-  - Produces JSONL: {"instruction": "...", "response": "...", "domain": "...", "quality_score": 0.85}
-  - Exits with count of valid pairs generated
-```
-
-**New verifier:**
-```
-hiveai/compute/verifier.py:
-  Add DataGenerationVerifier:
-    1. Structural check: valid JSONL, required fields present
-    2. Dedup check: no duplicate instructions within the batch
-    3. Quality sample: re-score 10% of pairs using the coordinator's own model
-    4. Decision: PASS if ≥80% of sampled pairs score above quality threshold
-```
-
-**Manifest contract:**
+**1. Artifact manifest schema** (added to every job result):
 ```json
 {
-  "schema_version": 1,
-  "workload_type": "data_generation",
-  "domain": "rust",
-  "pair_count": 50,
-  "model_name": "qwen3:14b",
-  "server_url": "http://localhost:11434/v1",
-  "quality_threshold": 0.7,
-  "prompt_template": "weakness_targeted"
+  "provenance": {
+    "job_id": "uuid",
+    "job_nonce": "random-per-job (prevents replay across jobs)",
+    "worker_version": "1.2.0",
+    "worker_git_sha": "abc123",
+    "base_model_sha256": "sha256:...",
+    "tokenizer_sha256": "sha256:...",
+    "dataset_cid": "QmAbCdEf...",
+    "dataset_sha256": "sha256:...",
+    "seed": 42,
+    "hyperparameters": {"lr": 2e-4, "rank": 32, "epochs": 2},
+    "runtime": {
+      "cuda_version": "12.4",
+      "torch_version": "2.4.0",
+      "quantization": "4bit-bnb",
+      "platform": "linux-x86_64"
+    }
+  }
 }
 ```
 
-**Result contract:**
+**2. Artifact storage contract:**
+- All outputs > 1 KB go to IPFS (CID is the canonical reference)
+- Result JSON contains: `output_cid` (IPFS CID) + `output_sha256` + `output_size_bytes`
+- Size limits per workload type:
+  - `data_generation`: max 50 MB (JSONL batch)
+  - `domain_lora_train`: max 500 MB (adapter tar.gz)
+  - `eval_sweep` / `benchmark_run`: max 5 MB (result JSON)
+- Retention: pinned for 30 days minimum, then GC unless referenced by active adapter
+
+**3. Replay prevention:**
+- Every manifest includes a `job_nonce` (random, assigned by server at creation)
+- Worker must echo `job_nonce` in result provenance
+- Server rejects results where `output_sha256` was already submitted for a different `job_id`
+
+**4. Capability matching (expanded beyond just VRAM):**
 ```json
 {
-  "pairs_generated": 48,
-  "pairs_valid": 45,
-  "domain": "rust",
-  "avg_quality_score": 0.82,
-  "output_format": "jsonl",
-  "sample_pairs": [{"instruction": "...", "response": "...", "quality_score": 0.85}]
+  "min_vram_gb": 16,
+  "min_disk_free_gb": 50,
+  "required_cuda_major": 12,
+  "required_base_model": "Qwen/Qwen2.5-Coder-14B-Instruct",
+  "required_quantization": "4bit-bnb",
+  "max_wall_clock_seconds": 7200,
+  "generator_model_allowlist": ["qwen3:14b", "qwen3.5:9b"]
 }
 ```
 
-**Payout:** Budget per job (e.g., 0.01 HBD per 50 pairs). Paid on verification pass.
+**Changes needed:**
+
+| Repo | File | Change |
+|------|------|--------|
+| Hive-AI | `hiveai/compute/models.py` | Add `ProvenanceMetadata` dataclass, `ArtifactRef` dataclass |
+| Hive-AI | `hiveai/compute/worker.py` | Collect provenance on every job execution, include in result |
+| Hive-AI | `hiveai/dbc/compute_client.py` | Add `upload_artifact(path) → cid` using IPFS, `download_artifact(cid) → path` |
+| HivePoA | `server/services/compute-service.ts` | Validate `job_nonce` echo, enforce `output_sha256` dedup across jobs |
+| HivePoA | `server/routes.ts` | Add `job_nonce` to manifest on job creation |
 
 **Acceptance test:**
-1. Coordinator creates data_generation job for "rust" domain, 50 pairs
-2. Worker claims, generates pairs via local model, submits JSONL
-3. Verifier samples 10%, checks quality, approves
-4. Payout settles
+1. Create eval_sweep job — manifest includes `job_nonce`
+2. Worker submits result with provenance metadata + nonce echo
+3. Server accepts
+4. Same worker resubmits same `output_sha256` to a different job → rejected
+5. Worker submits result with wrong `job_nonce` → rejected
 
 ---
 
-### Phase 2 — Domain LoRA Training Jobs (Week 2)
+### Phase 1 — Data Generation Jobs
 
-**What:** Workers train domain-specific LoRA adapters on their GPUs, upload the adapter weights.
+**What:** Workers generate training pairs for weak domains. Embarrassingly parallel, no merge complexity.
 
-**Why second:** Still embarrassingly parallel (each worker trains independently), but now produces model artifacts instead of data. No merge needed — each adapter is evaluated independently and the best one wins.
+**Workload type:** `data_generation`
 
-**New workload type:** `domain_lora_train`
+**Generator model constraint:** Manifest specifies a `generator_model_allowlist`. Worker must use a model from the list. This prevents mixed-distribution dataset quality issues. Start with `["qwen3:14b", "qwen3.5:9b"]` — models the coordinator has tested.
 
-**Worker-side changes:**
-```
-hiveai/compute/worker.py:
-  Add _execute_domain_lora_train(job) method:
-    1. Parse manifest: domain, base_model, dataset_url, epochs, lr, rank, max_steps
-    2. Download dataset from IPFS/URL (manifest provides CID or URL)
-    3. Spawn: python scripts/train_domain_worker.py \
-         --base-model {base_model} --dataset {local_path} \
-         --domain {domain} --epochs {epochs} --lr {lr} --rank {rank} \
-         --output /tmp/adapter_{job_id}/
-    4. SHA-256 the adapter directory (tar.gz)
-    5. Submit: output_cid, adapter_size, final_loss, eval_score in result_json
-```
+**Verification (layered, not just sampling):**
 
-**New script:**
-```
-scripts/train_domain_worker.py:
-  - Wraps existing train_v5.py / train_domain.py logic
-  - Loads base model via Unsloth (QLoRA, 4-bit)
-  - Trains on provided dataset for specified steps
-  - Saves adapter to output dir (~50-150 MB)
-  - Runs quick eval (18-probe regression_eval.py --quick) on the result
-  - Outputs: adapter path, final_loss, eval_scores JSON
-```
+| Check | Layer | Cost |
+|-------|-------|------|
+| JSONL schema validation | Structural | Cheap — parse every line |
+| Required fields present | Structural | Cheap |
+| Exact + near-duplicate detection (within batch) | Corpus | Medium — hash + trigram |
+| Refusal/template boilerplate detection | Corpus | Cheap — pattern match |
+| Repetition + length-distribution anomaly | Corpus | Cheap — stats |
+| Domain keyword validator | Corpus | Cheap |
+| Sampled quality scoring (10% via coordinator model) | Semantic | Expensive — LLM call |
+| `job_nonce` echo + `output_sha256` dedup | Provenance | Cheap |
 
-**New verifier:**
-```
-hiveai/compute/verifier.py:
-  Add DomainLoraTrainVerifier:
-    1. Structural check: adapter files present (adapter_model.safetensors, adapter_config.json)
-    2. Load adapter onto base model (coordinator must have base model available)
-    3. Run hidden eval (18-probe quick regression_eval.py)
-    4. Compare worker-reported score vs coordinator-measured score (15% tolerance)
-    5. Decision: PASS if adapter loads cleanly and scores within tolerance
-```
+**Decision:** PASS if all structural/corpus checks pass AND sampled quality ≥ 70%.
 
 **Manifest contract:**
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "workload_type": "data_generation",
+  "job_nonce": "server-assigned-random",
+  "domain": "rust",
+  "pair_count": 50,
+  "generator_model_allowlist": ["qwen3:14b"],
+  "server_url": "http://localhost:11434/v1",
+  "quality_threshold": 0.7,
+  "prompt_template": "weakness_targeted",
+  "max_wall_clock_seconds": 1800
+}
+```
+
+**Payout:** See revised economics below.
+
+---
+
+### Phase 1.5 — Adapter Validation as First-Class Path
+
+**What:** Before training jobs, add `adapter_validation` — workers load an existing adapter and run hidden eval. This is cheaper than training and gives the coordinator confidence in worker capability before trusting them with expensive training jobs.
+
+**Why here:** Warm-up reputation currently restricts new workers to eval_sweep/benchmark_run. Adding adapter_validation as the next reputation tier gates access to domain_lora_train. Workers prove they can load a base model + adapter before being trusted to train one.
+
+**Flow:**
+1. Coordinator uploads adapter to IPFS
+2. Creates `adapter_validation` job with adapter CID + eval manifest
+3. Worker downloads adapter, loads onto base model, runs quick eval
+4. Submits scores
+5. Verifier compares against coordinator's own eval of same adapter
+
+---
+
+### Phase 2 — Domain LoRA Training Jobs
+
+**What:** Workers train domain-specific LoRA adapters and upload adapter weights.
+
+**Workload type:** `domain_lora_train`
+
+**Gating:** Workers must have reputation ≥ 5 (passed 5+ eval/validation jobs) to claim training jobs.
+
+**Runtime pinning:** Manifest specifies exact runtime requirements:
+```json
+{
+  "schema_version": 2,
   "workload_type": "domain_lora_train",
+  "job_nonce": "server-assigned",
   "domain": "rust",
   "base_model": "Qwen/Qwen2.5-Coder-14B-Instruct",
+  "base_model_sha256": "sha256:...",
   "dataset_cid": "QmAbCdEf...",
-  "dataset_format": "jsonl",
+  "dataset_sha256": "sha256:...",
   "epochs": 2,
   "learning_rate": 2e-4,
   "lora_rank": 32,
   "max_steps": 2000,
+  "seed": 42,
+  "quantization": "4bit-bnb",
   "min_vram_gb": 16,
-  "eval_after_train": true
+  "eval_after_train": true,
+  "max_wall_clock_seconds": 7200
 }
 ```
 
-**Requirements:**
-- Worker needs ≥16 GB VRAM (QLoRA on 14B model)
-- Dataset downloaded from IPFS (existing IPFS integration in desktop agent)
-- Adapter uploaded back (V1: SHA-256 reference, V1.1: IPFS pin)
+**Verification:** Full hidden quick eval (18-probe), not sampled. Training jobs are higher value and lower count — full verification is justified.
 
-**Payout:** Higher budget per job (e.g., 0.05-0.10 HBD per training run). Training uses more GPU time than eval.
+**Adapter output must include:**
+- `adapter_model.safetensors`
+- `adapter_config.json`
+- `training_log.json` (loss curve, lr schedule, wall time)
+- Provenance metadata (all hashes, seed, hyperparams)
 
 ---
 
-### Phase 3 — Adapter Aggregation (Week 3-4)
+### Phase 3 — Adapter Aggregation
 
-**What:** Coordinator collects multiple domain LoRA adapters from different workers, merges them into an improved global adapter.
+**Merge algorithm:**
 
-**Why third:** This is where the Bittensor-like "collective intelligence" emerges. Multiple workers each train on different data shards → coordinator merges the best adapters → better model than any single worker could produce.
-
-**Architecture: Hub-and-spoke, NOT federated gradient sync.**
-
-```
-Worker A (rust shard 1) → trains → adapter_A (50 MB)
-Worker B (rust shard 2) → trains → adapter_B (50 MB)
-Worker C (python shard 1) → trains → adapter_C (50 MB)
-                    ↓
-           Coordinator collects all adapters
-                    ↓
-         Merge: dense-delta + truncated SVD
-                    ↓
-         Global adapter v6 (~50 MB)
-                    ↓
-         Full eval (60-probe regression_eval.py)
-                    ↓
-         If improved: broadcast as new baseline
-```
-
-**Merge algorithm (correct, not naive):**
-
+**Phase 3 prototype:** Dense-delta + truncated SVD (simple, debuggable).
 ```python
-# WRONG (naive LoRA averaging):
-# avg(B_i @ A_i) ≠ avg(B_i) @ avg(A_i)
-
-# CORRECT (dense-delta + SVD):
-def merge_adapters(adapters: list[LoRAAdapter], rank: int) -> LoRAAdapter:
-    # 1. Reconstruct each adapter's dense delta
-    deltas = [adapter.B @ adapter.A for adapter in adapters]
-
-    # 2. Weighted average of dense deltas
-    #    Weight by verification score (better adapters contribute more)
-    weights = [adapter.verification_score for adapter in adapters]
-    weights = normalize(weights)
-    merged_delta = sum(w * d for w, d in zip(weights, deltas))
-
-    # 3. Compress back to LoRA rank via truncated SVD
-    U, S, Vh = torch.linalg.svd(merged_delta, full_matrices=False)
-    new_B = U[:, :rank] @ torch.diag(torch.sqrt(S[:rank]))
-    new_A = torch.diag(torch.sqrt(S[:rank])) @ Vh[:rank, :]
-
-    return LoRAAdapter(A=new_A, B=new_B)
+# Reconstruct dense deltas, weighted average, compress back to rank
+deltas = [adapter.B @ adapter.A for adapter in adapters]
+merged_delta = weighted_average(deltas, verification_scores)
+U, S, Vh = svd(merged_delta)
+new_B = U[:, :rank] @ diag(sqrt(S[:rank]))
+new_A = diag(sqrt(S[:rank])) @ Vh[:rank, :]
 ```
 
-**New components:**
+**Known limitation:** Truncation back to rank 32 discards residual information every round. Monitor `discarded_residual_norm = ||merged_delta - new_B @ new_A||` to detect when compression is destructive.
 
-```
-hiveai/compute/aggregator.py:
-  class AdapterAggregator:
-    - collect_adapters(job_ids: list[str]) → list[LoRAAdapter]
-    - merge_dense_delta_svd(adapters, rank, weights) → LoRAAdapter
-    - evaluate_merged(adapter, eval_probes) → score
-    - publish_if_improved(adapter, score, current_baseline) → bool
+**Phase 4 production:** Move to FedEx-LoRA residual-carry scheme (pushes residual into frozen base weights instead of discarding). Reference: arXiv 2410.09432.
 
-scripts/merge_adapters.py:
-  - CLI entry point for adapter aggregation
-  - Downloads adapters from workers (IPFS or direct)
-  - Runs merge_dense_delta_svd
-  - Evaluates merged adapter
-  - If improved: saves as new baseline, updates score_ledger.json
-```
-
-**Coordinator flow (runs on your machine or a trusted server):**
-1. Create N training jobs (one per data shard)
-2. Wait for all to complete + pass verification
-3. Download verified adapters
-4. Merge using dense-delta + SVD (weighted by verification score)
-5. Evaluate merged adapter (full 60-probe eval)
-6. If score improves over baseline: publish as new version
-7. Broadcast new baseline to workers for next round
-
-**This is NOT run on untrusted workers.** The coordinator does the merge. Workers only train and submit.
+**Admission control (do NOT merge every passing adapter):**
+- Must pass hidden eval
+- Must be non-dominated on at least one target domain
+- Must not regress core baseline beyond threshold (3% on any domain)
+- Merge set is curated, not mechanical
 
 ---
 
-### Phase 4 — Multi-Round Federated Loop (Week 4+)
+### Phase 4 — Multi-Round Federated Loop
 
-**What:** Automate the cycle: shard data → distribute to workers → collect adapters → merge → evaluate → broadcast new baseline → repeat.
+**Do NOT start until:**
+- Phase 0-2 have stable artifact handling and verifier telemetry
+- 3+ reliable workers with established reputation
+- Dataset ≥ 50k pairs
+- Merge evaluation harness can detect regressions across rounds
 
-**Architecture:**
-
-```
-Round 1:
-  Coordinator shards dataset (e.g., 10 shards of 500 pairs each)
-  Creates 10 domain_lora_train jobs
-  Workers claim and train independently
-  Coordinator merges → v6 adapter
-
-Round 2:
-  Coordinator re-shards (new random split for distribution balance)
-  Workers now train starting from v6 adapter (not base model)
-  Workers train → submit adapters
-  Coordinator merges → v7 adapter
-
-Round 3...N:
-  Repeat until convergence or budget exhausted
-```
-
-**New components:**
-
-```
-scripts/federated_round.py:
-  class FederatedCoordinator:
-    - shard_dataset(dataset_path, num_shards) → list[shard_paths]
-    - upload_shards_to_ipfs(shard_paths) → list[cids]
-    - create_training_jobs(shard_cids, base_adapter, budget_per_job)
-    - wait_for_completion(job_ids, timeout)
-    - collect_and_merge(job_ids) → merged_adapter
-    - evaluate_and_publish(merged_adapter) → bool
-    - run_round() → RoundResult
-    - run_multi_round(num_rounds) → list[RoundResult]
-```
-
-**When to use federated training:**
-- NOT now (dataset is ~6k pairs — too small for multi-worker benefit)
-- When dataset reaches 50k+ pairs
-- When you have 3+ active GPU workers consistently
-
-**Until then:** Use Phase 1-2 (data generation + independent domain LoRAs). The value is in generating MORE data and evaluating more configurations in parallel, not in federated gradient aggregation.
+**When ready:**
+- Coordinator shards dataset, distributes to workers
+- Workers train starting from current best adapter (not base model)
+- Coordinator collects, curates, merges, evaluates, publishes if improved
+- Re-shard each round (new random split for distribution balance)
+- Track residual norm — switch to FedEx-LoRA when SVD truncation exceeds threshold
 
 ---
 
-## Economic Model
+## Revised Economic Model
 
-### Job Pricing (HBD)
+### The Pricing Reality
 
-| Workload Type | Typical Duration | Suggested Budget | VRAM Required |
-|--------------|-----------------|-----------------|---------------|
-| `eval_sweep` | 5-30 min | 0.005-0.010 HBD | 8+ GB |
-| `benchmark_run` | 5-20 min | 0.005-0.010 HBD | 8+ GB |
-| `data_generation` | 10-30 min | 0.010-0.020 HBD | 8+ GB |
-| `domain_lora_train` | 30-120 min | 0.050-0.100 HBD | 16+ GB |
-| `adapter_validation` | 5-15 min | 0.005-0.010 HBD | 16+ GB |
+HBD ≈ $1 USD (Hive on-chain conversion mechanism). Cloud GPU rates (2026):
+- RTX 4090: ~$0.34/hr
+- A100: ~$1.19/hr
+- H100: ~$1.99/hr
 
-### Worker Economics
+A 30-minute 4090 run costs ~$0.17 at cloud rates. The original plan's 0.05-0.10 HBD for a 30-120 minute training job was **below cost**.
 
-- Worker earns HBD per completed + verified job
-- Reputation builds over time (warm-up period: eval_sweep only for first 5 jobs)
-- Higher reputation = access to higher-paying training jobs
-- Verification failure = reputation penalty + no payout
-- Workers can declare cached models → get priority for matching jobs
+### Revised Job Pricing
 
-### Coordinator Economics
+| Workload Type | Duration | Budget (HBD) | Notes |
+|--------------|----------|-------------|-------|
+| `eval_sweep` | 5-30 min | 0.010-0.050 | Low GPU, mostly inference |
+| `benchmark_run` | 5-20 min | 0.010-0.050 | Low GPU, mostly inference |
+| `data_generation` | 10-30 min | 0.030-0.100 | Medium GPU, inference-heavy |
+| `adapter_validation` | 5-15 min | 0.010-0.030 | Load model + quick eval |
+| `domain_lora_train` | 30-120 min | 0.200-0.500 | Full training, 16+ GB VRAM |
 
-- Coordinator funds jobs from HBD budget (personal wallet or storage tier revenue)
-- ROI: better model → more users → more storage tier subscriptions → more HBD
-- Cost to train: ~0.50-1.00 HBD per full training round (10 workers × 0.05-0.10 each)
-- Compare to cloud GPU: ~$0.50-2.00/hr for equivalent compute
+### Market Positioning
+
+This is **not cloud-competitive pricing**. It is **surplus-idle-GPU participation**:
+- Workers donate idle GPU cycles below cloud market rate
+- In exchange: earn HBD (real cryptocurrency) for idle compute
+- The appeal is passive income from hardware already owned, not competing with RunPod
+- Compare to Folding@Home or early Bitcoin mining: under-market compute with non-monetary motivation (community, early participation, reputation)
+
+### Pricing Formula (v1)
+
+```
+payout = base_rate_per_minute × expected_minutes × vram_tier_multiplier
+
+where:
+  base_rate_per_minute = 0.002 HBD (floor)
+  vram_tier_multiplier = {8GB: 0.5, 16GB: 1.0, 24GB: 1.5, 48GB: 2.0}
+  expected_minutes = from manifest max_wall_clock_seconds / 60
+```
+
+Example: 60-minute training job on 16GB GPU = 0.002 × 60 × 1.0 = **0.120 HBD**
 
 ---
 
-## Security Model
+## Revised Security Model
 
-### Trust Hierarchy
+### Trust Hierarchy (unchanged)
 
 ```
-TRUSTED (runs on coordinator):
-  - Job creation (what to compute)
-  - Verification (re-run hidden eval)
-  - Adapter merging (dense-delta + SVD)
-  - Score tracking (score_ledger.json)
-  - Payout decisions
-
-UNTRUSTED (runs on workers):
-  - Data generation (produces JSONL)
-  - LoRA training (produces adapter weights)
-  - Eval execution (produces scores)
-  - All worker output verified before payout
+TRUSTED (coordinator): Job creation, verification, merging, payouts
+UNTRUSTED (workers): Data gen, training, eval execution — all verified before payout
 ```
 
-### Attack Vectors & Mitigations
+### Expanded Attack Mitigations
 
 | Attack | Mitigation |
 |--------|-----------|
-| Worker submits fake scores | Verifier re-runs eval independently |
-| Worker submits garbage adapter | Verifier loads adapter + runs hidden eval |
-| Worker submits plagiarized data | Dedup check against existing dataset |
-| Worker submits poisoned training data | Quality sampling + domain-specific validation |
-| Sybil attack (many fake workers) | Warm-up reputation + Hive account age check |
-| Worker re-submits same result | SHA-256 dedup on output artifacts |
-| Worker runs for reward without GPU | Lease timeout + heartbeat enforcement |
+| Worker submits fake scores | Full hidden eval re-run by verifier |
+| Worker submits garbage adapter | Verifier loads adapter + full hidden eval |
+| Worker replays previous good result to new job | `job_nonce` echo + `output_sha256` cross-job dedup |
+| Worker submits plagiarized data | Exact + near-dedup against existing corpus |
+| Worker submits poisoned training data | Whole-batch structural filters + sampled semantic review + canary probes |
+| Hidden eval overfitting over time | Rotate hidden eval set periodically |
+| Sybil attack | Warm-up reputation + Hive account age (7-day minimum from v1.0 security hardening) |
+| Runtime drift (different quant/tokenizer) | Manifest pins exact model hash, quant backend, tokenizer hash |
+| Resource fraud via slow heartbeating | Progress semantics per workload type (e.g., "step 500/2000") |
+| Backdoor triggers in training data | Corpus-level anomaly scans + canary probes in merged adapter eval |
 
-### What We Do NOT Attempt to Prevent
+### What We Deliberately Do Not Prevent
 
-- Workers seeing the training data (it's open — this is a public good)
-- Workers copying the adapter (LoRAs are public artifacts)
-- Workers running on cloud GPUs instead of local (fine — compute is compute)
-
----
-
-## Implementation Order (What to Build)
-
-### Week 1: data_generation workload
-1. `scripts/gen_pairs_worker.py` — standalone pair generator script
-2. `hiveai/compute/worker.py` — add `_execute_data_generation()` method
-3. `hiveai/compute/verifier.py` — add `DataGenerationVerifier`
-4. `hiveai/compute/models.py` — add `DataGenerationManifest` + `DataGenerationResult`
-5. Test: `canary_compute.py --workload data_generation`
-6. Update `gpu_worker.py` — add `data_generation` to default supported workloads
-
-### Week 2: domain_lora_train workload
-1. `scripts/train_domain_worker.py` — wraps train_v5.py for worker execution
-2. `hiveai/compute/worker.py` — add `_execute_domain_lora_train()` method
-3. `hiveai/compute/verifier.py` — add `DomainLoraTrainVerifier`
-4. `hiveai/compute/models.py` — add `DomainLoraTrainManifest` + `DomainLoraTrainResult`
-5. Test: canary with actual adapter training + verification
-
-### Week 3: Adapter aggregation
-1. `hiveai/compute/aggregator.py` — dense-delta + SVD merge
-2. `scripts/merge_adapters.py` — CLI entry point
-3. Integration test: create 2 training jobs → merge adapters → evaluate
-
-### Week 4: Federated loop automation
-1. `scripts/federated_round.py` — full round orchestration
-2. Multi-round test: 2 rounds with 2 workers
-3. Beta distribution for worker reliability scoring
+- Workers seeing training data (open public good)
+- Workers copying adapters (public LoRA artifacts)
+- Workers using cloud GPUs (compute is compute)
 
 ---
 
-## What GPT Should Review
+## Implementation Order
 
-1. **Is the phase ordering correct?** Data gen → training → merge → federated
-2. **Is dense-delta + SVD the right merge for our LoRA rank (32)?** Or is FedEx-LoRA residual better?
-3. **Is 0.05-0.10 HBD per training job economically viable?** What's the USD equivalent compute cost?
-4. **Should we use multi-round from the start** or wait until 50k+ pairs?
-5. **Is the verification model sound?** Re-running hidden eval is expensive — is sampling sufficient?
-6. **What's missing from the security model?** Especially around data poisoning in training.
-7. **Should adapters go to IPFS immediately** or is SHA-256 reference + direct download enough for V1?
+### Phase 0: Artifact + Provenance (Week 1)
+1. `hiveai/compute/models.py` — `ProvenanceMetadata`, `ArtifactRef` dataclasses
+2. `hiveai/dbc/compute_client.py` — `upload_artifact()`, `download_artifact()` via IPFS
+3. `hiveai/compute/worker.py` — collect + submit provenance on every job
+4. HivePoA `compute-service.ts` — `job_nonce` generation, echo validation, SHA-256 dedup
+5. Tests + canary
+
+### Phase 1: data_generation (Week 2)
+1. `scripts/gen_pairs_worker.py` — pair generator (pinned model allowlist)
+2. `hiveai/compute/worker.py` — `_execute_data_generation()`
+3. `hiveai/compute/verifier.py` — `DataGenerationVerifier` (layered checks)
+4. `hiveai/compute/models.py` — manifest + result dataclasses
+5. Tests + canary
+
+### Phase 1.5: adapter_validation (Week 2-3)
+1. `hiveai/compute/worker.py` — `_execute_adapter_validation()`
+2. `hiveai/compute/verifier.py` — `AdapterValidationVerifier`
+3. Reputation gate: workers must pass this to unlock training jobs
+
+### Phase 2: domain_lora_train (Week 3)
+1. `scripts/train_domain_worker.py` — wraps train_v5.py, outputs adapter + provenance
+2. `hiveai/compute/worker.py` — `_execute_domain_lora_train()`
+3. `hiveai/compute/verifier.py` — `DomainLoraTrainVerifier` (full hidden eval, not sampled)
+4. Tests + canary with real adapter training
+
+### Phase 3: Aggregation (Week 4)
+1. `hiveai/compute/aggregator.py` — dense-delta + SVD with residual norm monitoring
+2. `scripts/merge_adapters.py` — CLI with admission control
+3. Integration test: 2 training jobs → curated merge → evaluate
+
+### Phase 4: Federated loop (deferred)
+- Not until 3+ reliable workers, 50k+ pairs, stable artifact layer
 
 ---
 
@@ -436,47 +381,47 @@ UNTRUSTED (runs on workers):
 ### Hive-AI (Python)
 | File | Change |
 |------|--------|
-| `hiveai/compute/worker.py` | Add `_execute_data_generation()`, `_execute_domain_lora_train()` |
-| `hiveai/compute/verifier.py` | Add `DataGenerationVerifier`, `DomainLoraTrainVerifier` |
-| `hiveai/compute/models.py` | Add manifest/result dataclasses for new workload types |
-| `hiveai/compute/aggregator.py` | **NEW** — adapter merge (dense-delta + SVD) |
+| `hiveai/compute/models.py` | `ProvenanceMetadata`, `ArtifactRef`, new manifest/result types (schema v2) |
+| `hiveai/compute/worker.py` | Provenance collection, 3 new executor methods |
+| `hiveai/compute/verifier.py` | 3 new verifiers (data gen, adapter validation, LoRA train) |
+| `hiveai/compute/aggregator.py` | **NEW** — dense-delta + SVD merge with admission control |
+| `hiveai/dbc/compute_client.py` | IPFS artifact upload/download |
 | `scripts/gen_pairs_worker.py` | **NEW** — data generation executor |
-| `scripts/train_domain_worker.py` | **NEW** — training executor (wraps train_v5.py) |
+| `scripts/train_domain_worker.py` | **NEW** — training executor |
 | `scripts/merge_adapters.py` | **NEW** — CLI adapter aggregation |
-| `scripts/federated_round.py` | **NEW** — multi-round orchestration |
-| `scripts/canary_compute.py` | Add data_generation + domain_lora_train canary flows |
-| `tests/test_compute.py` | Add tests for new workload types |
+| `scripts/canary_compute.py` | Canary flows for all new workload types |
+| `tests/test_compute.py` | Tests for provenance, new workloads, artifact layer |
 
-### HivePoA (TypeScript) — Minimal Changes
+### HivePoA (TypeScript)
 | File | Change |
 |------|--------|
-| `server/services/compute-service.ts` | Add verification dispatch for new workload types |
-| `server/routes.ts` | Settlement payout logic for training jobs (higher budget) |
-
-### No Changes Needed
-- Job claiming, leasing, heartbeat — already generic
-- Node registration — already accepts any workload type string
-- Database schema — `compute_jobs.workload_type` is already TEXT, not enum
+| `server/services/compute-service.ts` | `job_nonce` generation, echo validation, SHA-256 dedup, verification dispatch |
+| `server/routes.ts` | `job_nonce` in manifest, payout formula (duration × VRAM tier) |
 
 ---
 
 ## Success Criteria
 
-**Phase 1 complete when:**
-- A worker on machine B can generate 50 training pairs for machine A's model
-- Pairs pass quality verification
-- Worker earns HBD
+**Phase 0 complete when:** Every job result carries provenance, artifacts go to IPFS, replay is prevented.
 
-**Phase 2 complete when:**
-- A worker on machine B can train a LoRA adapter on a data shard
-- Adapter passes hidden eval verification
-- Worker earns HBD
+**Phase 1 complete when:** Worker generates 50 pairs, passes layered verification, earns HBD.
 
-**Phase 3 complete when:**
-- 2+ adapters from different workers merge into a better adapter than any individual
-- Merged adapter scores higher on 60-probe eval than the pre-merge baseline
+**Phase 1.5 complete when:** Worker loads adapter + runs eval, result verified, reputation gates training access.
 
-**Phase 4 complete when:**
-- Automated loop: shard → train → merge → evaluate → repeat
-- 2+ rounds show monotonic improvement
-- Total cost < $2 HBD per training round
+**Phase 2 complete when:** Worker trains LoRA adapter, passes full hidden eval, earns HBD.
+
+**Phase 3 complete when:** 2+ adapters merge into a better adapter than any individual, residual norm tracked.
+
+**Phase 4 complete when:** Automated multi-round loop with monotonic improvement, < 2 HBD per round.
+
+---
+
+## Review Questions for GPT (Updated)
+
+1. Is the Phase 0 artifact/provenance contract sufficient, or does it need a formal specification?
+2. Is the layered verification for data_generation (structural + corpus + sampled semantic) the right balance?
+3. Is the reputation gating (eval → adapter_validation → training) the right progression?
+4. Should the pricing formula be dynamic (market-based) or fixed (posted price) for v1?
+5. Is FedEx-LoRA the right target for Phase 4, or is there a simpler residual-carry scheme?
+6. What corpus-level anomaly scans are practical for detecting training data poisoning?
+7. Should the coordinator run verification on every submission or probabilistically audit?
