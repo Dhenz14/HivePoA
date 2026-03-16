@@ -246,8 +246,29 @@ export class SQLiteStorage implements IStorage {
     return mapRow<File>(created);
   }
 
-  async getUserStorageUsed(_username: string): Promise<number> { return 0; }
-  async getActiveUserTierContract(_username: string): Promise<any> { return undefined; }
+  async getUserStorageUsed(username: string): Promise<number> {
+    const result = await db().select({
+      total: sql<number>`COALESCE(SUM(${S.files.sizeBytes}), 0)`,
+    }).from(S.files).where(and(
+      eq(S.files.uploaderUsername, username),
+      sql`${S.files.status} IN ('pinned', 'syncing', 'warning')`,
+    ));
+    return Number(result[0]?.total || 0);
+  }
+
+  async getActiveUserTierContract(username: string): Promise<StorageContract | undefined> {
+    const rows = await db().select().from(S.storageContracts)
+      .where(and(
+        eq(S.storageContracts.uploaderUsername, username),
+        eq(S.storageContracts.status, "active"),
+        sql`${S.storageContracts.storageTierId} IS NOT NULL`,
+        sql`${S.storageContracts.expiresAt} > datetime('now')`,
+      ))
+      .orderBy(desc(S.storageContracts.createdAt))
+      .limit(1);
+    const mapped = mapRows<StorageContract>(rows);
+    return mapped[0] || undefined;
+  }
 
   async deleteFile(id: string): Promise<boolean> {
     // Delete contract events via subquery
@@ -672,7 +693,16 @@ export class SQLiteStorage implements IStorage {
     return mapRows<StorageContract>(rows);
   }
 
-  async getActiveTierContracts(): Promise<StorageContract[]> { return []; }
+  async getActiveTierContracts(): Promise<StorageContract[]> {
+    const rows = await db().select().from(S.storageContracts)
+      .where(and(
+        eq(S.storageContracts.status, "active"),
+        sql`${S.storageContracts.storageTierId} IS NOT NULL`,
+        sql`CAST(${S.storageContracts.hbdSpent} AS REAL) < CAST(${S.storageContracts.hbdBudget} AS REAL)`,
+        sql`${S.storageContracts.expiresAt} > datetime('now')`
+      ));
+    return mapRows<StorageContract>(rows);
+  }
 
   async getActiveContractsForChallenge(): Promise<StorageContract[]> {
     const rows = await db().select().from(S.storageContracts)

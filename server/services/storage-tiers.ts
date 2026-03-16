@@ -13,6 +13,19 @@
  * NOTE: Overpay increases incentive, not a guaranteed redundancy SLA.
  * More reward makes files more attractive to store, but actual replica count
  * depends on network participation and node availability.
+ *
+ * KNOWN CONSTRAINTS (v1.1.x):
+ *
+ * Challenge weighting: Tier contracts make ALL of a user's files eligible for
+ * PoA challenges. Challenge selection is implicitly file-count weighted — a user
+ * with 1000 small files gets more challenge entries than a user with 1 large file
+ * in the same tier. This is acceptable for v1.1 but a v1.2 design review should
+ * decide whether challenge scheduling should be per-file, per-byte, or per-user.
+ *
+ * Status trust boundary: Quota accounting only counts files with status in
+ * (pinned, syncing, warning). If a file gets stuck in a non-counted status
+ * (e.g., "uploading" due to a failed cleanup), quota can be bypassed
+ * operationally. File status correctness is now part of quota correctness.
  */
 
 export interface StorageTier {

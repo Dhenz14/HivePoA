@@ -637,8 +637,33 @@ export async function registerRoutes(
     res.json({ success: cancelled });
   });
 
-  // Per-user upload mutex to prevent TOCTOU quota race on concurrent uploads
-  const uploadLocks = new Map<string, Promise<void>>();
+  /**
+   * Acquire a PostgreSQL advisory lock for upload quota enforcement.
+   * Uses pg_advisory_xact_lock with a hash of the username, scoped to a transaction.
+   * This serializes concurrent uploads from the same user across ALL app processes/pods.
+   * Falls back to no lock on SQLite (desktop agent is single-process).
+   */
+  async function withUploadQuotaLock<T>(username: string, fn: () => Promise<T>): Promise<T> {
+    const { pool } = await import("./db");
+    if (!pool) return fn(); // SQLite mode — single process, no lock needed
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      // Hash username to a stable int64 for advisory lock
+      // Use two-arg form: namespace 1 (upload quota) + username hash
+      const hash = Array.from(username).reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0);
+      await client.query("SELECT pg_advisory_xact_lock(1, $1)", [hash]);
+      const result = await fn();
+      await client.query("COMMIT");
+      return result;
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
 
   // Simple single-file upload to IPFS (used by the Storage page upload button)
   app.post("/api/upload/simple", requireAuth, async (req, res) => {
@@ -653,30 +678,27 @@ export async function registerRoutes(
       const fileSize = data.length;
       const username = req.authenticatedUser!;
 
-      // Serialize per-user uploads to prevent TOCTOU quota race
-      const prevLock = uploadLocks.get(username) || Promise.resolve();
-      let releaseLock: () => void;
-      const lockPromise = new Promise<void>(resolve => { releaseLock = resolve; });
-      uploadLocks.set(username, prevLock.then(() => lockPromise));
-      await prevLock;
-
-      try {
-        // Enforce tier storage cap (inside lock — no concurrent bypass)
+      // DB advisory lock: serializes quota check + file insert across all processes
+      const result = await withUploadQuotaLock(username, async () => {
+        // Enforce tier storage cap
         const activeContract = await storage.getActiveUserTierContract(username);
         if (activeContract?.storageTierId) {
           const tier = getTierById(activeContract.storageTierId);
           if (tier) {
             const usedBytes = await storage.getUserStorageUsed(username);
             if (usedBytes + fileSize > tier.storageLimitBytes) {
-              res.status(413).json({
-                error: "Storage limit exceeded",
-                usedBytes,
-                fileSize,
-                limitBytes: tier.storageLimitBytes,
-                tier: tier.id,
-                message: `This upload (${(fileSize / 1048576).toFixed(1)} MB) would exceed your ${tier.storageLimitLabel} ${tier.name} plan. Upgrade your tier or remove files.`,
-              });
-              return;
+              return {
+                rejected: true as const,
+                status: 413,
+                body: {
+                  error: "Storage limit exceeded",
+                  usedBytes,
+                  fileSize,
+                  limitBytes: tier.storageLimitBytes,
+                  tier: tier.id,
+                  message: `This upload (${(fileSize / 1048576).toFixed(1)} MB) would exceed your ${tier.storageLimitLabel} ${tier.name} plan. Upgrade your tier or remove files.`,
+                },
+              };
             }
           }
         }
@@ -684,7 +706,7 @@ export async function registerRoutes(
         const ipfs = getIPFSClient();
         const cid = await ipfs.addWithPin(data);
 
-        // Register file in DB (inside lock — sizeBytes committed before next upload can check)
+        // Register file in DB (inside advisory lock — committed before lock releases)
         const file = await storage.createFile({
           name: fileName,
           cid,
@@ -699,13 +721,16 @@ export async function registerRoutes(
           poaEnabled: true,
         });
 
-        logRoutes.info({ cid, fileName, size: fileSize, user: req.authenticatedUser }, "File uploaded to IPFS");
-        res.json({ success: true, file, cid });
-      } finally {
-        releaseLock!();
-        // Clean up lock entry if no more waiters
-        if (uploadLocks.get(username) === lockPromise) uploadLocks.delete(username);
+        return { rejected: false as const, file, cid };
+      });
+
+      if (result.rejected) {
+        res.status(result.status).json(result.body);
+        return;
       }
+
+      logRoutes.info({ cid: result.cid, fileName, size: fileSize, user: username }, "File uploaded to IPFS");
+      res.json({ success: true, file: result.file, cid: result.cid });
     } catch (error: any) {
       logRoutes.error({ err: error }, "Simple upload failed");
       res.status(500).json({ error: "Upload failed: " + error.message });
