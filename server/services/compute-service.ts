@@ -1,6 +1,20 @@
 import { randomBytes, createHash } from "crypto";
 import { storage } from "../storage";
 import { logCompute } from "../logger";
+import {
+  emitClaimIssued,
+  emitSubmitAccepted,
+  emitSubmitRejected,
+  emitSubmitIdempotent,
+  emitLateSubmitRejected,
+  emitAttemptAccepted,
+  emitAttemptRejected,
+  emitAcceptanceIdempotent,
+  emitAcceptanceCASFailed,
+  emitNonceMismatch,
+  emitDivergentReplay,
+  emitLeaseExpired,
+} from "./compute-events";
 import type {
   ComputeNode,
   ComputeJob,
@@ -96,6 +110,10 @@ export interface JobSubmission {
 
 // Phase 0: Provenance size limit
 const MAX_PROVENANCE_SIZE = 64 * 1024; // 64 KB
+
+// Hash contract version — bump this if framing format changes.
+// Existing submissionPayloadHash values become incomparable across versions.
+const SUBMISSION_PAYLOAD_HASH_VERSION = "v1";
 
 /**
  * Compute a canonical payload hash for idempotency/divergent-replay detection.
@@ -311,7 +329,14 @@ export class ComputeService {
     // Update node job count
     await storage.updateComputeNodeHeartbeat(nodeId, node.jobsInProgress + 1);
 
-    logCompute.info({ jobId: result.job.id, nodeId, attemptId: result.attempt.id }, "Job claimed atomically");
+    emitClaimIssued({
+      jobId: result.job.id,
+      attemptId: result.attempt.id,
+      nodeId,
+      nonce: result.attempt.nonce,
+      leaseSeconds: result.job.leaseSeconds,
+      workloadType: result.job.workloadType,
+    });
     return result;
   }
 
@@ -357,7 +382,7 @@ export class ComputeService {
 
     // Phase 0: Nonce validation — must match server-issued nonce
     if (submission.nonce !== attempt.nonce) {
-      logCompute.warn({ attemptId, expected: attempt.nonce, received: submission.nonce }, "Nonce mismatch");
+      emitNonceMismatch({ attemptId, expected: attempt.nonce, received: submission.nonce });
       throw Object.assign(new Error("NONCE_MISMATCH"), { statusCode: 409 });
     }
 
@@ -369,15 +394,17 @@ export class ComputeService {
       submission.resultJson,
     );
 
-    // Phase 0: Idempotent replay — if already submitted, check for exact vs divergent replay
+    // Phase 0: Idempotent replay — if already submitted, check for exact vs divergent replay.
+    // SIDE-EFFECT FREE: no DB writes, no heartbeat refresh, no timestamp updates,
+    // no event re-emission. Returns cached result only. Safe after lease expiry.
     if (attempt.state === "submitted" || attempt.state === "accepted" || attempt.state === "rejected") {
       if (attempt.submissionPayloadHash === payloadHash) {
-        // Exact replay — return existing result idempotently
-        logCompute.info({ attemptId, nonce: submission.nonce }, "Idempotent submit replay");
+        // Exact replay — return existing result idempotently (zero side effects)
+        emitSubmitIdempotent({ jobId: attempt.jobId, attemptId, nonce: submission.nonce });
         return attempt;
       } else {
         // Divergent replay — same (attemptId, nonce) but different payload
-        logCompute.warn({ attemptId, nonce: submission.nonce }, "Divergent payload on replay");
+        emitDivergentReplay({ attemptId, nonce: submission.nonce });
         throw Object.assign(new Error("SUBMISSION_PAYLOAD_MISMATCH"), { statusCode: 409 });
       }
     }
@@ -393,11 +420,11 @@ export class ComputeService {
     // Phase 0: Late-submit check — server receipt time vs lease expiry
     const now = new Date();
     if (attempt.leaseExpiresAt && now > attempt.leaseExpiresAt) {
-      logCompute.warn({
-        attemptId, nonce: submission.nonce,
-        leaseExpiresAt: attempt.leaseExpiresAt, serverTime: now,
+      emitLateSubmitRejected({
+        jobId: attempt.jobId, attemptId, nonce: submission.nonce,
         outputSha256: submission.outputSha256,
-      }, "Late submit rejected");
+        leaseExpiresAt: attempt.leaseExpiresAt, serverTime: now,
+      });
       throw Object.assign(new Error("LEASE_EXPIRED"), { statusCode: 409 });
     }
 
@@ -430,7 +457,12 @@ export class ComputeService {
 
     await storage.updateComputeJobState(attempt.jobId, "submitted");
 
-    logCompute.info({ jobId: attempt.jobId, attemptId, nonce: submission.nonce, cid: submission.outputCid }, "Job result submitted");
+    emitSubmitAccepted({
+      jobId: attempt.jobId, attemptId, nodeId: attempt.nodeId,
+      nonce: submission.nonce, outputSha256: submission.outputSha256,
+      verificationScore: 0, // will be updated after verification
+      hasProvenance: !!submission.provenanceJson,
+    });
 
     // Trigger verification (inline for V1)
     await this.runVerification(attempt.jobId, attemptId);
@@ -648,12 +680,19 @@ export class ComputeService {
   private async acceptAttempt(job: ComputeJob, attempt: ComputeJobAttempt, verificationScore: number): Promise<void> {
     // Phase 0 invariant: exactly one accepted attempt per job.
     // DB-level CAS: UPDATE ... SET acceptedAttemptId = ? WHERE acceptedAttemptId IS NULL
-    // If another attempt already won, the CAS returns false — no state mutation.
     const won = await storage.casAcceptJob(job.id, attempt.id);
     if (!won) {
-      logCompute.warn({ jobId: job.id, attemptId: attempt.id },
-        "Attempt acceptance blocked — CAS failed, job already has an accepted attempt");
-      // Loser path: mark attempt as rejected (deterministic)
+      // CAS failed — distinguish same-winner re-accept from different-winner collision
+      const freshJob = await storage.getComputeJob(job.id);
+      if (freshJob?.acceptedAttemptId === attempt.id) {
+        // Same winner re-accepted (idempotent — duplicate event, repair script, etc.)
+        emitAcceptanceIdempotent({ jobId: job.id, attemptId: attempt.id });
+        return;
+      }
+      // Different winner exists — deterministic loser path
+      emitAcceptanceCASFailed({
+        jobId: job.id, attemptId: attempt.id, winnerId: freshJob?.acceptedAttemptId || "unknown",
+      });
       await storage.updateComputeJobAttempt(attempt.id, {
         state: "rejected",
         failureReason: "Another attempt was accepted first",
@@ -699,10 +738,11 @@ export class ComputeService {
       });
     }
 
-    logCompute.info({
+    emitAttemptAccepted({
       jobId: job.id, attemptId: attempt.id, nodeId: attempt.nodeId,
-      validity: validityFee, completion: completionFee, bonus,
-    }, "Job accepted — payouts staged");
+      nonce: attempt.nonce,
+      verificationScore, validityFee, completionFee, bonus,
+    });
   }
 
   private async rejectAttempt(job: ComputeJob, attempt: ComputeJobAttempt, reason: string): Promise<void> {
@@ -721,12 +761,14 @@ export class ComputeService {
     await storage.decrementComputeNodeJobs(attempt.nodeId);
     await storage.updateComputeNodeStats(attempt.nodeId, false);
 
+    emitAttemptRejected({
+      jobId: job.id, attemptId: attempt.id, nodeId: attempt.nodeId, reason,
+    });
+
     if (job.attemptCount < job.maxAttempts) {
       await storage.updateComputeJobState(job.id, "queued");
-      logCompute.info({ jobId: job.id, reason }, "Attempt rejected, job re-queued");
     } else {
       await storage.updateComputeJobState(job.id, "rejected", { completedAt: new Date() });
-      logCompute.warn({ jobId: job.id, reason }, "Job rejected — all attempts exhausted");
     }
   }
 
@@ -738,11 +780,14 @@ export class ComputeService {
     try {
       const stale = await storage.getExpiredComputeLeases();
       for (const attempt of stale) {
-        logCompute.warn({ jobId: attempt.jobId, attemptId: attempt.id, nodeId: attempt.nodeId }, "Lease expired — timed out");
         await storage.updateComputeJobAttempt(attempt.id, {
           state: "timed_out",
-          failureReason: "Heartbeat timeout",
+          failureReason: "Lease expired",
           finishedAt: new Date(),
+        });
+        emitLeaseExpired({
+          jobId: attempt.jobId, attemptId: attempt.id, nodeId: attempt.nodeId,
+          leaseExpiresAt: attempt.leaseExpiresAt,
         });
 
         const node = await storage.getComputeNode(attempt.nodeId);

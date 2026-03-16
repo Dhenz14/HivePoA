@@ -2702,7 +2702,10 @@ export class DatabaseStorage implements IStorage {
 
   /**
    * Ensure Phase 0 DB-level constraints. Idempotent (IF NOT EXISTS).
-   * Must run before accepting compute traffic.
+   * NOTE: This is a dev/test convenience for environments managed by
+   * `drizzle-kit push`. In production, these constraints should be part
+   * of a versioned migration file, not boot-time DDL. App processes
+   * should not own schema mutation in production deployments.
    *
    * Creates:
    * 1. Unique index on (id, job_id) in compute_job_attempts
