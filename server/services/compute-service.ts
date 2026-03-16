@@ -89,7 +89,13 @@ export interface JobSubmission {
   outputTransportUrl?: string;
   metricsJson?: string;
   resultJson?: string;
+  // Phase 0: Transaction integrity
+  nonce: string; // echo back server-issued nonce from claim
+  provenanceJson?: string; // structured provenance metadata (optional in v1, required in v2)
 }
+
+// Phase 0: Provenance size limit
+const MAX_PROVENANCE_SIZE = 64 * 1024; // 64 KB
 
 export class ComputeService {
   private leaseSweepTimer: ReturnType<typeof setInterval> | null = null;
@@ -296,8 +302,61 @@ export class ComputeService {
     if (!attempt || attempt.leaseToken !== leaseToken) {
       throw new Error("Invalid attempt or lease token");
     }
+
+    // Phase 0: Nonce validation — must match server-issued nonce
+    if (submission.nonce !== attempt.nonce) {
+      logCompute.warn({ attemptId, expected: attempt.nonce, received: submission.nonce }, "Nonce mismatch");
+      throw Object.assign(new Error("NONCE_MISMATCH"), { statusCode: 409 });
+    }
+
+    // Phase 0: Compute payload hash for idempotency/divergent-replay detection
+    const payloadHash = createHash("sha256")
+      .update(submission.outputSha256 || "")
+      .update(submission.resultJson || "")
+      .digest("hex");
+
+    // Phase 0: Idempotent replay — if already submitted, check for exact vs divergent replay
+    if (attempt.state === "submitted" || attempt.state === "accepted" || attempt.state === "rejected") {
+      if (attempt.submissionPayloadHash === payloadHash) {
+        // Exact replay — return existing result idempotently
+        logCompute.info({ attemptId, nonce: submission.nonce }, "Idempotent submit replay");
+        return attempt;
+      } else {
+        // Divergent replay — same (attemptId, nonce) but different payload
+        logCompute.warn({ attemptId, nonce: submission.nonce }, "Divergent payload on replay");
+        throw Object.assign(new Error("SUBMISSION_PAYLOAD_MISMATCH"), { statusCode: 409 });
+      }
+    }
+
+    // State must be "running" for a fresh submission
     if (attempt.state !== "running") {
-      throw new Error(`Cannot submit result for attempt in state: ${attempt.state}`);
+      throw Object.assign(
+        new Error(`Cannot submit result for attempt in state: ${attempt.state}`),
+        { statusCode: 409 },
+      );
+    }
+
+    // Phase 0: Late-submit check — server receipt time vs lease expiry
+    const now = new Date();
+    if (attempt.leaseExpiresAt && now > attempt.leaseExpiresAt) {
+      logCompute.warn({
+        attemptId, nonce: submission.nonce,
+        leaseExpiresAt: attempt.leaseExpiresAt, serverTime: now,
+        outputSha256: submission.outputSha256,
+      }, "Late submit rejected");
+      throw Object.assign(new Error("LEASE_EXPIRED"), { statusCode: 409 });
+    }
+
+    // Phase 0: Provenance validation (optional in v1, structural checks always)
+    if (submission.provenanceJson !== undefined) {
+      if (Buffer.byteLength(submission.provenanceJson, "utf8") > MAX_PROVENANCE_SIZE) {
+        throw Object.assign(new Error("PROVENANCE_TOO_LARGE"), { statusCode: 400 });
+      }
+      try {
+        JSON.parse(submission.provenanceJson);
+      } catch {
+        throw Object.assign(new Error("PROVENANCE_INVALID_JSON"), { statusCode: 400 });
+      }
     }
 
     await storage.updateComputeJobAttempt(attemptId, {
@@ -309,13 +368,15 @@ export class ComputeService {
       outputTransportUrl: submission.outputTransportUrl,
       metricsJson: submission.metricsJson,
       resultJson: submission.resultJson,
-      submittedAt: new Date(),
-      heartbeatAt: new Date(),
+      submissionPayloadHash: payloadHash,
+      provenanceJson: submission.provenanceJson,
+      submittedAt: now,
+      heartbeatAt: now,
     });
 
     await storage.updateComputeJobState(attempt.jobId, "submitted");
 
-    logCompute.info({ jobId: attempt.jobId, attemptId, cid: submission.outputCid }, "Job result submitted");
+    logCompute.info({ jobId: attempt.jobId, attemptId, nonce: submission.nonce, cid: submission.outputCid }, "Job result submitted");
 
     // Trigger verification (inline for V1)
     await this.runVerification(attempt.jobId, attemptId);
@@ -531,11 +592,22 @@ export class ComputeService {
   }
 
   private async acceptAttempt(job: ComputeJob, attempt: ComputeJobAttempt, verificationScore: number): Promise<void> {
+    // Phase 0 invariant: exactly one accepted attempt per job
+    if (job.acceptedAttemptId) {
+      logCompute.warn({ jobId: job.id, attemptId: attempt.id, existingWinner: job.acceptedAttemptId },
+        "Attempt acceptance blocked — job already has an accepted attempt");
+      return;
+    }
+
     await storage.updateComputeJobAttempt(attempt.id, {
       state: "accepted",
       finishedAt: new Date(),
     });
-    await storage.updateComputeJobState(job.id, "accepted", { completedAt: new Date() });
+    // Set acceptedAttemptId atomically — single-winner identity
+    await storage.updateComputeJobState(job.id, "accepted", {
+      completedAt: new Date(),
+      acceptedAttemptId: attempt.id,
+    });
 
     // Update node stats and reputation
     await storage.updateComputeNodeStats(attempt.nodeId, true);

@@ -948,7 +948,7 @@ export const computeJobs = pgTable("compute_jobs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   creatorUsername: text("creator_username").notNull(), // Hive username
   workloadType: text("workload_type").notNull(), // eval_sweep, benchmark_run, weakness_targeted_generation, domain_lora_train, adapter_validation
-  state: text("state").notNull().default("queued"), // queued, leased, running, submitted, verifying, accepted, rejected, expired, cancelled
+  state: text("state").notNull().default("queued"), // queued, leased, running, submitted, verifying, accepted, rejected, expired, cancelled, settled
   priority: integer("priority").notNull().default(0), // higher = more urgent
   // Job manifest (immutable definition of what to execute)
   manifestJson: text("manifest_json").notNull(), // full workload manifest (model, config, data CIDs, runtime versions)
@@ -964,6 +964,10 @@ export const computeJobs = pgTable("compute_jobs", {
   attemptCount: integer("attempt_count").notNull().default(0),
   // Verification
   verificationPolicyJson: text("verification_policy_json"), // workload-specific verification config
+  // Single-winner identity — at most one accepted attempt per job (Phase 0 invariant)
+  // NOTE: Cannot use .references(() => computeJobAttempts.id) due to circular dependency.
+  // FK enforced via DB migration SQL. Cross-job guard enforced in application code.
+  acceptedAttemptId: varchar("accepted_attempt_id"),
   // Timestamps
   deadlineAt: timestamp("deadline_at"), // hard deadline for entire job
   cancelledAt: timestamp("cancelled_at"),
@@ -977,6 +981,7 @@ export const computeJobAttempts = pgTable("compute_job_attempts", {
   jobId: varchar("job_id").notNull().references(() => computeJobs.id),
   nodeId: varchar("node_id").notNull().references(() => computeNodes.id),
   leaseToken: text("lease_token").notNull(), // random token for this attempt
+  nonce: text("nonce").notNull(), // server-issued UUIDv4 per attempt — idempotency key component
   state: text("state").notNull().default("leased"), // leased, running, submitted, accepted, rejected, timed_out, failed
   // Progress
   progressPct: integer("progress_pct").notNull().default(0), // 0-100
@@ -991,6 +996,10 @@ export const computeJobAttempts = pgTable("compute_job_attempts", {
   resultJson: text("result_json"), // structured result per output_schema
   stderrTail: text("stderr_tail"), // last N lines of stderr for debugging
   failureReason: text("failure_reason"),
+  // Phase 0: Transaction integrity
+  leaseExpiresAt: timestamp("lease_expires_at").notNull(), // server-computed: createdAt + job.leaseSeconds
+  submissionPayloadHash: text("submission_payload_hash"), // SHA256(outputSha256 + resultJson) — divergent-replay detection
+  provenanceJson: text("provenance_json"), // structured provenance metadata (≤ 64 KB)
   // Timestamps
   startedAt: timestamp("started_at"),
   heartbeatAt: timestamp("heartbeat_at"),
@@ -1121,6 +1130,7 @@ export const insertComputeJobSchema = createInsertSchema(computeJobs).omit({
   completedAt: true,
   cancelledAt: true,
   attemptCount: true,
+  acceptedAttemptId: true, // set programmatically at acceptance, never at insert
 });
 
 export const insertComputeJobAttemptSchema = createInsertSchema(computeJobAttempts).omit({

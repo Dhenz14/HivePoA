@@ -2586,13 +2586,18 @@ export class DatabaseStorage implements IStorage {
     const claimedJob = await this.getComputeJob(rawRow.id);
     if (!claimedJob) return null;
 
-    // Create the attempt in the same logical operation
+    // Create the attempt with nonce and lease expiry (Phase 0 transaction integrity)
+    const nonce = crypto.randomUUID();
+    const leaseExpiresAt = new Date(now.getTime() + claimedJob.leaseSeconds * 1000);
+
     const attempt = await this.createComputeJobAttempt({
       jobId: claimedJob.id,
       nodeId,
       leaseToken,
+      nonce,
       state: "leased",
       progressPct: 0,
+      leaseExpiresAt,
       startedAt: now,
       heartbeatAt: now,
     });
@@ -2601,14 +2606,19 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getExpiredComputeLeases(): Promise<ComputeJobAttempt[]> {
+    const now = new Date();
     return db.select().from(computeJobAttempts)
       .where(and(
         or(
           eq(computeJobAttempts.state, "leased"),
           eq(computeJobAttempts.state, "running"),
         ),
-        // Heartbeat older than 2 minutes = stale
-        lte(computeJobAttempts.heartbeatAt, new Date(Date.now() - 2 * 60 * 1000)),
+        or(
+          // Primary: lease expired by server-issued deadline
+          lte(computeJobAttempts.leaseExpiresAt, now),
+          // Secondary: heartbeat stale > 2 min (backward compat + crash detection)
+          lte(computeJobAttempts.heartbeatAt, new Date(now.getTime() - 2 * 60 * 1000)),
+        ),
       ));
   }
 

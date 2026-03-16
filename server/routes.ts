@@ -5067,6 +5067,7 @@ export async function registerRoutes(
         attempt: {
           id: result.attempt.id,
           leaseToken: result.attempt.leaseToken,
+          nonce: result.attempt.nonce, // Phase 0: worker must echo this back on submit
         },
       });
     } catch (err: any) {
@@ -5110,26 +5111,31 @@ export async function registerRoutes(
       const schema = z.object({
         attemptId: z.string().min(1),
         leaseToken: z.string().min(1),
+        nonce: z.string().min(1), // Phase 0: echo back server-issued nonce
         outputCid: z.string().min(1),
         outputSha256: z.string().min(64).max(64),
         outputSizeBytes: z.number().int().min(0).optional(),
         outputTransportUrl: z.string().url().optional(),
         metricsJson: z.string().optional(),
         resultJson: z.string().optional(),
+        provenanceJson: z.string().optional(), // Phase 0: structured provenance
       });
       const data = schema.parse(req.body);
       const attempt = await computeService.submitResult(data.attemptId, data.leaseToken, {
+        nonce: data.nonce,
         outputCid: data.outputCid,
         outputSha256: data.outputSha256,
         outputSizeBytes: data.outputSizeBytes,
         outputTransportUrl: data.outputTransportUrl,
         metricsJson: data.metricsJson,
         resultJson: data.resultJson,
+        provenanceJson: data.provenanceJson,
       });
       res.json(attempt);
     } catch (err: any) {
-      logCompute.error({ err }, "Job submission failed");
-      res.status(400).json({ error: err.message });
+      const statusCode = err.statusCode || 400;
+      logCompute.error({ err, statusCode }, "Job submission failed");
+      res.status(statusCode).json({ error: err.message });
     }
   });
 
