@@ -266,19 +266,27 @@ export class TrustRegistryService {
   // Witness Refresh (called periodically)
   // ================================================================
 
-  async refreshWitnessEligibility(): Promise<{ revoked: number; suspended: number }> {
+  async refreshWitnessEligibility(): Promise<{ revoked: number; suspended: number; errors: number }> {
     let revoked = 0;
     let suspended = 0;
+    let errors = 0;
 
     // Check all active vouches — revoke if voucher is no longer top-150
+    // Fail-closed per record: if Hive client throws for one account, skip it and continue
     const allVouches = await db.select().from(trustedRoleVouches).where(eq(trustedRoleVouches.active, true));
 
     for (const vouch of allVouches) {
-      const policy = await this.getPolicy(vouch.role);
-      const stillWitness = await this.hiveClient.isTopWitness(vouch.voucherUsername, policy?.autoEligibleWitnessRank || 150);
-      if (!stillWitness) {
-        await this.revokeVouch(vouch.voucherUsername, vouch.candidateUsername, vouch.role, "voucher_deranked");
-        revoked++;
+      try {
+        const policy = await this.getPolicy(vouch.role);
+        const stillWitness = await this.hiveClient.isTopWitness(vouch.voucherUsername, policy?.autoEligibleWitnessRank || 150);
+        if (!stillWitness) {
+          await this.revokeVouch(vouch.voucherUsername, vouch.candidateUsername, vouch.role, "voucher_deranked");
+          revoked++;
+        }
+      } catch (err) {
+        // Skip this vouch — don't revoke on RPC failure (fail-closed = keep existing state)
+        errors++;
+        logWoT.warn({ voucher: vouch.voucherUsername, role: vouch.role, err }, "Witness check failed during refresh — skipping");
       }
     }
 
@@ -287,22 +295,27 @@ export class TrustRegistryService {
       .where(and(eq(trustedRoles.status, "active"), eq(trustedRoles.eligibilityType, "witness")));
 
     for (const role of witnessRoles) {
-      const policy = await this.getPolicy(role.role);
-      const stillWitness = await this.hiveClient.isTopWitness(role.username, policy?.autoEligibleWitnessRank || 150);
-      if (!stillWitness) {
-        await db.update(trustedRoles).set({
-          status: "suspended",
-          removeReason: "witness_deranked",
-        }).where(eq(trustedRoles.id, role.id));
-        await this.auditLog(role.username, role.role, "witness_deranked", "system");
-        suspended++;
+      try {
+        const policy = await this.getPolicy(role.role);
+        const stillWitness = await this.hiveClient.isTopWitness(role.username, policy?.autoEligibleWitnessRank || 150);
+        if (!stillWitness) {
+          await db.update(trustedRoles).set({
+            status: "suspended",
+            removeReason: "witness_deranked",
+          }).where(eq(trustedRoles.id, role.id));
+          await this.auditLog(role.username, role.role, "witness_deranked", "system");
+          suspended++;
+        }
+      } catch (err) {
+        errors++;
+        logWoT.warn({ username: role.username, role: role.role, err }, "Witness check failed during refresh — skipping");
       }
     }
 
-    if (revoked > 0 || suspended > 0) {
-      logWoT.info({ revoked, suspended }, "Witness refresh completed");
+    if (revoked > 0 || suspended > 0 || errors > 0) {
+      logWoT.info({ revoked, suspended, errors }, "Witness refresh completed");
     }
-    return { revoked, suspended };
+    return { revoked, suspended, errors };
   }
 
   // ================================================================
