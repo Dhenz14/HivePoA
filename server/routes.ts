@@ -4858,8 +4858,10 @@ export async function registerRoutes(
   // PHASE 10: GPU Compute Marketplace
   // ============================================================
 
-  // Start the compute service lease sweeper
-  computeService.start();
+  // Start the compute service lease sweeper + Phase 0 DB constraints
+  computeService.start().catch(err => {
+    console.error("ComputeService startup error:", err);
+  });
 
   // --- Node Lifecycle ---
 

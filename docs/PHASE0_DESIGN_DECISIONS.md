@@ -385,7 +385,7 @@ Summary:
 |--------|------|---------|---------|
 | `nonce` | text, not null | Server-generated UUIDv4 at claim time | Idempotency + replay prevention |
 | `leaseExpiresAt` | timestamp, not null | `createdAt + job.leaseSeconds` | Authoritative lease expiry boundary |
-| `submissionPayloadHash` | text, nullable | null | `SHA256(outputSha256 + resultJson)` — stored on first submit for divergent-replay detection |
+| `submissionPayloadHash` | text, nullable | null | Canonical framed hash for divergent-replay detection (see below) |
 | `provenanceJson` | text, nullable | null | Structured provenance metadata (≤ 64 KB) |
 
 ### `computeJobs` additions
@@ -394,6 +394,45 @@ Summary:
 |--------|------|---------|---------|
 | `acceptedAttemptId` | varchar, nullable, FK → computeJobAttempts | null | Authoritative winning attempt. At most one per job (code + DB enforced) |
 | (state value) | `'settled'` added to state enum | N/A | Terminal state after all payouts confirmed |
+
+### Hardening: DB-Level Constraints (added post-review)
+
+**CAS acceptance:** `acceptAttempt()` uses `casAcceptJob()` which does:
+```sql
+UPDATE compute_jobs
+SET accepted_attempt_id = ?, state = 'accepted', completed_at = now()
+WHERE id = ? AND accepted_attempt_id IS NULL
+```
+Returns rowcount. If 0 rows affected, CAS failed — loser attempt is marked `rejected` with reason "Another attempt was accepted first". No read-then-write race.
+
+**Cross-job FK:** Composite FK enforced at DB level on startup:
+```sql
+CREATE UNIQUE INDEX idx_compute_attempts_id_job ON compute_job_attempts (id, job_id);
+ALTER TABLE compute_jobs ADD CONSTRAINT fk_accepted_attempt_same_job
+  FOREIGN KEY (accepted_attempt_id, id) REFERENCES compute_job_attempts (id, job_id);
+```
+This ensures `acceptedAttemptId` always points to an attempt belonging to the same job. Invalid cross-job linkage fails at DB level, not only service level.
+
+**Canonical payload hash:** `submissionPayloadHash` uses length-prefixed framing to prevent concatenation ambiguity:
+```
+outputSha256:{len}:{value}|resultJson:{len}:{value}
+```
+Then `SHA256(framed)`. This prevents `SHA256("ab"+"cd") === SHA256("a"+"bcd")`. Raw bytes are hashed (no JSON re-serialization) — same semantic content with different serialization = different submission (intentional).
+
+### Submit Ordering Semantics (frozen)
+
+The submit handler checks in this order: **nonce → replay → late-submit → first-write**.
+
+This means:
+- **Exact replay after lease expiry:** success (returns original outcome idempotently)
+- **Divergent replay after lease expiry:** 409 `SUBMISSION_PAYLOAD_MISMATCH`
+- **First submit after lease expiry:** 409 `LEASE_EXPIRED`
+
+This is intentional: a successful submit's response must always be retrievable by the original submitter, even after the lease expires. The replay path never mutates state, so returning the cached result is always safe.
+
+### Lease Authority Clarification
+
+`leaseExpiresAt` is the **sole expiry oracle**. Heartbeat (`heartbeatAt`) is evidence used for diagnostics and to trigger lease extensions (future), not a separate expiry boundary. The sweeper checks only `leaseExpiresAt <= now()`. An attempt with a fresh heartbeat but expired `leaseExpiresAt` is expired.
 
 ### Explicitly NOT added: `settling` state
 

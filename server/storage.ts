@@ -2523,6 +2523,26 @@ export class DatabaseStorage implements IStorage {
     await db.update(computeJobs).set({ state, ...extra }).where(eq(computeJobs.id, id));
   }
 
+  /**
+   * Atomically set the accepted attempt for a job.
+   * Compare-and-set: only succeeds if acceptedAttemptId is currently NULL.
+   * Returns true if the CAS succeeded, false if another attempt already won.
+   */
+  async casAcceptJob(jobId: string, attemptId: string): Promise<boolean> {
+    const result = await db.update(computeJobs)
+      .set({
+        state: "accepted",
+        acceptedAttemptId: attemptId,
+        completedAt: new Date(),
+      })
+      .where(and(
+        eq(computeJobs.id, jobId),
+        sql`${computeJobs.acceptedAttemptId} IS NULL`,
+      ))
+      .returning({ id: computeJobs.id });
+    return result.length > 0;
+  }
+
   async touchActiveAttemptHeartbeats(nodeId: string): Promise<void> {
     await db.update(computeJobAttempts).set({ heartbeatAt: new Date() })
       .where(and(
@@ -2613,12 +2633,9 @@ export class DatabaseStorage implements IStorage {
           eq(computeJobAttempts.state, "leased"),
           eq(computeJobAttempts.state, "running"),
         ),
-        or(
-          // Primary: lease expired by server-issued deadline
-          lte(computeJobAttempts.leaseExpiresAt, now),
-          // Secondary: heartbeat stale > 2 min (backward compat + crash detection)
-          lte(computeJobAttempts.heartbeatAt, new Date(now.getTime() - 2 * 60 * 1000)),
-        ),
+        // leaseExpiresAt is the sole expiry oracle.
+        // Heartbeat is evidence used to compute leaseExpiresAt, not a second truth source.
+        lte(computeJobAttempts.leaseExpiresAt, now),
       ));
   }
 
@@ -2679,6 +2696,45 @@ export class DatabaseStorage implements IStorage {
       status,
       ...(treasuryTxId ? { treasuryTxId } : {}),
     }).where(eq(computePayouts.id, id));
+  }
+
+  // --- Phase 0: DB Constraints ---
+
+  /**
+   * Ensure Phase 0 DB-level constraints. Idempotent (IF NOT EXISTS).
+   * Must run before accepting compute traffic.
+   *
+   * Creates:
+   * 1. Unique index on (id, job_id) in compute_job_attempts
+   *    — enables composite FK reference for same-job guard
+   * 2. Composite FK on compute_jobs(accepted_attempt_id, id)
+   *    → compute_job_attempts(id, job_id)
+   *    — DB-enforced: accepted attempt must belong to the same job
+   */
+  async ensurePhase0Indexes(): Promise<void> {
+    // 1. Composite unique index (id is PK so trivially unique, but PG needs
+    //    an explicit unique index as a FK target when it's a composite reference)
+    await db.execute(sql`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_compute_attempts_id_job
+      ON compute_job_attempts (id, job_id)
+    `);
+
+    // 2. Composite FK: (accepted_attempt_id, id) → (id, job_id)
+    //    This ensures accepted_attempt_id always points to an attempt
+    //    that belongs to the same job. Uses DO $$ to be idempotent.
+    await db.execute(sql`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'fk_accepted_attempt_same_job'
+        ) THEN
+          ALTER TABLE compute_jobs
+          ADD CONSTRAINT fk_accepted_attempt_same_job
+          FOREIGN KEY (accepted_attempt_id, id)
+          REFERENCES compute_job_attempts (id, job_id);
+        END IF;
+      END $$
+    `);
   }
 
   // --- Stats ---

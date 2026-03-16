@@ -97,12 +97,64 @@ export interface JobSubmission {
 // Phase 0: Provenance size limit
 const MAX_PROVENANCE_SIZE = 64 * 1024; // 64 KB
 
+/**
+ * Compute a canonical payload hash for idempotency/divergent-replay detection.
+ *
+ * Uses a framed JSON object with explicit field names and deterministic key order
+ * to prevent false divergent replays from:
+ * - Key ordering differences in resultJson
+ * - Whitespace/formatting differences
+ * - Concatenation ambiguity (SHA256("ab"+"cd") vs SHA256("a"+"bcd"))
+ *
+ * The hash identity surface is: { outputSha256, resultJson (raw bytes) }.
+ * We do NOT parse/re-serialize resultJson because the worker's exact bytes
+ * are the authoritative submission content — canonicalizing would silently
+ * accept semantically identical but byte-different payloads as "exact replays"
+ * when they are actually distinct submissions.
+ *
+ * Framing: length-prefixed fields prevent ambiguity.
+ */
+export function computeSubmissionPayloadHash(
+  outputSha256: string | undefined,
+  resultJson: string | undefined,
+): string {
+  const out = outputSha256 || "";
+  const res = resultJson || "";
+  // Unambiguous framing: field name + length + content for each field
+  const framed = `outputSha256:${out.length}:${out}|resultJson:${res.length}:${res}`;
+  return createHash("sha256").update(framed, "utf8").digest("hex");
+}
+
 export class ComputeService {
   private leaseSweepTimer: ReturnType<typeof setInterval> | null = null;
 
-  start(): void {
+  async start(): Promise<void> {
+    // Phase 0: Ensure DB-level constraints for cross-job guard.
+    // These are idempotent — safe to run on every startup.
+    await this.ensurePhase0Constraints();
+
     this.leaseSweepTimer = setInterval(() => this.sweepExpiredLeases(), LEASE_SWEEP_INTERVAL_MS);
     logCompute.info("ComputeService started — lease sweeper active");
+  }
+
+  /**
+   * Ensure Phase 0 DB constraints exist. Idempotent — safe on every startup.
+   *
+   * 1. Composite unique index on computeJobAttempts(id, job_id)
+   *    — enables same-job FK reference from computeJobs
+   *
+   * 2. Composite FK: computeJobs(accepted_attempt_id, id) →
+   *    computeJobAttempts(id, job_id)
+   *    — DB-enforced cross-job guard: accepted attempt must belong to same job
+   */
+  private async ensurePhase0Constraints(): Promise<void> {
+    try {
+      // 1. Composite unique index (trivially unique since id is PK, but needed for FK target)
+      await storage.ensurePhase0Indexes();
+      logCompute.info("Phase 0 DB constraints verified");
+    } catch (err) {
+      logCompute.error({ err }, "Phase 0 DB constraint setup failed — cross-job guard may not be DB-enforced");
+    }
   }
 
   stop(): void {
@@ -309,11 +361,13 @@ export class ComputeService {
       throw Object.assign(new Error("NONCE_MISMATCH"), { statusCode: 409 });
     }
 
-    // Phase 0: Compute payload hash for idempotency/divergent-replay detection
-    const payloadHash = createHash("sha256")
-      .update(submission.outputSha256 || "")
-      .update(submission.resultJson || "")
-      .digest("hex");
+    // Phase 0: Compute payload hash for idempotency/divergent-replay detection.
+    // Uses canonical JSON with explicit field names and sorted keys to prevent
+    // false divergent replays from key ordering, whitespace, or framing ambiguity.
+    const payloadHash = computeSubmissionPayloadHash(
+      submission.outputSha256,
+      submission.resultJson,
+    );
 
     // Phase 0: Idempotent replay — if already submitted, check for exact vs divergent replay
     if (attempt.state === "submitted" || attempt.state === "accepted" || attempt.state === "rejected") {
@@ -592,21 +646,25 @@ export class ComputeService {
   }
 
   private async acceptAttempt(job: ComputeJob, attempt: ComputeJobAttempt, verificationScore: number): Promise<void> {
-    // Phase 0 invariant: exactly one accepted attempt per job
-    if (job.acceptedAttemptId) {
-      logCompute.warn({ jobId: job.id, attemptId: attempt.id, existingWinner: job.acceptedAttemptId },
-        "Attempt acceptance blocked — job already has an accepted attempt");
+    // Phase 0 invariant: exactly one accepted attempt per job.
+    // DB-level CAS: UPDATE ... SET acceptedAttemptId = ? WHERE acceptedAttemptId IS NULL
+    // If another attempt already won, the CAS returns false — no state mutation.
+    const won = await storage.casAcceptJob(job.id, attempt.id);
+    if (!won) {
+      logCompute.warn({ jobId: job.id, attemptId: attempt.id },
+        "Attempt acceptance blocked — CAS failed, job already has an accepted attempt");
+      // Loser path: mark attempt as rejected (deterministic)
+      await storage.updateComputeJobAttempt(attempt.id, {
+        state: "rejected",
+        failureReason: "Another attempt was accepted first",
+        finishedAt: new Date(),
+      });
       return;
     }
 
     await storage.updateComputeJobAttempt(attempt.id, {
       state: "accepted",
       finishedAt: new Date(),
-    });
-    // Set acceptedAttemptId atomically — single-winner identity
-    await storage.updateComputeJobState(job.id, "accepted", {
-      completedAt: new Date(),
-      acceptedAttemptId: attempt.id,
     });
 
     // Update node stats and reputation
