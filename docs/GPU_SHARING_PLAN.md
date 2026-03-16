@@ -519,19 +519,92 @@ Probabilistic audit is acceptable ONLY for low-value workloads AFTER workers hav
 
 ---
 
-## Review Questions for GPT (v3)
+## Design Decisions (Resolved)
 
-Previous review addressed:
-- Phase 0 is now a hard prerequisite with schema examples (Q1 partially addressed — see below)
-- Pricing is now fixed posted prices, not formula-based (Q4 resolved)
-- Verification policy is explicit: every high-value, probabilistic only for low-value + proven workers (Q7 resolved)
+All seven review questions from v3 have been answered through three rounds of systems review. These are now **binding design decisions**, not open questions.
 
-Open questions:
+### D1. Schema source of truth: Canonical JSON Schema (schema-first)
 
-1. **The provenance schema needs a machine-validatable contract.** The doc shows JSON examples but does not publish a versioned JSON Schema or Pydantic model. Implementors on the TypeScript and Python sides will drift without a shared schema file. Should this be a `schemas/provenance_v2.json` file validated on both sides, or a Pydantic model in Python with TypeScript types generated from it?
-2. **Is the reputation ladder (eval → adapter_validation → micro-training canary → full training) too many gates?** Could we collapse adapter_validation and micro-training into one step?
-3. **Is FedEx-LoRA the right residual-carry scheme for Phase 4?** Are there simpler alternatives that preserve residual without modifying frozen weights?
-4. **What corpus-level anomaly scans are practical for detecting training data poisoning?** Specifically: n-gram trigger detection, embedding drift measurement, and canary probe design.
-5. **Is the IPFS availability policy (5-min timeout, 3 retries, 2-copy minimum) too aggressive or too lenient?** What happens when workers are behind NAT without port forwarding?
-6. **Should the baseline registry be on-chain (Hive custom_json) or off-chain (coordinator DB)?** On-chain is immutable but adds cost. Off-chain is free but requires trust in the coordinator.
-7. **Is domain-improvement weighting for merge the right signal?** Or should we also factor in diversity (adapters that improve different domains weighted higher than redundant ones)?
+One canonical `schemas/` directory with JSON Schema 2020-12 files. Both repos consume it:
+- **TypeScript:** validate with Ajv in strict mode
+- **Python:** generate Pydantic models from schema via `datamodel-code-generator`
+- **CI:** validate sample manifests/results against schema on both sides
+
+The protocol itself is the source of truth — not Python dataclasses, not TypeScript interfaces. This is the single most important prerequisite before Phase 0 implementation starts.
+
+Schema files needed:
+- `schemas/provenance_v2.json` — provenance metadata contract
+- `schemas/manifest_eval_sweep.json` — eval sweep manifest
+- `schemas/manifest_data_generation.json` — data generation manifest
+- `schemas/manifest_domain_lora_train.json` — training manifest
+- `schemas/result_eval_sweep.json` — eval sweep result
+- `schemas/result_data_generation.json` — data generation result
+- `schemas/result_domain_lora_train.json` — training result
+- `schemas/baseline_registry_entry.json` — baseline registry record
+
+### D2. Reputation ladder: Keep all four steps
+
+`eval_sweep` → `adapter_validation` → `micro-training canary` → `full training`
+
+Do NOT collapse. They test different failure modes:
+- `adapter_validation` proves inference-path compatibility (forward pass)
+- `micro-training canary` proves backward-pass stability (OOM, checkpoint, disk)
+
+If worker supply becomes the bottleneck later, collapse then. Right now the extra gate is justified — paying for unstable workers and poisoning the job queue with training failures is the bigger early risk.
+
+### D3. Merge algorithm staging: Dense-delta + SVD now, FedEx-LoRA later
+
+- **Phase 3:** Dense-delta + SVD with residual norm monitoring and rollback
+- **Phase 4:** Switch to FedEx-LoRA only if residual loss materially hurts round-to-round progress
+
+Simpler fallback: keep dense-delta + SVD but halt multi-round rollout if truncation loss grows. Not as elegant, but operationally safer than premature FedEx-LoRA adoption.
+
+### D4. Poisoning defense: Behavioral canaries over trigger regexes
+
+Practical scan stack (in priority order):
+1. Exact dedup + near-dedup
+2. Refusal/template boilerplate detection
+3. Abnormal length/repetition distribution
+4. Domain-keyword or domain-classifier checks
+5. **Canary prompts embedded in held-out eval** (primary defense against subtle poisoning)
+6. Embedding-centroid drift by domain over time
+7. N-gram trigger scans (cheap filter, NOT primary defense)
+
+Trigger regexes will not catch most poisoning — subtle attacks look statistically normal locally and only show as behavior drift on targeted probes. Canary probes are the real defense.
+
+### D5. IPFS availability: Size-aware timeouts, NAT workers default to ingress
+
+- **Small artifacts (< 10 MB):** 5-minute timeout
+- **Medium artifacts (10-100 MB):** 10-minute timeout
+- **Large artifacts (100-500 MB):** 20-minute timeout, scaled with declared size
+- **NATed workers:** Default to coordinator-managed HTTP ingress unless they pass a real IPFS fetch test during onboarding. Direct IPFS serving is opt-in, not the baseline assumption.
+- **"2 copies after re-pin"** is verification-window safety, NOT durability. Keep this distinction sharp.
+
+DCUtR hole punching (enabled by default in Kubo) adds latency and does not have a 100% success rate. NATed home workers are a real availability risk, not a corner case.
+
+### D6. Baseline registry: Hybrid (off-chain primary + on-chain anchoring)
+
+- **Off-chain coordinator DB:** Authoritative working registry. Fast queries, hot operational path.
+- **Periodic Hive `custom_json` anchors:** Tamper-evident checkpoints of registry/round-manifest root hashes. Broadcast with posting authority. Auditability, not serving.
+
+On-chain storage is never the primary registry in v1. Chain anchoring is for auditability.
+
+### D7. Merge weighting: Domain improvement + capped diversity bonus
+
+Two-stage rule:
+1. **Admission floor:** No major regressions, hidden eval pass, non-dominated on at least one domain
+2. **Merge weight:** `target_domain_improvement × (1 + capped_diversity_bonus)`
+
+Diversity bonus = distance to already-selected adapters, capped so outliers do not dominate. Diversity is a multiplier/tiebreaker, not the primary signal. Quality and non-regression come first.
+
+Marginal-gain check after tentative merge: does adding this adapter actually improve the merged result? If not, exclude it even if it passes admission.
+
+---
+
+## Implementation Gate
+
+The plan is now a **closed protocol specification** pending one action:
+
+> **Publish the canonical JSON Schema files in `schemas/` and add CI validation on both repos.**
+
+After that, Phase 0 implementation can begin. No further design review needed for Phases 0-2.
