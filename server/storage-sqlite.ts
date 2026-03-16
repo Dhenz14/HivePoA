@@ -672,6 +672,8 @@ export class SQLiteStorage implements IStorage {
     return mapRows<StorageContract>(rows);
   }
 
+  async getActiveTierContracts(): Promise<StorageContract[]> { return []; }
+
   async getActiveContractsForChallenge(): Promise<StorageContract[]> {
     const rows = await db().select().from(S.storageContracts)
       .where(and(

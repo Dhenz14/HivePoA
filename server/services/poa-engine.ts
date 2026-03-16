@@ -520,13 +520,19 @@ export class PoAEngine {
     const activeContracts = await storage.getActiveContractsForChallenge();
     const contractCids = new Set(activeContracts.map(c => c.fileCid));
 
+    // TIER CONTRACTS: User-level plans cover ALL of that user's files
+    const activeTierContracts = await storage.getActiveTierContracts();
+    const tierUsernames = new Set(activeTierContracts.map(c => c.uploaderUsername));
+
     const allFiles = await storage.getAllFiles();
     // Only challenge files that have PoA enabled (real CIDs that exist)
     const poaFiles = allFiles.filter(f => f.poaEnabled === true);
     if (poaFiles.length === 0) return;
 
-    // Prioritize contract-funded files, but allow unfunded files as fallback
-    const fundedFiles = poaFiles.filter(f => contractCids.has(f.cid));
+    // Prioritize contract-funded files: per-CID contracts OR files from users with tier plans
+    const fundedFiles = poaFiles.filter(f =>
+      contractCids.has(f.cid) || tierUsernames.has(f.uploaderUsername)
+    );
     const files = fundedFiles.length > 0 ? fundedFiles : poaFiles;
 
     // OPTIMIZATION: Batch 5 challenges per round (was 3)
@@ -560,7 +566,9 @@ export class PoAEngine {
       }
 
       // Look up contract for this file's CID (for reward calculation)
-      const contract = activeContracts.find(c => c.fileCid === selectedFile.cid);
+      // First try per-CID contract, then fall back to user's tier contract
+      const contract = activeContracts.find(c => c.fileCid === selectedFile.cid)
+        || activeTierContracts.find(c => c.uploaderUsername === selectedFile.uploaderUsername);
 
       // Mark node as challenged this round
       challengedNodes.add(selectedNode.id);

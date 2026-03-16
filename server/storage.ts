@@ -239,6 +239,7 @@ export interface IStorage {
   updateStorageContractCid(id: string, newCid: string): Promise<void>;
   getStorageContractsByFileId(fileId: string): Promise<StorageContract[]>;
   getExpiredContracts(): Promise<StorageContract[]>;
+  getActiveTierContracts(): Promise<StorageContract[]>;
   getActiveContractsForChallenge(): Promise<StorageContract[]>;
   updateStorageContractSpent(id: string, amount: number): Promise<boolean>;
   getExhaustedContracts(): Promise<StorageContract[]>;
@@ -612,9 +613,13 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getUserStorageUsed(username: string): Promise<number> {
+    // Only count files that are actually stored (pinned/syncing/warning), not failed/uploading
     const result = await db.select({
       total: sql<number>`COALESCE(SUM(${files.sizeBytes}), 0)`,
-    }).from(files).where(eq(files.uploaderUsername, username));
+    }).from(files).where(and(
+      eq(files.uploaderUsername, username),
+      sql`${files.status} IN ('pinned', 'syncing', 'warning')`,
+    ));
     return Number(result[0]?.total || 0);
   }
 
@@ -986,6 +991,20 @@ export class DatabaseStorage implements IStorage {
    * Get contracts that are active, funded (spent < budget), and not expired.
    * Used by PoA engine to select CIDs for challenge rounds.
    */
+  /**
+   * Get all active tier contracts (user-level plans, not CID-specific).
+   * These cover ALL files for the given user.
+   */
+  async getActiveTierContracts(): Promise<StorageContract[]> {
+    return db.select().from(storageContracts)
+      .where(and(
+        eq(storageContracts.status, 'active'),
+        sql`${storageContracts.storageTierId} IS NOT NULL`,
+        sql`CAST(${storageContracts.hbdSpent} AS DECIMAL) < CAST(${storageContracts.hbdBudget} AS DECIMAL)`,
+        sql`${storageContracts.expiresAt} > NOW()`
+      ));
+  }
+
   async getActiveContractsForChallenge(): Promise<StorageContract[]> {
     return await db.select().from(storageContracts)
       .where(and(

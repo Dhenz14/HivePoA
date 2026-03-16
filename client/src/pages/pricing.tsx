@@ -310,8 +310,9 @@ export default function Pricing() {
         <CardContent className="space-y-3">
           <p className="text-sm text-muted-foreground">
             You can <strong>overpay</strong> beyond the base price when subscribing. Extra HBD increases the
-            reward per challenge, which makes your files more profitable for storage nodes to keep. More nodes
-            storing your data means better availability and redundancy.
+            reward per challenge, which makes your files more economically attractive for storage nodes to keep.
+            Higher rewards incentivize more nodes to store your data, though actual replica counts depend on
+            network participation.
           </p>
           <p className="text-sm text-muted-foreground">
             You can also <strong>top up</strong> an active plan at any time by sending additional HBD. This extends
@@ -352,7 +353,7 @@ export default function Pricing() {
                   </div>
                   {extraHbd > 0 && (
                     <p className="text-xs text-muted-foreground">
-                      +{extraHbd.toFixed(1)} HBD extra incentivizes ~{extraNodesEstimate} additional storage nodes
+                      +{extraHbd.toFixed(1)} HBD extra increases reward density (incentivizes more nodes to store your files)
                     </p>
                   )}
                 </div>

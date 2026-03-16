@@ -7,8 +7,12 @@
  *
  * Users can also:
  * - Top up an existing contract at any time (extend duration or add budget)
- * - Overpay beyond the base price to incentivize more storage nodes
- *   (higher rewardPerChallenge → more nodes want to store the file)
+ * - Overpay beyond the base price to increase economic incentive for storage nodes
+ *   (higher rewardPerChallenge → more nodes are economically motivated to store the file)
+ *
+ * NOTE: Overpay increases incentive, not a guaranteed redundancy SLA.
+ * More reward makes files more attractive to store, but actual replica count
+ * depends on network participation and node availability.
  */
 
 export interface StorageTier {

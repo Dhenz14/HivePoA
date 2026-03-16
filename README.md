@@ -35,10 +35,10 @@ Decentralized storage validation protocol built on the Hive L1 blockchain. Valid
 
 ## Project Scale
 
-- 177 API endpoints across 30 services
+- 180+ API endpoints across 30 services
 - 47 database tables (Drizzle ORM, dual PostgreSQL + SQLite dialect)
-- 26 client pages (Treasury dashboard, governance, content moderation, video watch with P2P, and more)
-- 168 automated tests across 5 test suites (vitest)
+- 27 client pages (Treasury dashboard, governance, content moderation, video watch with P2P, pricing, and more)
+- 181 automated tests across 6 test suites (vitest)
 - Full Docker deployment stack
 - GitHub Pages static site with auto-deploy
 
@@ -335,6 +335,29 @@ Uploaders fund storage contracts with HBD. PoA challenges verify that nodes actu
 | GET | `/api/contracts` | Public | List all contracts with budget info |
 | GET | `/api/contracts/active` | Public | List active contracts |
 | GET | `/api/contracts/:id` | Public | Contract details with spending rate |
+
+### Storage Tiers (v1.1)
+
+Fixed annual plans priced in HBD (HBD ≈ $1 USD peg, no oracle needed):
+
+| Tier | Storage | Price | Duration |
+|------|---------|-------|----------|
+| Starter | 5 GB | 3.999 HBD | 365 days |
+| Standard | 10 GB | 6.999 HBD | 365 days |
+| Creator | 20 GB | 11.999 HBD | 365 days |
+
+Tier contracts cover **all** of a user's uploaded files (not per-CID). The PoA engine distributes rewards from the tier budget to storage nodes that prove they hold any of the user's files. Users can overpay to increase reward density (higher economic incentive for nodes), though overpay is an incentive mechanism, not a guaranteed redundancy SLA.
+
+**Tier API:**
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/api/storage/tiers` | Public | List available tiers with prices |
+| GET | `/api/storage/usage` | Bearer | Current usage, active tier, remaining capacity |
+| POST | `/api/storage/subscribe` | Bearer | Create tier-backed annual contract (tierId only) |
+| POST | `/api/storage/topup` | Bearer | Add HBD to existing contract |
+
+Upload cap enforcement: `POST /api/upload/simple` returns `413` if `usedBytes + fileSize` would exceed the active tier's storage limit. Concurrent uploads are serialized per-user to prevent TOCTOU quota bypass.
 
 ## P2P CDN (Viewers as CDN)
 
