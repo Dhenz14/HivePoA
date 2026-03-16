@@ -35,6 +35,7 @@ const SCHEMA_FIXTURE_MAP: Record<string, string> = {
   "manifest_domain_lora_train.json": "manifest_domain_lora_train",
   "result_eval_sweep.json": "result_eval_sweep",
   "result_data_generation.json": "result_data_generation",
+  "result_domain_lora_train.json": "result_domain_lora_train",
 };
 
 describe("Schema Conformance — Canonical JSON Schema Validation", () => {
