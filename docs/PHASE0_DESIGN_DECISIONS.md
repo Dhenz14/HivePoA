@@ -438,21 +438,42 @@ This is intentional: a successful submit's response must always be retrievable b
 
 Job stays `accepted` while payouts are in flight. Payout rows carry settlement progress (`pending → queued → broadcast → confirmed`). Job flips to `settled` only when all required on-chain confirmations exist. A `settling` intermediate state is unnecessary state inflation — only add it if operator UX or retry orchestration later proves it's needed.
 
-### New structured events (observability)
-```
-claim_issued           — job_id, attempt_id, node_id, nonce, lease_seconds
-nonce_issued           — attempt_id, nonce
-submit_attempt         — attempt_id, nonce, output_sha256, has_provenance
-submit_accepted        — attempt_id, job_id, verification_score
-submit_rejected        — attempt_id, job_id, reason, nonce
-submit_idempotent      — attempt_id, nonce (duplicate submit, returned existing)
-late_submit_rejected   — attempt_id, nonce, output_sha256, timestamps
-settlement_attempted   — job_id, payout_ids[], total_hbd
-settlement_blocked     — job_id, reason (artifact unavailable, etc.)
-settlement_confirmed   — job_id, payout_ids[], tx_ids[]
-ownership_mismatch     — attempt_id, expected_state, actual_state
-version_mismatch       — attempt_id, submitted_version, required_version
-```
+### Structured Events (implemented in compute-events.ts)
+
+15 typed event emitters, emitted AFTER state mutation commits. EVENT_VERSION = 1.
+
+| Event | Correlation Keys | Details |
+|-------|-----------------|---------|
+| `claim_issued` | jobId, attemptId, nodeId, nonce | leaseSeconds, workloadType |
+| `submit_accepted` | jobId, attemptId, nodeId, nonce | outputSha256, hasProvenance |
+| `submit_rejected` | jobId, attemptId, nonce | reason |
+| `submit_idempotent` | jobId, attemptId, nonce | (none — zero side effects) |
+| `late_submit_rejected` | jobId, attemptId, nonce | outputSha256, leaseExpiresAt, serverTime |
+| `attempt_accepted` | jobId, attemptId, nodeId, nonce | verificationScore, payouts |
+| `attempt_rejected` | jobId, attemptId, nodeId | reason |
+| `acceptance_idempotent` | jobId, attemptId | (same winner re-accepted) |
+| `acceptance_cas_failed` | jobId, attemptId | winnerId |
+| `nonce_mismatch` | attemptId | expected, received |
+| `divergent_replay` | attemptId, nonce | (payload hash differed) |
+| `version_mismatch` | attemptId | submittedVersion, requiredVersion |
+| `settlement_attempted` | jobId | payoutIds[], totalHbd |
+| `settlement_blocked` | jobId | reason |
+| `lease_expired` | jobId, attemptId, nodeId | leaseExpiresAt |
+
+### Correlation Completeness Contract (frozen)
+
+Every fault test and forensic query must be answerable from event correlation alone:
+
+| Question | Answerable via |
+|----------|---------------|
+| Which claim became which attempt? | `claim_issued` → `(jobId, attemptId, nonce)` |
+| Which nonce produced which submit? | `submit_accepted/rejected` → `(attemptId, nonce)` |
+| Was a replay exact or divergent? | `submit_idempotent` vs `divergent_replay` |
+| Was a winner first-path or retry? | `attempt_accepted` + `submit_idempotent` count |
+| Why was a submit rejected? | `late_submit_rejected` / `nonce_mismatch` / `divergent_replay` |
+| Which worker checkpoint produced which retry? | Worker-side `checkpoint_id` (added in Step 4) correlated with `nonce` |
+
+Worker-side checkpoint events (Step 4) must carry `(attemptId, nonce, checkpoint_stage)` to complete the distributed join.
 
 ---
 
