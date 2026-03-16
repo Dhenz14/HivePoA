@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivepoa.io/schemas/result_eval_sweep.json",
+  "title": "EvalSweepResult",
+  "description": "Result contract for eval_sweep compute jobs.",
+  "type": "object",
+  "required": ["overall_score", "challenges_run", "challenges_passed", "scores", "model_name"],
+  "additionalProperties": true,
+  "properties": {
+    "overall_score": { "type": "number", "minimum": 0, "maximum": 1 },
+    "challenges_run": { "type": "integer", "minimum": 0 },
+    "challenges_passed": { "type": "integer", "minimum": 0 },
+    "scores": {
+      "type": "object",
+      "description": "Per-domain scores",
+      "patternProperties": { "^[a-z_]+$": { "type": "number", "minimum": 0, "maximum": 1 } },
+      "additionalProperties": false
+    },
+    "category_scores": { "type": "object" },
+    "total_time_sec": { "type": "number", "minimum": 0 },
+    "avg_time_per_challenge_sec": { "type": "number", "minimum": 0 },
+    "model_name": { "type": "string" },
+    "eval_harness_version": { "type": "string" },
+    "regression_passed": { "type": "boolean" }
+  }
+}

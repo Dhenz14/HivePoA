@@ -1,0 +1,18 @@
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "job_nonce": "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
+  "worker_version": "1.2.0",
+  "worker_git_sha": "abc1234",
+  "base_model_sha256": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "tokenizer_sha256": "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+  "dataset_cid": "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
+  "dataset_sha256": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+  "seed": 42,
+  "hyperparameters": {"lr": 0.0002, "rank": 32, "epochs": 2},
+  "runtime": {
+    "cuda_version": "12.4",
+    "torch_version": "2.4.0",
+    "quantization": "4bit-bnb",
+    "platform": "linux-x86_64"
+  }
+}

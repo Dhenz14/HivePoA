@@ -1,0 +1,12 @@
+{
+  "schema_version": 2,
+  "workload_type": "data_generation",
+  "job_nonce": "x9y8z7w6v5u4t3s2r1q0p9o8n7m6l5k4",
+  "domain": "rust",
+  "pair_count": 50,
+  "generator_model_allowlist": ["qwen3:14b"],
+  "server_url": "http://localhost:11434/v1",
+  "quality_threshold": 0.7,
+  "prompt_template": "weakness_targeted",
+  "max_wall_clock_seconds": 1800
+}

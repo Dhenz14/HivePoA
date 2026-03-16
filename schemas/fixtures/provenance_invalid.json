@@ -1,0 +1,11 @@
+{
+  "_reason": "Missing required job_nonce, worker_version too short, invalid sha256 pattern",
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "worker_version": "bad",
+  "worker_git_sha": "abc",
+  "base_model_sha256": "not-a-sha256",
+  "runtime": {
+    "quantization": "invalid-quant",
+    "platform": "linux-x86_64"
+  }
+}

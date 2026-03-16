@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivepoa.io/schemas/artifact_ref.json",
+  "title": "ArtifactRef",
+  "description": "Content-addressed reference to a job output artifact.",
+  "type": "object",
+  "required": ["output_cid", "output_sha256", "output_size_bytes"],
+  "additionalProperties": false,
+  "properties": {
+    "output_cid": {
+      "type": "string",
+      "minLength": 1,
+      "description": "IPFS CID of the artifact (canonical reference)"
+    },
+    "output_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 hex digest of the artifact bytes"
+    },
+    "output_size_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Size of the artifact in bytes"
+    }
+  }
+}

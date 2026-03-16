@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivepoa.io/schemas/manifest_data_generation.json",
+  "title": "DataGenerationManifest",
+  "description": "Manifest for data_generation compute jobs. Workers generate training pairs.",
+  "type": "object",
+  "required": ["schema_version", "workload_type", "job_nonce", "domain", "pair_count", "generator_model_allowlist", "quality_threshold", "max_wall_clock_seconds"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer", "const": 2 },
+    "workload_type": { "type": "string", "const": "data_generation" },
+    "job_nonce": { "type": "string", "minLength": 16 },
+    "domain": { "type": "string", "enum": ["python", "rust", "go", "cpp", "javascript", "hive"] },
+    "pair_count": { "type": "integer", "minimum": 1, "maximum": 500 },
+    "generator_model_allowlist": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "Worker must use a model from this list"
+    },
+    "server_url": { "type": "string", "format": "uri" },
+    "quality_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+    "prompt_template": { "type": "string", "default": "weakness_targeted" },
+    "max_wall_clock_seconds": { "type": "integer", "minimum": 60, "maximum": 7200 }
+  }
+}

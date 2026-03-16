@@ -1,0 +1,15 @@
+{
+  "_reason": "Missing base_model_sha256, invalid lora_rank (not in enum), learning_rate too high",
+  "schema_version": 2,
+  "workload_type": "domain_lora_train",
+  "job_nonce": "abcdef1234567890abcdef1234567890",
+  "domain": "rust",
+  "base_model": "Qwen/Qwen2.5-Coder-14B-Instruct",
+  "dataset_cid": "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
+  "dataset_sha256": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+  "lora_rank": 128,
+  "learning_rate": 0.5,
+  "quantization": "4bit-bnb",
+  "min_vram_gb": 16,
+  "max_wall_clock_seconds": 7200
+}

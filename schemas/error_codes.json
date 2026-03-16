@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivepoa.io/schemas/error_codes.json",
+  "title": "ComputeErrorCodes",
+  "description": "Stable machine-readable error codes for compute job failures. Workers and coordinators must use these codes — do not invent ad-hoc error strings.",
+  "type": "object",
+  "properties": {
+    "error_code": {
+      "type": "string",
+      "enum": [
+        "JOB_NONCE_MISMATCH",
+        "ARTIFACT_SHA256_DUPLICATE",
+        "ARTIFACT_UNAVAILABLE",
+        "ARTIFACT_SIZE_EXCEEDED",
+        "ARTIFACT_FETCH_TIMEOUT",
+        "SCHEMA_VALIDATION_FAILED",
+        "MANIFEST_VERSION_UNSUPPORTED",
+        "WORKLOAD_TYPE_UNSUPPORTED",
+        "CAPABILITY_MISMATCH",
+        "REPUTATION_INSUFFICIENT",
+        "LEASE_EXPIRED",
+        "HEARTBEAT_TIMEOUT",
+        "VERIFICATION_FAILED",
+        "VERIFICATION_SOFT_FAIL",
+        "VERIFICATION_STRUCTURAL",
+        "DEDUP_REJECTION",
+        "QUALITY_BELOW_THRESHOLD",
+        "TRAINING_OOM",
+        "TRAINING_CHECKPOINT_CORRUPT",
+        "TRAINING_DIVERGED",
+        "WORKER_INTERNAL_ERROR"
+      ]
+    },
+    "error_message": {
+      "type": "string",
+      "description": "Human-readable description (for logs, not for programmatic decisions)"
+    }
+  },
+  "required": ["error_code"]
+}

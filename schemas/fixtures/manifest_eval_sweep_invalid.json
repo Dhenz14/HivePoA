@@ -1,0 +1,7 @@
+{
+  "_reason": "Wrong schema_version, missing job_nonce, empty model_name",
+  "schema_version": 1,
+  "workload_type": "eval_sweep",
+  "model_name": "",
+  "max_wall_clock_seconds": 30
+}

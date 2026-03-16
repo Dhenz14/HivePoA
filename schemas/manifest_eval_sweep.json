@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivepoa.io/schemas/manifest_eval_sweep.json",
+  "title": "EvalSweepManifest",
+  "description": "Manifest for eval_sweep compute jobs. 60-probe domain evaluation.",
+  "type": "object",
+  "required": ["schema_version", "workload_type", "job_nonce", "model_name", "max_wall_clock_seconds"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer", "const": 2 },
+    "workload_type": { "type": "string", "const": "eval_sweep" },
+    "job_nonce": { "type": "string", "minLength": 16 },
+    "model_name": { "type": "string", "minLength": 1 },
+    "server_url": { "type": "string", "format": "uri" },
+    "quick": { "type": "boolean", "default": false },
+    "threshold": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.03 },
+    "max_wall_clock_seconds": { "type": "integer", "minimum": 60, "maximum": 7200 }
+  }
+}

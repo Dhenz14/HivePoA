@@ -1,0 +1,7 @@
+{
+  "_reason": "Missing domain, wrong output_format, avg_quality_score out of range",
+  "pairs_generated": 48,
+  "pairs_valid": 45,
+  "avg_quality_score": 2.5,
+  "output_format": "csv"
+}

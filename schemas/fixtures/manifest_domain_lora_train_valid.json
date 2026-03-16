@@ -1,0 +1,19 @@
+{
+  "schema_version": 2,
+  "workload_type": "domain_lora_train",
+  "job_nonce": "abcdef1234567890abcdef1234567890",
+  "domain": "rust",
+  "base_model": "Qwen/Qwen2.5-Coder-14B-Instruct",
+  "base_model_sha256": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "dataset_cid": "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
+  "dataset_sha256": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+  "epochs": 2,
+  "learning_rate": 0.0002,
+  "lora_rank": 32,
+  "max_steps": 2000,
+  "seed": 42,
+  "quantization": "4bit-bnb",
+  "min_vram_gb": 16,
+  "eval_after_train": true,
+  "max_wall_clock_seconds": 7200
+}

@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivepoa.io/schemas/provenance_v2.json",
+  "title": "ProvenanceMetadata",
+  "description": "Provenance metadata attached to every compute job result. Required for all workload types.",
+  "type": "object",
+  "required": ["job_id", "job_nonce", "worker_version", "worker_git_sha", "runtime"],
+  "additionalProperties": false,
+  "properties": {
+    "job_id": {
+      "type": "string",
+      "description": "UUID of the compute job"
+    },
+    "job_nonce": {
+      "type": "string",
+      "minLength": 16,
+      "description": "Server-assigned random nonce, echoed by worker to prevent replay"
+    },
+    "worker_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+",
+      "description": "Semantic version of the worker software"
+    },
+    "worker_git_sha": {
+      "type": "string",
+      "minLength": 7,
+      "maxLength": 40,
+      "description": "Git commit SHA of the worker codebase"
+    },
+    "base_model_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "SHA-256 of the base model weights used"
+    },
+    "tokenizer_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "SHA-256 of the tokenizer config used"
+    },
+    "dataset_cid": {
+      "type": "string",
+      "description": "IPFS CID of the input dataset (if applicable)"
+    },
+    "dataset_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "SHA-256 of the input dataset"
+    },
+    "seed": {
+      "type": "integer",
+      "description": "Random seed used for reproducibility"
+    },
+    "hyperparameters": {
+      "type": "object",
+      "description": "Job-specific hyperparameters (free-form, validated per workload type)"
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["platform"],
+      "additionalProperties": false,
+      "properties": {
+        "cuda_version": { "type": "string" },
+        "torch_version": { "type": "string" },
+        "quantization": { "type": "string", "enum": ["4bit-bnb", "8bit-bnb", "gptq", "awq", "none"] },
+        "platform": { "type": "string", "description": "e.g. linux-x86_64, darwin-arm64" }
+      }
+    }
+  }
+}

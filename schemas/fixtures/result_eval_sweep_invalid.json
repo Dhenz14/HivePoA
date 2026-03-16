@@ -1,0 +1,10 @@
+{
+  "_reason": "overall_score out of range, missing model_name, scores has invalid key",
+  "overall_score": 1.5,
+  "challenges_run": 60,
+  "challenges_passed": 57,
+  "scores": {
+    "python": 0.93,
+    "INVALID KEY": 0.5
+  }
+}

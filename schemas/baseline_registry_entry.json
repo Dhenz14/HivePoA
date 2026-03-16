@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivepoa.io/schemas/baseline_registry_entry.json",
+  "title": "BaselineRegistryEntry",
+  "description": "Immutable record of a merged adapter version in the baseline registry.",
+  "type": "object",
+  "required": ["version", "merged_at", "contributing_job_ids", "merge_algorithm", "merge_rank", "eval_scores", "overall_score", "adapter_cid", "adapter_sha256"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "type": "string", "pattern": "^v\\d+", "description": "e.g. v6, v7" },
+    "parent_version": { "type": ["string", "null"], "description": "null for initial baseline" },
+    "merged_at": { "type": "string", "format": "date-time" },
+    "contributing_job_ids": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "contributing_workers": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "dataset_cids": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "merge_algorithm": { "type": "string", "enum": ["dense_delta_svd", "fedex_lora", "single_adapter"] },
+    "merge_rank": { "type": "integer", "minimum": 1 },
+    "discarded_residual_norm": { "type": "number", "minimum": 0 },
+    "eval_scores": {
+      "type": "object",
+      "patternProperties": { "^[a-z_]+$": { "type": "number", "minimum": 0, "maximum": 1 } }
+    },
+    "overall_score": { "type": "number", "minimum": 0, "maximum": 1 },
+    "baseline_improvement": { "type": "number", "description": "Score delta from parent version" },
+    "adapter_cid": { "type": "string" },
+    "adapter_sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivepoa.io/schemas/result_domain_lora_train.json",
+  "title": "DomainLoraTrainResult",
+  "description": "Result contract for domain_lora_train compute jobs.",
+  "type": "object",
+  "required": ["domain", "final_loss", "steps_completed", "adapter_files", "eval_scores"],
+  "additionalProperties": true,
+  "properties": {
+    "domain": { "type": "string" },
+    "final_loss": { "type": "number", "minimum": 0 },
+    "steps_completed": { "type": "integer", "minimum": 0 },
+    "epochs_completed": { "type": "number", "minimum": 0 },
+    "adapter_files": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "List of files in the adapter archive (e.g. adapter_model.safetensors, adapter_config.json)"
+    },
+    "adapter_size_bytes": { "type": "integer", "minimum": 0 },
+    "eval_scores": {
+      "type": "object",
+      "description": "Quick eval scores after training",
+      "patternProperties": { "^[a-z_]+$": { "type": "number", "minimum": 0, "maximum": 1 } }
+    },
+    "overall_eval_score": { "type": "number", "minimum": 0, "maximum": 1 },
+    "training_time_sec": { "type": "number", "minimum": 0 },
+    "base_model": { "type": "string" },
+    "lora_rank": { "type": "integer" }
+  }
+}

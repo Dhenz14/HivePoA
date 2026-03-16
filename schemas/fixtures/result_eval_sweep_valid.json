@@ -1,0 +1,18 @@
+{
+  "overall_score": 0.95,
+  "challenges_run": 60,
+  "challenges_passed": 57,
+  "scores": {
+    "python": 0.93,
+    "rust": 0.96,
+    "go": 0.96,
+    "cpp": 0.92,
+    "javascript": 0.95,
+    "hive": 0.98
+  },
+  "total_time_sec": 245.3,
+  "avg_time_per_challenge_sec": 4.1,
+  "model_name": "v5-think",
+  "eval_harness_version": "1.0.0",
+  "regression_passed": true
+}

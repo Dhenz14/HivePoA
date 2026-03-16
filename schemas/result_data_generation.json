@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivepoa.io/schemas/result_data_generation.json",
+  "title": "DataGenerationResult",
+  "description": "Result contract for data_generation compute jobs.",
+  "type": "object",
+  "required": ["pairs_generated", "pairs_valid", "domain", "avg_quality_score", "output_format"],
+  "additionalProperties": true,
+  "properties": {
+    "pairs_generated": { "type": "integer", "minimum": 0 },
+    "pairs_valid": { "type": "integer", "minimum": 0 },
+    "domain": { "type": "string" },
+    "avg_quality_score": { "type": "number", "minimum": 0, "maximum": 1 },
+    "output_format": { "type": "string", "const": "jsonl" },
+    "sample_pairs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["instruction", "response"],
+        "properties": {
+          "instruction": { "type": "string" },
+          "response": { "type": "string" },
+          "quality_score": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      },
+      "maxItems": 10
+    },
+    "generator_model_used": { "type": "string" }
+  }
+}

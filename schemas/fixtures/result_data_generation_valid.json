@@ -1,0 +1,11 @@
+{
+  "pairs_generated": 48,
+  "pairs_valid": 45,
+  "domain": "rust",
+  "avg_quality_score": 0.82,
+  "output_format": "jsonl",
+  "generator_model_used": "qwen3:14b",
+  "sample_pairs": [
+    {"instruction": "Implement a concurrent hash map in Rust", "response": "```rust\nuse std::sync::RwLock...\n```", "quality_score": 0.85}
+  ]
+}

@@ -113,6 +113,8 @@
     "@types/supertest": "^7.2.0",
     "@types/ws": "^8.5.13",
     "@vitejs/plugin-react": "^5.0.4",
+    "ajv": "^8.18.0",
+    "ajv-formats": "^3.0.1",
     "autoprefixer": "^10.4.21",
     "cross-env": "^10.1.0",
     "drizzle-kit": "^0.31.4",

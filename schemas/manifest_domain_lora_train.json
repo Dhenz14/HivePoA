@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivepoa.io/schemas/manifest_domain_lora_train.json",
+  "title": "DomainLoraTrainManifest",
+  "description": "Manifest for domain_lora_train compute jobs. Workers train LoRA adapters.",
+  "type": "object",
+  "required": ["schema_version", "workload_type", "job_nonce", "domain", "base_model", "base_model_sha256", "dataset_cid", "dataset_sha256", "lora_rank", "quantization", "min_vram_gb", "max_wall_clock_seconds"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer", "const": 2 },
+    "workload_type": { "type": "string", "const": "domain_lora_train" },
+    "job_nonce": { "type": "string", "minLength": 16 },
+    "domain": { "type": "string", "enum": ["python", "rust", "go", "cpp", "javascript", "hive"] },
+    "base_model": { "type": "string", "minLength": 1 },
+    "base_model_sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "dataset_cid": { "type": "string", "minLength": 1 },
+    "dataset_sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "epochs": { "type": "integer", "minimum": 1, "maximum": 10, "default": 2 },
+    "learning_rate": { "type": "number", "exclusiveMinimum": 0, "maximum": 0.01 },
+    "lora_rank": { "type": "integer", "enum": [8, 16, 32, 64] },
+    "max_steps": { "type": "integer", "minimum": 50, "maximum": 10000 },
+    "seed": { "type": "integer" },
+    "quantization": { "type": "string", "enum": ["4bit-bnb", "8bit-bnb", "none"] },
+    "min_vram_gb": { "type": "integer", "minimum": 8 },
+    "eval_after_train": { "type": "boolean", "default": true },
+    "max_wall_clock_seconds": { "type": "integer", "minimum": 300, "maximum": 14400 }
+  }
+}
