@@ -65,6 +65,25 @@ export default function Storage() {
         }))
     : serverFiles;
 
+  // Fetch storage usage / tier info
+  const { data: storageUsage } = useQuery({
+    queryKey: ["storage-usage"],
+    queryFn: async () => {
+      const sessionToken = localStorage.getItem("spk_validator_session");
+      let authToken = "";
+      if (sessionToken) {
+        try { const parsed = JSON.parse(sessionToken); authToken = parsed.user?.sessionToken || ""; } catch {}
+      }
+      if (!authToken) return null;
+      const res = await fetch(`${getApiBase()}/api/storage/usage`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!res.ok) return null;
+      return res.json();
+    },
+    refetchInterval: 30000,
+  });
+
   // Fetch nodes to get our own reputation (server fallback)
   const { data: nodesRaw } = useQuery({
     queryKey: ["nodes"],
@@ -246,6 +265,10 @@ export default function Storage() {
         setUploadProgress(90);
         if (!res.ok) {
           const err = await res.json();
+          if (res.status === 413) {
+            // Storage cap exceeded — show upgrade prompt
+            throw new Error(err.message || `Storage limit exceeded. Upgrade your plan at /pricing`);
+          }
           throw new Error(err.error || "Upload failed");
         }
 
@@ -259,6 +282,7 @@ export default function Storage() {
         });
 
         queryClient.invalidateQueries({ queryKey: ["files"] });
+        queryClient.invalidateQueries({ queryKey: ["storage-usage"] });
       }
 
       setTimeout(() => setUploadStatus('idle'), 3000);
@@ -294,6 +318,38 @@ export default function Storage() {
 
   return (
     <div className="p-8 space-y-8 max-w-7xl mx-auto">
+
+      {/* Storage Usage Bar */}
+      {storageUsage?.tier && (
+        <Card className="border-primary/20">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-medium">
+                {storageUsage.tier.name} Plan — {storageUsage.usedLabel} of {storageUsage.tier.storageLimitLabel}
+              </span>
+              <a href="/pricing" className="text-xs text-primary hover:underline">
+                {storageUsage.usagePercent >= 80 ? "Upgrade Plan" : "Manage Plan"}
+              </a>
+            </div>
+            <Progress value={storageUsage.usagePercent} className="h-2" />
+            <p className="text-xs text-muted-foreground mt-1">
+              {((storageUsage.remainingBytes || 0) / (1024 * 1024 * 1024)).toFixed(1)} GB remaining
+            </p>
+          </CardContent>
+        </Card>
+      )}
+      {!storageUsage?.tier && (
+        <Card className="border-amber-500/20 bg-amber-500/5">
+          <CardContent className="p-4 flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">
+              No active storage plan. Get a plan to incentivize storage nodes to keep your files available.
+            </p>
+            <a href="/pricing">
+              <Button size="sm" variant="outline">View Plans</Button>
+            </a>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Desktop Agent Status Banner */}
       {agentConnected && (

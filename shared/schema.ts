@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, timestamp, boolean, real, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, bigint, timestamp, boolean, real, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -29,6 +29,7 @@ export const files = pgTable("files", {
   cid: text("cid").notNull().unique(),
   name: text("name").notNull(),
   size: text("size").notNull(),
+  sizeBytes: bigint("size_bytes", { mode: "number" }).notNull().default(0),
   uploaderUsername: text("uploader_username").notNull(),
   status: text("status").notNull().default("syncing"), // syncing, pinned, warning, uploading
   replicationCount: integer("replication_count").notNull().default(0),
@@ -162,6 +163,7 @@ export const storageContracts = pgTable("storage_contracts", {
   uploaderUsername: text("uploader_username").notNull(),
   requestedReplication: integer("requested_replication").notNull().default(3),
   actualReplication: integer("actual_replication").notNull().default(0),
+  storageTierId: text("storage_tier_id"), // starter, standard, creator — null for legacy/custom contracts
   status: text("status").notNull().default("pending"), // pending, active, completed, expired, cancelled
   hbdBudget: text("hbd_budget").notNull().default("0"), // HBD allocated for storage
   hbdSpent: text("hbd_spent").notNull().default("0"), // HBD paid out so far

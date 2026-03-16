@@ -647,6 +647,28 @@ export async function registerRoutes(
 
       const fileName = (req.headers["x-file-name"] as string) || "untitled";
       const fileSize = data.length;
+      const username = req.authenticatedUser!;
+
+      // Enforce tier storage cap
+      const activeContract = await storage.getActiveUserTierContract(username);
+      if (activeContract?.storageTierId) {
+        const { getTierById } = require("./services/storage-tiers");
+        const tier = getTierById(activeContract.storageTierId);
+        if (tier) {
+          const usedBytes = await storage.getUserStorageUsed(username);
+          if (usedBytes + fileSize > tier.storageLimitBytes) {
+            res.status(413).json({
+              error: "Storage limit exceeded",
+              usedBytes,
+              fileSize,
+              limitBytes: tier.storageLimitBytes,
+              tier: tier.id,
+              message: `This upload (${(fileSize / 1048576).toFixed(1)} MB) would exceed your ${tier.storageLimitLabel} ${tier.name} plan. Upgrade your tier or remove files.`,
+            });
+            return;
+          }
+        }
+      }
 
       const ipfs = getIPFSClient();
       const cid = await ipfs.addWithPin(data);
@@ -658,6 +680,7 @@ export async function registerRoutes(
         size: fileSize > 1024 * 1024
           ? `${(fileSize / (1024 * 1024)).toFixed(1)} MB`
           : `${(fileSize / 1024).toFixed(1)} KB`,
+        sizeBytes: fileSize,
         uploaderUsername: req.authenticatedUser || "anonymous",
         status: "pinned",
         replicationCount: 1,
@@ -670,6 +693,196 @@ export async function registerRoutes(
     } catch (error: any) {
       logRoutes.error({ err: error }, "Simple upload failed");
       res.status(500).json({ error: "Upload failed: " + error.message });
+    }
+  });
+
+  // ============================================================
+  // Storage Tiers & Tier-Aware Contracts (v1.1)
+  // ============================================================
+
+  app.get("/api/storage/tiers", (_req, res) => {
+    const { STORAGE_TIERS } = require("./services/storage-tiers");
+    res.json(STORAGE_TIERS);
+  });
+
+  // Get current user's storage usage and active tier
+  app.get("/api/storage/usage", requireAuth, async (req, res) => {
+    try {
+      const username = req.authenticatedUser!;
+      const usedBytes = await storage.getUserStorageUsed(username);
+      const activeContract = await storage.getActiveUserTierContract(username);
+      const { getTierById } = require("./services/storage-tiers");
+      const tier = activeContract?.storageTierId ? getTierById(activeContract.storageTierId) : null;
+
+      res.json({
+        usedBytes,
+        usedLabel: usedBytes > 1073741824
+          ? `${(usedBytes / 1073741824).toFixed(2)} GB`
+          : `${(usedBytes / 1048576).toFixed(1)} MB`,
+        tier: tier ? {
+          id: tier.id,
+          name: tier.name,
+          storageLimitBytes: tier.storageLimitBytes,
+          storageLimitLabel: tier.storageLimitLabel,
+        } : null,
+        contract: activeContract ? {
+          id: activeContract.id,
+          status: activeContract.status,
+          hbdBudget: activeContract.hbdBudget,
+          hbdSpent: activeContract.hbdSpent,
+          expiresAt: activeContract.expiresAt,
+        } : null,
+        remainingBytes: tier ? Math.max(0, tier.storageLimitBytes - usedBytes) : 0,
+        usagePercent: tier ? Math.min(100, Math.round((usedBytes / tier.storageLimitBytes) * 100)) : 0,
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  /**
+   * Create a tier-backed annual storage contract.
+   * Client sends only tierId — budget, duration, and cap resolve server-side.
+   * Optional: extraHbd to overpay (increases rewardPerChallenge → more nodes store it).
+   */
+  app.post("/api/storage/subscribe", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        tierId: z.enum(["starter", "standard", "creator"]),
+        extraHbd: z.string().regex(/^\d+\.?\d{0,3}$/).optional(),
+      });
+      const data = schema.parse(req.body);
+      const username = req.authenticatedUser!;
+      const { getTierById, calculateRewardPerChallenge } = require("./services/storage-tiers");
+
+      const tier = getTierById(data.tierId);
+      if (!tier) return res.status(400).json({ error: "Invalid tier" });
+
+      // Check if user already has an active tier contract
+      const existing = await storage.getActiveUserTierContract(username);
+      if (existing) {
+        return res.status(409).json({
+          error: "Active storage plan already exists. Top up or wait for expiry.",
+          existingContractId: existing.id,
+          expiresAt: existing.expiresAt,
+        });
+      }
+
+      // Budget = base tier price + optional extra
+      const baseBudget = parseFloat(tier.hbdPrice);
+      const extra = data.extraHbd ? parseFloat(data.extraHbd) : 0;
+      const totalBudget = baseBudget + extra;
+      const rewardPerChallenge = calculateRewardPerChallenge(totalBudget.toFixed(3), tier.durationDays);
+
+      const expiresAt = new Date(Date.now() + tier.durationDays * 24 * 60 * 60 * 1000);
+
+      const contract = await storage.createStorageContract({
+        fileCid: `tier:${tier.id}:${username}`, // Tier contracts cover all user files, not one CID
+        uploaderUsername: username,
+        storageTierId: tier.id,
+        requestedReplication: 3,
+        actualReplication: 0,
+        status: "pending",
+        hbdBudget: totalBudget.toFixed(3),
+        hbdSpent: "0",
+        rewardPerChallenge,
+        startsAt: new Date(),
+        expiresAt,
+      });
+
+      await storage.createContractEvent({
+        contractId: contract.id,
+        eventType: "created",
+        payload: JSON.stringify({
+          tierId: tier.id,
+          baseBudget: tier.hbdPrice,
+          extraHbd: data.extraHbd || "0",
+          totalBudget: totalBudget.toFixed(3),
+          rewardPerChallenge,
+          durationDays: tier.durationDays,
+        }),
+      });
+
+      const depositMemo = `hivepoa:tier:${contract.id}`;
+
+      res.json({
+        ...contract,
+        tier: { id: tier.id, name: tier.name, storageLimitLabel: tier.storageLimitLabel },
+        depositMemo,
+        totalBudget: totalBudget.toFixed(3),
+        rewardPerChallenge,
+      });
+    } catch (error: any) {
+      logRoutes.error({ err: error }, "Failed to create tier subscription");
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  /**
+   * Top up an existing storage contract — add more HBD to extend incentivization
+   * or increase reward density (more nodes store your files).
+   */
+  app.post("/api/storage/topup", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        contractId: z.string(),
+        txHash: z.string(),
+      });
+      const data = schema.parse(req.body);
+      const username = req.authenticatedUser!;
+
+      const contract = await storage.getStorageContract(data.contractId);
+      if (!contract) return res.status(404).json({ error: "Contract not found" });
+      if (contract.uploaderUsername !== username) return res.status(403).json({ error: "Not your contract" });
+      if (contract.status !== "active") return res.status(400).json({ error: "Contract must be active to top up" });
+
+      // Verify the Hive transfer
+      const { createHiveClient } = await import("./services/hive-client");
+      const hiveClient = createHiveClient();
+      const transfer = await hiveClient.verifyTransfer(data.txHash);
+      if (!transfer) return res.status(400).json({ error: "Transfer not found on chain" });
+
+      const topupAmount = parseFloat(transfer.amount);
+      if (isNaN(topupAmount) || topupAmount <= 0) {
+        return res.status(400).json({ error: "Invalid transfer amount" });
+      }
+      if (!transfer.memo.includes(contract.id)) {
+        return res.status(400).json({ error: "Transfer memo must reference contract ID" });
+      }
+
+      // Increase budget and recalculate rewardPerChallenge
+      const newBudget = parseFloat(contract.hbdBudget) + topupAmount;
+      const spent = parseFloat(contract.hbdSpent);
+      const remainingDays = Math.max(1, Math.ceil((new Date(contract.expiresAt).getTime() - Date.now()) / 86400000));
+      const { calculateRewardPerChallenge } = require("./services/storage-tiers");
+      const newReward = calculateRewardPerChallenge((newBudget - spent).toFixed(3), remainingDays);
+
+      await storage.updateStorageContractStatus(contract.id, "active");
+      // Update budget via raw SQL (no dedicated method for budget update)
+      const { db } = await import("./db");
+      const { storageContracts: scTable } = await import("../shared/schema");
+      const { eq } = await import("drizzle-orm");
+      await db.update(scTable).set({
+        hbdBudget: newBudget.toFixed(3),
+        rewardPerChallenge: newReward,
+      }).where(eq(scTable.id, contract.id));
+
+      await storage.createContractEvent({
+        contractId: contract.id,
+        eventType: "topup",
+        payload: JSON.stringify({
+          txHash: data.txHash,
+          amount: transfer.amount,
+          newBudget: newBudget.toFixed(3),
+          newRewardPerChallenge: newReward,
+        }),
+      });
+
+      const updated = await storage.getStorageContract(contract.id);
+      res.json(updated);
+    } catch (error: any) {
+      logRoutes.error({ err: error }, "Failed to top up contract");
+      res.status(400).json({ error: error.message });
     }
   });
 

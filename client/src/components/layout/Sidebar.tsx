@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, HardDrive, Wallet, Server, Settings, Globe, Hexagon, Play, Wifi, Download, Coins, ShoppingBag, BarChart3, Shield, Zap, AlertTriangle, LogOut, FileText, Landmark, Users, Video, Key, ChevronRight, Sun, Moon, Flag } from "lucide-react";
+import { LayoutDashboard, HardDrive, Wallet, Server, Settings, Globe, Hexagon, Play, Wifi, Download, Coins, ShoppingBag, BarChart3, Shield, Zap, AlertTriangle, LogOut, FileText, Landmark, Users, Video, Key, ChevronRight, Sun, Moon, Flag, CreditCard } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useNodeConfig } from "@/contexts/NodeConfigContext";
 import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
@@ -86,6 +86,7 @@ export function Sidebar() {
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
     { href: "/browse", label: "Browse & Watch", icon: Play },
     { href: "/storage", label: "Storage", icon: HardDrive },
+    { href: "/pricing", label: "Plans & Pricing", icon: CreditCard },
   ];
 
   const earnLinks: NavItem[] = [

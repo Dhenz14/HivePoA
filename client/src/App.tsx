@@ -39,6 +39,7 @@ import Encoding from "@/pages/encoding";
 import Watch from "@/pages/watch";
 import ContentModeration from "@/pages/content-moderation";
 import Governance from "@/pages/governance";
+import Pricing from "@/pages/pricing";
 import generatedImage from '@assets/generated_images/a_dark,_futuristic_abstract_mesh_background_with_red_accents..png';
 
 function ProtectedValidatorRoute({ component: Component }: { component: React.ComponentType }) {
@@ -86,7 +87,8 @@ function AppRoutes() {
         <Route path="/p2p-network">{() => <AgentRequired><P2PNetwork /></AgentRequired>}</Route>
         <Route path="/watch/:author/:permlink">{() => <AgentRequired><Watch /></AgentRequired>}</Route>
 
-        {/* Works without agent — download page uses GitHub API directly */}
+        {/* Works without agent — public pages */}
+        <Route path="/pricing" component={Pricing} />
         <Route path="/download" component={Download} />
         <Route path="/validator-login" component={ValidatorLogin} />
 

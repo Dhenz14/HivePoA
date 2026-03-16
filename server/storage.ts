@@ -178,7 +178,9 @@ export interface IStorage {
   updateFileCid(id: string, newCid: string): Promise<void>;
   updateFileEarnings(id: string, hbdAmount: number): Promise<void>;
   deleteFile(id: string): Promise<boolean>;
-  
+  getUserStorageUsed(username: string): Promise<number>;
+  getActiveUserTierContract(username: string): Promise<StorageContract | undefined>;
+
   // Validators
   getValidator(id: string): Promise<Validator | undefined>;
   getValidatorByUsername(username: string): Promise<Validator | undefined>;
@@ -607,6 +609,26 @@ export class DatabaseStorage implements IStorage {
   async createFile(file: InsertFile): Promise<File> {
     const [created] = await db.insert(files).values(file).returning();
     return created;
+  }
+
+  async getUserStorageUsed(username: string): Promise<number> {
+    const result = await db.select({
+      total: sql<number>`COALESCE(SUM(${files.sizeBytes}), 0)`,
+    }).from(files).where(eq(files.uploaderUsername, username));
+    return Number(result[0]?.total || 0);
+  }
+
+  async getActiveUserTierContract(username: string): Promise<StorageContract | undefined> {
+    const [contract] = await db.select().from(storageContracts)
+      .where(and(
+        eq(storageContracts.uploaderUsername, username),
+        eq(storageContracts.status, "active"),
+        sql`${storageContracts.storageTierId} IS NOT NULL`,
+        sql`${storageContracts.expiresAt} > NOW()`,
+      ))
+      .orderBy(desc(storageContracts.createdAt))
+      .limit(1);
+    return contract || undefined;
   }
 
   async deleteFile(id: string): Promise<boolean> {

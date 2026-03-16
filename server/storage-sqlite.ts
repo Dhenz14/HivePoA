@@ -246,6 +246,9 @@ export class SQLiteStorage implements IStorage {
     return mapRow<File>(created);
   }
 
+  async getUserStorageUsed(_username: string): Promise<number> { return 0; }
+  async getActiveUserTierContract(_username: string): Promise<any> { return undefined; }
+
   async deleteFile(id: string): Promise<boolean> {
     // Delete contract events via subquery
     await db().run(sql`DELETE FROM contract_events WHERE contract_id IN (SELECT id FROM storage_contracts WHERE file_id = ${id})`);
