@@ -1023,6 +1023,86 @@ export const computePayouts = pgTable("compute_payouts", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// ============================================================
+// PHASE 11: Generic Trusted-Role Registry
+// ============================================================
+
+// Trusted Role Policies — per-role configuration (seeded at startup)
+export const trustedRolePolicies = pgTable("trusted_role_policies", {
+  role: text("role").primaryKey(), // validator, treasury_signer, compute_verifier, oracle_runner, dbc_trainer
+  vouchesRequired: integer("vouches_required").notNull().default(2),
+  cooldownHours: integer("cooldown_hours").notNull().default(168), // 7 days
+  maxChurnEvents: integer("max_churn_events").notNull().default(5),
+  requiresOptIn: boolean("requires_opt_in").notNull().default(true),
+  autoEligibleWitnessRank: integer("auto_eligible_witness_rank").notNull().default(150),
+  description: text("description"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Trusted Roles — who holds what role and why
+export const trustedRoles = pgTable("trusted_roles", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  username: text("username").notNull(),
+  role: text("role").notNull().references(() => trustedRolePolicies.role),
+  status: text("status").notNull().default("active"), // active, cooldown, suspended, removed
+  eligibilityType: text("eligibility_type").notNull(), // witness, vouched
+  witnessRank: integer("witness_rank"), // rank at time of eligibility (null if vouched)
+  optedInAt: timestamp("opted_in_at"),
+  cooldownUntil: timestamp("cooldown_until"),
+  removedAt: timestamp("removed_at"),
+  removeReason: text("remove_reason"),
+  metadataJson: text("metadata_json"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("trusted_roles_username_role_idx").on(table.username, table.role),
+]);
+
+// Trusted Role Vouches — unified vouching across all roles
+export const trustedRoleVouches = pgTable("trusted_role_vouches", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  voucherUsername: text("voucher_username").notNull(), // Top-150 witness
+  candidateUsername: text("candidate_username").notNull(),
+  role: text("role").notNull().references(() => trustedRolePolicies.role),
+  voucherRank: integer("voucher_rank").notNull(), // Witness rank at time of vouch
+  active: boolean("active").notNull().default(true),
+  revokedAt: timestamp("revoked_at"),
+  revokeReason: text("revoke_reason"), // manual, voucher_deranked, candidate_removed
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("trusted_role_vouches_active_idx")
+    .on(table.voucherUsername, table.candidateUsername, table.role)
+    .where(sql`active = true`),
+]);
+
+// Trusted Role Audit Log — all trust state changes
+export const trustedRoleAuditLog = pgTable("trusted_role_audit_log", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  username: text("username").notNull(),
+  role: text("role").notNull(),
+  action: text("action").notNull(), // opted_in, opted_out, vouch_added, vouch_revoked, suspended, removed, witness_verified, witness_deranked
+  actorUsername: text("actor_username"), // who performed the action (null = system)
+  details: text("details"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Phase 11: Trusted-Role Insert Schemas
+export const insertTrustedRolePolicySchema = createInsertSchema(trustedRolePolicies);
+
+export const insertTrustedRoleSchema = createInsertSchema(trustedRoles).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertTrustedRoleVouchSchema = createInsertSchema(trustedRoleVouches).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertTrustedRoleAuditLogSchema = createInsertSchema(trustedRoleAuditLog).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Phase 10: GPU Compute Insert Schemas
 export const insertComputeNodeSchema = createInsertSchema(computeNodes).omit({
   id: true,
@@ -1278,3 +1358,16 @@ export type InsertComputeVerification = z.infer<typeof insertComputeVerification
 
 export type ComputePayout = typeof computePayouts.$inferSelect;
 export type InsertComputePayout = z.infer<typeof insertComputePayoutSchema>;
+
+// Phase 11: Trusted-Role Registry Types
+export type TrustedRolePolicy = typeof trustedRolePolicies.$inferSelect;
+export type InsertTrustedRolePolicy = z.infer<typeof insertTrustedRolePolicySchema>;
+
+export type TrustedRole = typeof trustedRoles.$inferSelect;
+export type InsertTrustedRole = z.infer<typeof insertTrustedRoleSchema>;
+
+export type TrustedRoleVouch = typeof trustedRoleVouches.$inferSelect;
+export type InsertTrustedRoleVouch = z.infer<typeof insertTrustedRoleVouchSchema>;
+
+export type TrustedRoleAuditEntry = typeof trustedRoleAuditLog.$inferSelect;
+export type InsertTrustedRoleAuditEntry = z.infer<typeof insertTrustedRoleAuditLogSchema>;

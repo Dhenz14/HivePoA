@@ -23,6 +23,8 @@ import path from "path";
 import { getIPFSClient } from "./services/ipfs-client";
 import { logRoutes, logWS, logEncoding, logWoT, logCompute } from "./logger";
 import { computeService, type WorkloadType, type JobManifest } from "./services/compute-service";
+import { TrustRegistryService } from "./services/trust-registry";
+import { hiveSimulator as hiveClientForTrust } from "./services/hive-simulator";
 import { createProofHash } from "./services/poa-crypto";
 
 // Extend Express Request to carry authenticated user
@@ -4906,6 +4908,142 @@ export async function registerRoutes(
     try {
       const stats = await storage.getComputeStats();
       res.json(stats);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ============================================================
+  // PHASE 11: Generic Trusted-Role Registry
+  // ============================================================
+
+  const trustRegistry = new TrustRegistryService(hiveClientForTrust);
+  trustRegistry.initialize().catch(err => logRoutes.error({ err }, "TrustRegistry init failed"));
+
+  // GET /api/trust/check/:username/:role — THE key endpoint for Hive-AI
+  app.get("/api/trust/check/:username/:role", async (req, res) => {
+    try {
+      const result = await trustRegistry.checkEligibility(req.params.username, req.params.role);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/trust/roles — List all defined roles + policies
+  app.get("/api/trust/roles", async (_req, res) => {
+    try {
+      const policies = await trustRegistry.getAllPolicies();
+      res.json(policies);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/trust/roles/:role/members — List active members of a role
+  app.get("/api/trust/roles/:role/members", async (req, res) => {
+    try {
+      const members = await trustRegistry.getRoleMembers(req.params.role);
+      res.json(members);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/trust/roles/:role/opt-in — Opt into a role
+  app.post("/api/trust/roles/:role/opt-in", requireAuth, async (req, res) => {
+    try {
+      const role = await trustRegistry.optIn(req.authenticatedUser!, req.params.role);
+      res.json(role);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // POST /api/trust/roles/:role/opt-out — Opt out of a role
+  app.post("/api/trust/roles/:role/opt-out", requireAuth, async (req, res) => {
+    try {
+      await trustRegistry.optOut(req.authenticatedUser!, req.params.role);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // POST /api/trust/vouch — Vouch for a candidate (witness only)
+  app.post("/api/trust/vouch", requireAuth, async (req, res) => {
+    try {
+      const { candidateUsername, role } = z.object({
+        candidateUsername: z.string().min(1),
+        role: z.string().min(1),
+      }).parse(req.body);
+      const vouch = await trustRegistry.addVouch(req.authenticatedUser!, candidateUsername, role);
+      res.json(vouch);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // DELETE /api/trust/vouch — Revoke a vouch
+  app.delete("/api/trust/vouch", requireAuth, async (req, res) => {
+    try {
+      const { candidateUsername, role } = z.object({
+        candidateUsername: z.string().min(1),
+        role: z.string().min(1),
+      }).parse(req.body);
+      await trustRegistry.revokeVouch(req.authenticatedUser!, candidateUsername, role);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // GET /api/trust/vouches/:role — List active vouches for a role
+  app.get("/api/trust/vouches/:role", async (req, res) => {
+    try {
+      const vouches = await trustRegistry.getVouchesByRole(req.params.role);
+      res.json(vouches);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/trust/vouches/by/:username — Vouches made by a witness
+  app.get("/api/trust/vouches/by/:username", async (req, res) => {
+    try {
+      const vouches = await trustRegistry.getVouchesByVoucher(req.params.username);
+      res.json(vouches);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/trust/vouches/for/:username — Vouches received by a candidate
+  app.get("/api/trust/vouches/for/:username", async (req, res) => {
+    try {
+      const vouches = await trustRegistry.getVouchesForCandidate(req.params.username);
+      res.json(vouches);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/trust/refresh-witnesses — Re-check witness ranks, revoke stale
+  app.post("/api/trust/refresh-witnesses", requireAuth, async (req, res) => {
+    try {
+      const result = await trustRegistry.refreshWitnessEligibility();
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/trust/audit-log — Recent trust state changes
+  app.get("/api/trust/audit-log", async (req, res) => {
+    try {
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+      const log = await trustRegistry.getAuditLog(limit);
+      res.json(log);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
