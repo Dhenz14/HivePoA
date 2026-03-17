@@ -1034,6 +1034,29 @@ export const computePayouts = pgTable("compute_payouts", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Phase 1 Step 2: Compute Wallets — per-user funding accounts
+export const computeWallets = pgTable("compute_wallets", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  hiveUsername: text("hive_username").notNull().unique(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Phase 1 Step 2: Compute Wallet Ledger — immutable append-only financial entries
+// Balance is always derived: SUM(amount_hbd) WHERE wallet_id = ?
+export const computeWalletLedger = pgTable("compute_wallet_ledger", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  walletId: varchar("wallet_id").notNull().references(() => computeWallets.id),
+  entryType: text("entry_type").notNull(), // deposit, reservation, release, payout
+  amountHbd: text("amount_hbd").notNull(), // positive = credit, negative = debit
+  referenceType: text("reference_type").notNull(), // hive_tx, compute_job, compute_payout
+  referenceId: text("reference_id").notNull(),
+  idempotencyKey: text("idempotency_key").notNull().unique(),
+  chainTxId: text("chain_tx_id"),       // Hive transaction hash (deposits only)
+  chainBlockNum: integer("chain_block_num"), // irreversible block number (deposits only)
+  memo: text("memo"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // ============================================================
 // PHASE 11: Generic Trusted-Role Registry
 // ============================================================
@@ -1144,6 +1167,16 @@ export const insertComputeVerificationSchema = createInsertSchema(computeVerific
 });
 
 export const insertComputePayoutSchema = createInsertSchema(computePayouts).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertComputeWalletSchema = createInsertSchema(computeWallets).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertComputeWalletLedgerSchema = createInsertSchema(computeWalletLedger).omit({
   id: true,
   createdAt: true,
 });
@@ -1370,6 +1403,12 @@ export type InsertComputeVerification = z.infer<typeof insertComputeVerification
 
 export type ComputePayout = typeof computePayouts.$inferSelect;
 export type InsertComputePayout = z.infer<typeof insertComputePayoutSchema>;
+
+export type ComputeWallet = typeof computeWallets.$inferSelect;
+export type InsertComputeWallet = z.infer<typeof insertComputeWalletSchema>;
+
+export type ComputeWalletLedgerEntry = typeof computeWalletLedger.$inferSelect;
+export type InsertComputeWalletLedgerEntry = z.infer<typeof insertComputeWalletLedgerSchema>;
 
 // Phase 11: Trusted-Role Registry Types
 export type TrustedRolePolicy = typeof trustedRolePolicies.$inferSelect;

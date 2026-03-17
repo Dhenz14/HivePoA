@@ -14,7 +14,11 @@ import {
   emitNonceMismatch,
   emitDivergentReplay,
   emitLeaseExpired,
+  emitArtifactUploaded,
+  emitArtifactRejected,
 } from "./compute-events";
+import { getIPFSClient } from "./ipfs-client";
+import { computeWalletService } from "./compute-wallet-service";
 import type {
   ComputeNode,
   ComputeJob,
@@ -40,6 +44,20 @@ const WARMUP_WORKLOADS: WorkloadType[] = ["eval_sweep", "benchmark_run", "adapte
 
 // Lease sweep interval: check for expired leases every 30 seconds
 const LEASE_SWEEP_INTERVAL_MS = 30 * 1000;
+
+// Artifact size limits per workload type (bytes)
+const ARTIFACT_SIZE_LIMITS: Record<string, number> = {
+  eval_sweep: 5 * 1024 * 1024,               // 5 MB
+  benchmark_run: 5 * 1024 * 1024,             // 5 MB
+  data_generation: 50 * 1024 * 1024,          // 50 MB
+  adapter_validation: 5 * 1024 * 1024,        // 5 MB
+  domain_lora_train: 500 * 1024 * 1024,       // 500 MB
+  weakness_targeted_generation: 50 * 1024 * 1024, // 50 MB
+};
+
+// Per-node upload rate limit: max uploads per window
+const ARTIFACT_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+const ARTIFACT_RATE_LIMIT_MAX = 30; // max 30 uploads per 15 min per node
 
 export interface JobManifest {
   schema_version: number;
@@ -143,13 +161,31 @@ export function computeSubmissionPayloadHash(
   return createHash("sha256").update(framed, "utf8").digest("hex");
 }
 
+export interface ArtifactUpload {
+  data: Buffer;
+  expectedSha256: string;
+  workloadType: WorkloadType;
+  nodeId: string;
+}
+
+export interface ArtifactUploadResult {
+  cid: string;
+  sha256: string;
+  sizeBytes: number;
+}
+
 export class ComputeService {
   private leaseSweepTimer: ReturnType<typeof setInterval> | null = null;
+  // Per-node upload rate tracking: nodeId → list of upload timestamps
+  private artifactRateMap: Map<string, number[]> = new Map();
 
   async start(): Promise<void> {
     // Phase 0: Ensure DB-level constraints for cross-job guard.
     // These are idempotent — safe to run on every startup.
     await this.ensurePhase0Constraints();
+
+    // Phase 1 Step 2: Ensure wallet tables exist
+    await this.ensureWalletTables();
 
     this.leaseSweepTimer = setInterval(() => this.sweepExpiredLeases(), LEASE_SWEEP_INTERVAL_MS);
     logCompute.info("ComputeService started — lease sweeper active");
@@ -172,6 +208,15 @@ export class ComputeService {
       logCompute.info("Phase 0 DB constraints verified");
     } catch (err) {
       logCompute.error({ err }, "Phase 0 DB constraint setup failed — cross-job guard may not be DB-enforced");
+    }
+  }
+
+  private async ensureWalletTables(): Promise<void> {
+    try {
+      await storage.ensureWalletTables();
+      logCompute.info("Wallet tables verified");
+    } catch (err) {
+      logCompute.error({ err }, "Wallet table setup failed");
     }
   }
 
@@ -282,6 +327,20 @@ export class ComputeService {
       deadlineAt: params.deadlineAt || null,
       verificationPolicyJson: params.verificationPolicy ? JSON.stringify(params.verificationPolicy) : null,
     });
+
+    // Phase 1 Step 2: Reserve budget from creator's wallet.
+    // If insufficient balance, cancel the job and propagate the error.
+    try {
+      await computeWalletService.reserveBudget(
+        params.creatorUsername,
+        job.id,
+        params.budgetHbd,
+      );
+    } catch (err: any) {
+      // Funding failed — mark job as cancelled so claim queries skip it
+      await storage.updateComputeJobState(job.id, "cancelled", { cancelledAt: new Date() });
+      throw err;
+    }
 
     logCompute.info({ jobId: job.id, type: params.workloadType, budget: params.budgetHbd }, "Compute job created");
     return job;
@@ -492,6 +551,12 @@ export class ComputeService {
       logCompute.info({ jobId: attempt.jobId, attemptId, reason }, "Job attempt failed, re-queued");
     } else {
       await storage.updateComputeJobState(attempt.jobId, "rejected", { completedAt: new Date() });
+      // Phase 1 Step 2: Release full budget when all attempts exhausted
+      try {
+        await computeWalletService.releaseBudget(attempt.jobId, job!.reservedBudgetHbd, "exhausted");
+      } catch (err) {
+        logCompute.warn({ jobId: attempt.jobId, err }, "Budget release on exhaustion failed (non-fatal)");
+      }
       logCompute.warn({ jobId: attempt.jobId, attemptId, reason }, "Job exhausted all attempts");
     }
   }
@@ -543,6 +608,19 @@ export class ComputeService {
     }
 
     await storage.updateComputeJobState(jobId, "cancelled", { cancelledAt: new Date() });
+
+    // Phase 1 Step 2: Release unused budget back to creator's wallet
+    try {
+      await computeWalletService.releaseBudget(
+        jobId,
+        job.reservedBudgetHbd,
+        "cancellation",
+      );
+    } catch (err) {
+      // Non-fatal: reservation may not exist if wallet service was not active when job was created
+      logCompute.warn({ jobId, err }, "Budget release on cancellation failed (non-fatal)");
+    }
+
     logCompute.info({ jobId, username }, "Job cancelled");
   }
 
@@ -769,6 +847,12 @@ export class ComputeService {
       await storage.updateComputeJobState(job.id, "queued");
     } else {
       await storage.updateComputeJobState(job.id, "rejected", { completedAt: new Date() });
+      // Phase 1 Step 2: Release full budget when all attempts exhausted via rejection
+      try {
+        await computeWalletService.releaseBudget(job.id, job.reservedBudgetHbd, "rejected");
+      } catch (err) {
+        logCompute.warn({ jobId: job.id, err }, "Budget release on rejection failed (non-fatal)");
+      }
     }
   }
 
@@ -802,6 +886,12 @@ export class ComputeService {
           await storage.updateComputeJobState(attempt.jobId, "queued");
         } else if (job) {
           await storage.updateComputeJobState(attempt.jobId, "expired", { completedAt: new Date() });
+          // Phase 1 Step 2: Release full budget when job expires
+          try {
+            await computeWalletService.releaseBudget(job.id, job.reservedBudgetHbd, "expired");
+          } catch (releaseErr) {
+            logCompute.warn({ jobId: job.id, releaseErr }, "Budget release on expiry failed (non-fatal)");
+          }
         }
       }
     } catch (err) {
@@ -827,6 +917,99 @@ export class ComputeService {
   }
 
   // ============================================================
+  // Artifact Ingress
+  // ============================================================
+
+  /**
+   * Upload an artifact to the coordinator's IPFS node.
+   *
+   * Staged atomically: artifact is not visible until both pin + hash check pass.
+   * Rate-limited per node to prevent upload spam from low-rep nodes.
+   */
+  async uploadArtifact(upload: ArtifactUpload): Promise<ArtifactUploadResult> {
+    const { data, expectedSha256, workloadType, nodeId } = upload;
+
+    // 1. Rate limit per node
+    this.enforceArtifactRateLimit(nodeId);
+
+    // 2. Workload type validation
+    const sizeLimit = ARTIFACT_SIZE_LIMITS[workloadType];
+    if (sizeLimit === undefined) {
+      emitArtifactRejected({ nodeId, reason: "INVALID_WORKLOAD_TYPE", workloadType });
+      throw Object.assign(new Error("INVALID_WORKLOAD_TYPE"), { statusCode: 400 });
+    }
+
+    // 3. Size check
+    if (data.length === 0) {
+      emitArtifactRejected({ nodeId, reason: "EMPTY_ARTIFACT", workloadType });
+      throw Object.assign(new Error("EMPTY_ARTIFACT"), { statusCode: 400 });
+    }
+    if (data.length > sizeLimit) {
+      emitArtifactRejected({
+        nodeId, reason: "ARTIFACT_TOO_LARGE", workloadType,
+        expectedSha256,
+      });
+      throw Object.assign(
+        new Error(`ARTIFACT_TOO_LARGE: ${data.length} bytes exceeds ${sizeLimit} byte limit for ${workloadType}`),
+        { statusCode: 413 },
+      );
+    }
+
+    // 4. SHA-256 verification — recompute and compare
+    const actualSha256 = createHash("sha256").update(data).digest("hex");
+    if (actualSha256 !== expectedSha256) {
+      emitArtifactRejected({
+        nodeId, reason: "SHA256_MISMATCH", workloadType,
+        expectedSha256,
+      });
+      throw Object.assign(
+        new Error("SHA256_MISMATCH"),
+        { statusCode: 422 },
+      );
+    }
+
+    // 5. Pin to IPFS — atomic: artifact is only visible if this succeeds
+    const ipfs = getIPFSClient();
+    let cid: string;
+    try {
+      cid = await ipfs.addWithPin(data);
+    } catch (err) {
+      emitArtifactRejected({ nodeId, reason: "IPFS_PIN_FAILED", workloadType, expectedSha256 });
+      throw Object.assign(new Error("IPFS_PIN_FAILED"), { statusCode: 502 });
+    }
+
+    // 6. Record the upload timestamp for rate limiting
+    const now = Date.now();
+    const timestamps = this.artifactRateMap.get(nodeId) || [];
+    timestamps.push(now);
+    this.artifactRateMap.set(nodeId, timestamps);
+
+    emitArtifactUploaded({
+      nodeId, cid, sha256: actualSha256,
+      sizeBytes: data.length, workloadType,
+    });
+
+    logCompute.info({
+      nodeId, cid, sha256: actualSha256,
+      sizeBytes: data.length, workloadType,
+    }, "Artifact uploaded and pinned");
+
+    return { cid, sha256: actualSha256, sizeBytes: data.length };
+  }
+
+  private enforceArtifactRateLimit(nodeId: string): void {
+    const now = Date.now();
+    const cutoff = now - ARTIFACT_RATE_LIMIT_WINDOW_MS;
+    const timestamps = (this.artifactRateMap.get(nodeId) || []).filter(t => t > cutoff);
+    this.artifactRateMap.set(nodeId, timestamps);
+
+    if (timestamps.length >= ARTIFACT_RATE_LIMIT_MAX) {
+      emitArtifactRejected({ nodeId, reason: "RATE_LIMITED" });
+      throw Object.assign(new Error("ARTIFACT_RATE_LIMITED"), { statusCode: 429 });
+    }
+  }
+
+  // ============================================================
   // Settle Payouts
   // ============================================================
 
@@ -836,6 +1019,21 @@ export class ComputeService {
 
     for (const payout of pending) {
       await storage.updateComputePayoutStatus(payout.id, "queued");
+
+      // Phase 1 Step 2: Credit node operator's wallet when payout is queued.
+      // This is the stable idempotency identity at the chain boundary.
+      try {
+        const node = await storage.getComputeNode(payout.nodeId);
+        if (node) {
+          await computeWalletService.recordPayout(
+            payout.id,
+            node.hiveUsername,
+            payout.amountHbd,
+          );
+        }
+      } catch (err) {
+        logCompute.warn({ payoutId: payout.id, err }, "Payout wallet credit failed (non-fatal)");
+      }
     }
 
     logCompute.info({ jobId, count: pending.length }, "Payouts settled");

@@ -55,6 +55,8 @@ app.use(
 
 app.use(express.urlencoded({ extended: false }));
 app.use('/api/upload', express.raw({ limit: '50mb', type: 'application/octet-stream' }));
+// Compute artifact uploads — 500 MB ceiling (per-workload limits enforced in handler)
+app.use('/api/compute/artifacts', express.raw({ limit: '500mb', type: 'application/octet-stream' }));
 
 // Rate limiting — 3 tiers: global API, auth endpoints, upload
 const globalLimiter = rateLimit({

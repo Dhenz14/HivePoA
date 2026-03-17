@@ -24,6 +24,7 @@ import path from "path";
 import { getIPFSClient } from "./services/ipfs-client";
 import { logRoutes, logWS, logEncoding, logWoT, logCompute } from "./logger";
 import { computeService, type WorkloadType, type JobManifest } from "./services/compute-service";
+import { computeWalletService } from "./services/compute-wallet-service";
 import { TrustRegistryService } from "./services/trust-registry";
 import { hiveSimulator as hiveClientForTrust } from "./services/hive-simulator";
 import { createProofHash } from "./services/poa-crypto";
@@ -5157,6 +5158,62 @@ export async function registerRoutes(
     }
   });
 
+  // --- Artifact Ingress ---
+
+  // POST /api/compute/artifacts/upload — Worker uploads artifact to coordinator IPFS node
+  // Body: raw binary (application/octet-stream)
+  // Headers: X-Expected-SHA256, X-Workload-Type, X-Node-Instance-Id
+  app.post("/api/compute/artifacts/upload", requireAgentAuth, async (req, res) => {
+    try {
+      const expectedSha256 = req.headers["x-expected-sha256"] as string;
+      const workloadType = req.headers["x-workload-type"] as string;
+      const nodeInstanceId = req.headers["x-node-instance-id"] as string;
+
+      if (!expectedSha256 || !/^[a-f0-9]{64}$/.test(expectedSha256)) {
+        res.status(400).json({ error: "X-Expected-SHA256 header required (lowercase hex, 64 chars)" });
+        return;
+      }
+      if (!workloadType) {
+        res.status(400).json({ error: "X-Workload-Type header required" });
+        return;
+      }
+      if (!nodeInstanceId) {
+        res.status(400).json({ error: "X-Node-Instance-Id header required" });
+        return;
+      }
+
+      // Resolve and verify node ownership
+      const node = await storage.getComputeNodeByInstanceId(nodeInstanceId);
+      if (!node) {
+        res.status(404).json({ error: "Node not registered" });
+        return;
+      }
+      if (node.hiveUsername !== req.authenticatedUser!) {
+        res.status(403).json({ error: "Node belongs to a different account" });
+        return;
+      }
+
+      const data = req.body as Buffer;
+      if (!Buffer.isBuffer(data) || data.length === 0) {
+        res.status(400).json({ error: "Body must be non-empty application/octet-stream" });
+        return;
+      }
+
+      const result = await computeService.uploadArtifact({
+        data,
+        expectedSha256,
+        workloadType: workloadType as WorkloadType,
+        nodeId: node.id,
+      });
+
+      res.status(201).json(result);
+    } catch (err: any) {
+      const statusCode = err.statusCode || 500;
+      logCompute.error({ err, statusCode }, "Artifact upload failed");
+      res.status(statusCode).json({ error: err.message });
+    }
+  });
+
   // --- Finance & Stats ---
 
   // GET /api/compute/jobs/:id/payouts — Get payouts for a job
@@ -5191,6 +5248,60 @@ export async function registerRoutes(
       res.json(stats);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- Wallet ---
+
+  // GET /api/compute/wallet/balance — Derived balance for authenticated user
+  app.get("/api/compute/wallet/balance", requireAuth, async (req, res) => {
+    try {
+      const username = req.authenticatedUser!;
+      const balance = await computeWalletService.getBalance(username);
+      res.json({ username, balanceHbd: balance });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/compute/wallet/ledger — Paginated ledger entries for authenticated user
+  app.get("/api/compute/wallet/ledger", requireAuth, async (req, res) => {
+    try {
+      const username = req.authenticatedUser!;
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+      const offset = parseInt(req.query.offset as string) || 0;
+      const entries = await computeWalletService.getLedger(username, limit, offset);
+      res.json({ entries, limit, offset });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/compute/wallet/reconcile — Bulk deposit reconciliation (admin only)
+  app.post("/api/compute/wallet/reconcile", requireAuth, async (req, res) => {
+    try {
+      const username = req.authenticatedUser!;
+      const adminUsername = process.env.COMPUTE_ADMIN_USERNAME;
+      if (!adminUsername || username !== adminUsername) {
+        res.status(403).json({ error: "Admin only" });
+        return;
+      }
+
+      const schema = z.object({
+        transfers: z.array(z.object({
+          from: z.string().min(1),
+          txHash: z.string().min(1),
+          amount: z.string().regex(/^\d+\.\d{3}$/),
+          blockNum: z.number().int().optional(),
+          memo: z.string().optional(),
+        })),
+      });
+      const { transfers } = schema.parse(req.body);
+      const result = await computeWalletService.reconcileFromTransfers(transfers);
+      res.json(result);
+    } catch (err: any) {
+      const statusCode = err.statusCode || 400;
+      res.status(statusCode).json({ error: err.message });
     }
   });
 

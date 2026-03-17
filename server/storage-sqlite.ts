@@ -61,6 +61,8 @@ import type {
   ComputeJobAttempt, InsertComputeJobAttempt,
   ComputeVerification, InsertComputeVerification,
   ComputePayout, InsertComputePayout,
+  ComputeWallet, InsertComputeWallet,
+  ComputeWalletLedgerEntry, InsertComputeWalletLedgerEntry,
 } from "@shared/schema";
 
 // ============================================================
@@ -2453,4 +2455,13 @@ export class SQLiteStorage implements IStorage {
   async getComputeStats(): Promise<{ totalNodes: number; onlineNodes: number; totalJobs: number; completedJobs: number; totalHbdPaid: string }> {
     return { totalNodes: 0, onlineNodes: 0, totalJobs: 0, completedJobs: 0, totalHbdPaid: "0" };
   }
+
+  // Phase 1 Step 2: Compute Wallets (stubs — compute not supported on SQLite desktop agent yet)
+  async getComputeWalletByUsername(_username: string): Promise<ComputeWallet | undefined> { return undefined; }
+  async createComputeWallet(_wallet: InsertComputeWallet): Promise<ComputeWallet> { this.computeNotSupported(); }
+  async createWalletLedgerEntry(_entry: InsertComputeWalletLedgerEntry): Promise<ComputeWalletLedgerEntry> { this.computeNotSupported(); }
+  async getWalletLedgerEntries(_walletId: string, _limit?: number, _offset?: number): Promise<ComputeWalletLedgerEntry[]> { return []; }
+  async getComputeWalletBalance(_walletId: string): Promise<string> { return "0"; }
+  async getWalletLedgerByIdempotencyKey(_key: string): Promise<ComputeWalletLedgerEntry | undefined> { return undefined; }
+  async ensureWalletTables(): Promise<void> { }
 }

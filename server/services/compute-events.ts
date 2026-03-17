@@ -272,3 +272,106 @@ export function emitLeaseExpired(p: {
     leaseExpiresAt: p.leaseExpiresAt.toISOString(),
   });
 }
+
+// ================================================================
+// Artifact Ingress Events
+// ================================================================
+
+export function emitArtifactUploaded(p: {
+  nodeId: string;
+  cid: string;
+  sha256: string;
+  sizeBytes: number;
+  workloadType: string;
+}): void {
+  emit("artifact_uploaded", {
+    jobId: "",
+    nodeId: p.nodeId,
+  }, {
+    cid: p.cid,
+    sha256: p.sha256,
+    sizeBytes: p.sizeBytes,
+    workloadType: p.workloadType,
+  });
+}
+
+export function emitArtifactRejected(p: {
+  nodeId: string;
+  reason: string;
+  workloadType?: string;
+  expectedSha256?: string;
+}): void {
+  emit("artifact_rejected", {
+    jobId: "",
+    nodeId: p.nodeId,
+  }, {
+    reason: p.reason,
+    workloadType: p.workloadType,
+    expectedSha256: p.expectedSha256,
+  });
+}
+
+// ================================================================
+// Wallet Events
+// ================================================================
+
+export function emitDepositRecorded(p: {
+  username: string;
+  txHash: string;
+  amountHbd: string;
+  blockNum?: number;
+}): void {
+  emit("deposit_recorded", { jobId: "" }, {
+    username: p.username,
+    txHash: p.txHash,
+    amountHbd: p.amountHbd,
+    blockNum: p.blockNum,
+  });
+}
+
+export function emitBudgetReserved(p: {
+  jobId: string;
+  username: string;
+  amountHbd: string;
+}): void {
+  emit("budget_reserved", { jobId: p.jobId }, {
+    username: p.username,
+    amountHbd: p.amountHbd,
+  });
+}
+
+export function emitBudgetReleased(p: {
+  jobId: string;
+  amountHbd: string;
+  reason: string;
+}): void {
+  emit("budget_released", { jobId: p.jobId }, {
+    amountHbd: p.amountHbd,
+    reason: p.reason,
+  });
+}
+
+export function emitInsufficientBalance(p: {
+  username: string;
+  required: string;
+  available: string;
+  jobId: string;
+}): void {
+  emit("insufficient_balance", { jobId: p.jobId }, {
+    username: p.username,
+    required: p.required,
+    available: p.available,
+  });
+}
+
+export function emitReconciliationCompleted(p: {
+  processed: number;
+  skipped: number;
+  errors: number;
+}): void {
+  emit("reconciliation_completed", { jobId: "" }, {
+    processed: p.processed,
+    skipped: p.skipped,
+    errors: p.errors,
+  });
+}

@@ -154,6 +154,13 @@ import {
   type InsertComputeVerification,
   type ComputePayout,
   type InsertComputePayout,
+  // Phase 1 Step 2: Compute Wallets
+  computeWallets,
+  computeWalletLedger,
+  type ComputeWallet,
+  type InsertComputeWallet,
+  type ComputeWalletLedgerEntry,
+  type InsertComputeWalletLedgerEntry,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, sql, ilike, or, notInArray, gte, lte, lt } from "drizzle-orm";
@@ -510,6 +517,19 @@ export interface IStorage {
 
   // Phase 10: GPU Compute Marketplace — Stats
   getComputeStats(): Promise<{ totalNodes: number; onlineNodes: number; totalJobs: number; completedJobs: number; totalHbdPaid: string }>;
+
+  // Phase 1 Step 2: Compute Wallets
+  getComputeWalletByUsername(username: string): Promise<ComputeWallet | undefined>;
+  createComputeWallet(wallet: InsertComputeWallet): Promise<ComputeWallet>;
+
+  // Phase 1 Step 2: Wallet Ledger
+  createWalletLedgerEntry(entry: InsertComputeWalletLedgerEntry): Promise<ComputeWalletLedgerEntry>;
+  getWalletLedgerEntries(walletId: string, limit?: number, offset?: number): Promise<ComputeWalletLedgerEntry[]>;
+  getComputeWalletBalance(walletId: string): Promise<string>;
+  getWalletLedgerByIdempotencyKey(key: string): Promise<ComputeWalletLedgerEntry | undefined>;
+
+  // Phase 1 Step 2: DB DDL
+  ensureWalletTables(): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2740,6 +2760,91 @@ export class DatabaseStorage implements IStorage {
           REFERENCES compute_job_attempts (id, job_id);
         END IF;
       END $$
+    `);
+  }
+
+  // --- Phase 1 Step 2: Compute Wallets ---
+
+  async getComputeWalletByUsername(username: string): Promise<ComputeWallet | undefined> {
+    const [wallet] = await db.select().from(computeWallets)
+      .where(eq(computeWallets.hiveUsername, username));
+    return wallet || undefined;
+  }
+
+  async createComputeWallet(wallet: InsertComputeWallet): Promise<ComputeWallet> {
+    const [created] = await db.insert(computeWallets).values(wallet).returning();
+    return created;
+  }
+
+  async createWalletLedgerEntry(entry: InsertComputeWalletLedgerEntry): Promise<ComputeWalletLedgerEntry> {
+    const [created] = await db.insert(computeWalletLedger).values(entry).returning();
+    return created;
+  }
+
+  async getWalletLedgerEntries(walletId: string, limit = 50, offset = 0): Promise<ComputeWalletLedgerEntry[]> {
+    return db.select().from(computeWalletLedger)
+      .where(eq(computeWalletLedger.walletId, walletId))
+      .orderBy(desc(computeWalletLedger.createdAt))
+      .limit(limit)
+      .offset(offset);
+  }
+
+  async getComputeWalletBalance(walletId: string): Promise<string> {
+    const [result] = await db.select({
+      balance: sql<string>`COALESCE(SUM(CAST(${computeWalletLedger.amountHbd} AS NUMERIC)), 0)::TEXT`,
+    }).from(computeWalletLedger)
+      .where(eq(computeWalletLedger.walletId, walletId));
+    return result?.balance || "0";
+  }
+
+  async getWalletLedgerByIdempotencyKey(key: string): Promise<ComputeWalletLedgerEntry | undefined> {
+    const [entry] = await db.select().from(computeWalletLedger)
+      .where(eq(computeWalletLedger.idempotencyKey, key));
+    return entry || undefined;
+  }
+
+  /**
+   * Ensure wallet tables exist. Idempotent (CREATE IF NOT EXISTS).
+   * Same pattern as ensurePhase0Indexes — raw SQL for CI compatibility.
+   */
+  async ensureWalletTables(): Promise<void> {
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS compute_wallets (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        hive_username TEXT NOT NULL UNIQUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS compute_wallet_ledger (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        wallet_id VARCHAR NOT NULL REFERENCES compute_wallets(id),
+        entry_type TEXT NOT NULL,
+        amount_hbd TEXT NOT NULL,
+        reference_type TEXT NOT NULL,
+        reference_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        chain_tx_id TEXT,
+        chain_block_num INTEGER,
+        memo TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    await db.execute(sql`
+      CREATE INDEX IF NOT EXISTS idx_wallet_ledger_wallet_id
+      ON compute_wallet_ledger(wallet_id)
+    `);
+
+    await db.execute(sql`
+      CREATE INDEX IF NOT EXISTS idx_wallet_ledger_idempotency
+      ON compute_wallet_ledger(idempotency_key)
+    `);
+
+    await db.execute(sql`
+      CREATE INDEX IF NOT EXISTS idx_wallet_ledger_reference
+      ON compute_wallet_ledger(reference_type, reference_id)
     `);
   }
 
