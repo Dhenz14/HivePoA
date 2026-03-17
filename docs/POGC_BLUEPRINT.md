@@ -241,18 +241,42 @@ The aggregator is implemented behind a swappable `MergeStrategy` interface. Dens
 
 ---
 
-## Economic Model
+## Economic Model (SETTLED — Pay-Per-Job)
 
-### Payout Structure (existing, proven)
+### Pricing Model: Compute Wallet + Posted Rates
 
-```
+GPU compute is transactional (discrete, bursty), not continuous like storage. Pay-per-job, not subscriptions. See `GPU_SHARING_PLAN.md` for full rationale.
+
+- Users deposit HBD into a compute wallet
+- Each job deducts from wallet at the posted rate for that workload type
+- Workers earn per-job via 3-stage payout (proven in 10 real-money soak cycles)
+- Balance hits zero → new jobs rejected. Top up anytime. No wasted capacity.
+
+**Posted rates (fixed, v1):**
+
+| Workload | Price | Min VRAM |
+|----------|-------|----------|
+| `eval_sweep` | 0.020 HBD | 8 GB |
+| `benchmark_run` | 0.020 HBD | 8 GB |
+| `data_generation` | 0.050 HBD | 12 GB |
+| `adapter_validation` | 0.020 HBD | 12 GB |
+| `domain_lora_train` | 0.300 HBD | 16 GB |
+
+Below cloud market rate by design (surplus-idle-GPU model). HBD stablecoin advantage: workers earn $1-pegged currency, not volatile tokens.
+
+### Payout Structure (proven)
+
+```text
 Job acceptance triggers 3 frozen payout rows:
-  Validity fee:   30% of budget  (always, for showing up)
-  Completion fee: 40% of budget  (always, for finishing)
-  Bonus:          30% × score    (quality-weighted)
+  Validity fee:   30% of budget  (correct hardware + structural checks)
+  Completion fee: 40% of budget  (job completed, artifacts uploaded, provenance valid)
+  Bonus:          30% × score    (quality-weighted by verifier hidden eval)
 
 Cancellation (partial work):
   min(0.8, elapsed/lease) × 30% of budget
+
+Failed job (worker fault):
+  Held amount returned to requester's compute wallet
 
 Liveness challenges (Phase 2):
   Micro-HBD per pass (~0.001), funded from treasury
@@ -260,7 +284,7 @@ Liveness challenges (Phase 2):
 
 ### Reputation Ladder (D2)
 
-```
+```text
 0-19:   Warm-up (eval + benchmark only)
 20-49:  Standard (all V1 workloads)
 50-79:  Trusted (priority scheduling, higher payout multiplier)
@@ -270,6 +294,7 @@ Liveness challenges (Phase 2):
 ### Anti-Cheat Economics
 
 Cheating is economically unprofitable because:
+
 - Warm-up period (10+ successful jobs) before earning real money
 - Reputation loss is 2.5× faster than gain (rep -5 on fail vs +2 on pass)
 - Hardware fingerprint mismatch = immediate ban

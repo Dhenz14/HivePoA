@@ -25,6 +25,8 @@
 | Rejected: adaptive liveness scheduling | Claude review | Premature complexity. Flat Poisson with per-tier λ is sufficient for v1 |
 | Rejected: node vs operator reputation split | Claude review | Hive accounts are the identity layer. WoT handles trust. No new primitives needed |
 | Rejected: payout split adjustment | Claude review | 70/30 split is fine for v1 worker attraction. Tightening loses workers |
+| Economic model: pay-per-job with compute wallet | Architecture decision | GPU compute is discrete/bursty, not continuous like storage. Tier/subscription model rejected — creates wasted capacity, hostile blocking, unpredictable worker earnings, 6+ billing edge cases. Pay-per-job needs 1 table + 2 endpoints vs 3+ tables + 6+ endpoints + billing cron |
+| Rejected: tier/subscription model for GPU | Architecture decision | Storage tiers work because storage is continuous (365-day PoA). GPU is transactional. Every successful GPU marketplace converges on pay-per-use. |
 
 ---
 
@@ -517,65 +519,133 @@ When volume exceeds coordinator capacity, WoT-vouched `compute_verifier` account
 
 ---
 
-## Revised Economic Model
+## Economic Model (SETTLED — Pay-Per-Job)
 
-### The Pricing Reality
+### Design Decision: Pay-Per-Job, Not Subscriptions
 
-HBD ≈ $1 USD (Hive on-chain conversion mechanism). Cloud GPU rates (2026):
-- RTX 4090: ~$0.34/hr
-- A100: ~$1.19/hr
-- H100: ~$1.99/hr
+GPU compute is a **discrete, bursty service** — fundamentally different from storage. Storage tiers work because files need continuous PoA challenges over 365 days (steady-state service). GPU jobs are fire-and-forget: submit, run 30 minutes, get result, maybe nothing for a week.
 
-A 30-minute 4090 run costs ~$0.17 at cloud rates. The original plan's 0.05-0.10 HBD for a 30-120 minute training job was **below cost**.
+A subscription/tier model creates: wasted capacity (use-it-or-lose-it), hostile blocking mid-pipeline, unpredictable per-job worker earnings, and 6+ edge cases around billing periods, in-flight jobs at month boundaries, partial refunds, and parallel job hour-draining race conditions.
 
-### Revised Job Pricing
+Pay-per-job requires: one new table (compute wallet), two new endpoints (deposit, balance check). Everything else is already built and soak-tested.
 
-| Workload Type | Duration | Budget (HBD) | Min VRAM | Notes |
-|--------------|----------|-------------|----------|-------|
-| `eval_sweep` | 5-30 min | 0.010-0.050 | 8 GB | Low GPU, mostly inference |
-| `benchmark_run` | 5-20 min | 0.010-0.050 | 8 GB | Low GPU, mostly inference |
-| `data_generation` | 10-30 min | 0.030-0.100 | 12 GB | Medium GPU, inference-heavy |
-| `adapter_validation` | 5-15 min | 0.010-0.030 | 12 GB | Load model + quick eval |
-| `domain_lora_train` | 30-120 min | 0.200-0.500 | 16 GB | Full training, containerized |
+**This is a binding design decision. No tier/subscription model for GPU compute.**
+
+### Compute Wallet
+
+Every Hive account has a compute wallet balance. Jobs deduct from it atomically at creation.
+
+**How it works:**
+1. User deposits HBD into compute wallet (`POST /api/compute/wallet/deposit`)
+2. User creates a job → server checks balance ≥ posted price for that workload type
+3. Balance deducted atomically at job creation (same pattern as storage contract budget hold)
+4. Job completes → 3-stage payout to worker from the held amount
+5. Job fails → held amount returned to wallet (minus any cancellation payout owed)
+6. Balance hits zero → new jobs rejected with 402 (insufficient balance). Existing in-flight jobs unaffected.
+
+**Wallet schema (one new table):**
+```sql
+CREATE TABLE compute_wallets (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  username      TEXT NOT NULL UNIQUE,
+  balance_hbd   DECIMAL(10,3) NOT NULL DEFAULT 0,
+  total_deposited_hbd  DECIMAL(10,3) NOT NULL DEFAULT 0,
+  total_spent_hbd      DECIMAL(10,3) NOT NULL DEFAULT 0,
+  created_at    TIMESTAMP DEFAULT NOW(),
+  updated_at    TIMESTAMP DEFAULT NOW()
+);
+```
+
+**Balance operations are atomic:** Deduct uses `UPDATE compute_wallets SET balance_hbd = balance_hbd - $1 WHERE username = $2 AND balance_hbd >= $1 RETURNING balance_hbd`. If the row isn't updated (insufficient balance), job creation fails. No race conditions. Same pattern as `pg_advisory_xact_lock` we use for storage quota.
+
+**New endpoints (two):**
+
+| Endpoint | Method | Auth | Action |
+|----------|--------|------|--------|
+| `/api/compute/wallet/deposit` | POST | Bearer | Add HBD to wallet balance. Verified via Hive transfer memo or direct treasury deposit. |
+| `/api/compute/wallet/balance` | GET | Bearer | Return current balance, total deposited, total spent. |
+
+Existing endpoint `POST /api/compute/jobs` gains a balance check: reject with 402 if wallet balance < posted price for the requested workload type.
+
+### Posted Rates (Fixed Per-Job Pricing)
+
+| Workload Type | Posted Price | Min VRAM | Duration | Notes |
+|--------------|-------------|----------|----------|-------|
+| `eval_sweep` | **0.020 HBD** | 8 GB | 5-30 min | Low GPU, inference-only |
+| `benchmark_run` | **0.020 HBD** | 8 GB | 5-20 min | Low GPU, inference-only |
+| `data_generation` | **0.050 HBD** | 12 GB | 10-30 min | Per 50-pair batch, inference-heavy |
+| `adapter_validation` | **0.020 HBD** | 12 GB | 5-15 min | Load model + quick eval |
+| `domain_lora_train` | **0.300 HBD** | 16 GB | 30-120 min | Full training, containerized |
+
+Fixed posted prices. No dynamic pricing. No formula. If the market proves too thin, raise prices manually — do not add complexity until there are 10+ active workers.
 
 ### Market Positioning
 
 This is **not cloud-competitive pricing**. It is **surplus-idle-GPU participation**:
-- Workers donate idle GPU cycles below cloud market rate
-- In exchange: earn HBD (real cryptocurrency) for idle compute
+
+HBD ≈ $1 USD (Hive on-chain conversion mechanism). Cloud GPU rates (2026): RTX 4090 ~$0.34/hr, A100 ~$1.19/hr, H100 ~$1.99/hr. A 30-minute 4090 training run costs ~$0.17 at cloud rates. Our posted price: 0.300 HBD for a full training job.
+
+- Workers contribute idle GPU cycles below cloud market rate
+- In exchange: earn HBD (real cryptocurrency, $1-pegged stablecoin) for idle compute
 - The appeal is passive income from hardware already owned, not competing with RunPod
 - Compare to Folding@Home or early Bitcoin mining: under-market compute with non-monetary motivation (community, early participation, reputation)
+- **HBD stablecoin advantage over competitors:** Bittensor pays in TAO (volatile), Nosana in NOS (volatile), Akash in AKT (volatile). HBD is pegged — workers know exactly what they earn.
 
-### Pricing Formula (v1 — fixed posted prices)
+### Payout Structure (Proven — 10 Real-Money Soak Cycles, Zero Failures)
 
-Use fixed posted prices per workload type, not a formula. The market is too thin for dynamic pricing to be meaningful in v1.
-
-```
-payout = posted_price[workload_type]
-
-posted_price = {
-  eval_sweep:          0.020 HBD   (fixed)
-  benchmark_run:       0.020 HBD   (fixed)
-  data_generation:     0.050 HBD   (fixed, per 50-pair batch)
-  adapter_validation:  0.020 HBD   (fixed)
-  domain_lora_train:   0.300 HBD   (fixed, 16GB tier)
-}
-```
-
-These are **below cloud market rate** by design (surplus-idle-GPU model). If the market proves too thin at these prices, raise them — do not add complexity with dynamic pricing until there are 10+ active workers.
-
-### Payout Structure (unchanged — proven)
-
-```
+```text
 Job acceptance triggers 3 frozen payout rows:
-  Validity fee:   30% of budget  (for showing up with correct hardware + passing structural checks)
-  Completion fee: 40% of budget  (for completing the job and submitting a valid result)
-  Bonus:          30% × score    (quality-weighted by verifier)
+  Validity fee:   30% of budget  (correct hardware + structural checks passed)
+  Completion fee: 40% of budget  (job completed, artifacts uploaded, provenance valid)
+  Bonus:          30% × score    (quality-weighted by verifier hidden eval)
+
+Cancellation (partial work):
+  min(0.8, elapsed/lease) × 30% of budget
+
+Failed job (worker fault):
+  Held amount returned to requester's compute wallet
 ```
 
-This 70/30 split is intentional for v1 worker attraction. "Completion" is not just showing up — it means the worker executed the workload, uploaded artifacts, passed provenance checks, and the coordinator retrieved the output. The 30% quality bonus is scored by hidden eval. If quality gaming becomes a problem at scale, shift more weight to the bonus tier — but do not tighten prematurely and lose workers to competing networks.
+"Completion" is not just showing up. It means: the worker executed the workload, uploaded artifacts to IPFS (or via HTTP ingress), passed provenance checks, and the coordinator retrieved the output. The 30% quality bonus is scored by hidden eval.
 
-> **v1 design choice:** Posted prices. No formula. Adjust by manual repricing when market feedback warrants it.
+This 70/30 split is intentional for v1 worker attraction. If quality gaming becomes a problem at scale, shift more weight to the bonus — but do not tighten prematurely and lose workers.
+
+### Worker Economics (What GPU Lenders Earn)
+
+| Workload | Payout on Perfect Score | Time Investment | Effective Rate |
+|----------|------------------------|-----------------|----------------|
+| `eval_sweep` | 0.020 HBD | ~15 min | ~$0.08/hr |
+| `benchmark_run` | 0.020 HBD | ~10 min | ~$0.12/hr |
+| `data_generation` | 0.050 HBD | ~20 min | ~$0.15/hr |
+| `adapter_validation` | 0.020 HBD | ~10 min | ~$0.12/hr |
+| `domain_lora_train` | 0.300 HBD | ~60 min | ~$0.30/hr |
+
+These are below cloud market rate by design. The value proposition is idle-GPU passive income, not full-time employment. A worker running a 4090 overnight on training jobs earns ~2.4 HBD/8hrs — real money for hardware doing nothing otherwise.
+
+### Why Not Tiers/Subscriptions (Design Rationale)
+
+Storage tiers work because storage is a **continuous service**: files sit there 24/7 needing PoA challenges every ~3 days. The math is clean: `tier_budget / estimated_challenges = reward_per_proof`.
+
+GPU compute is **transactional**: submit job → run → done. Forcing GPU into a subscription model creates:
+- **Wasted capacity:** User buys 5 GPU-hours/month, uses 2 → 3 wasted
+- **Hostile blocking:** User hits cap mid-pipeline on job 4 of 5 → stuck
+- **Unpredictable worker earnings:** `tier_budget / jobs_this_month` — denominator unknown until month ends
+- **6+ edge cases:** In-flight jobs at month boundary, parallel job hour-draining, partial refunds, billing cron, overage handling, pro-rated cancellation
+- **3+ extra tables, 6+ extra endpoints, a billing cron job** vs. 1 table and 2 endpoints for pay-per-job
+
+Pay-per-job: one table, two endpoints, zero edge cases beyond what's already tested. Every successful GPU marketplace (RunPod, Vast.ai, Lambda, Salad) converges on pay-per-use for this reason.
+
+### Optional Future: Bulk Credit Discounts
+
+If marketing wants a "pick a plan" UX without subscription mechanics:
+
+| Pack | Credit | Price | Discount |
+|------|--------|-------|----------|
+| Starter | 1.000 HBD credit | 1.000 HBD | 0% (base rate) |
+| Builder | 5.000 HBD credit | 4.500 HBD | 10% off |
+| Studio | 15.000 HBD credit | 12.000 HBD | 20% off |
+
+Buy in bulk → deposited to compute wallet → spend at posted rates. No expiration, no use-it-or-lose-it. This is deferred — not needed for v1.
 
 ---
 
