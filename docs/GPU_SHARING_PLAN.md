@@ -166,6 +166,7 @@ NATed home workers are a real availability risk, not a corner case. DCUtR hole p
 | **Size limit** | HTTP upload capped at 500 MB (matches largest artifact: adapter tar.gz). Chunked upload with SHA-256 checksum per chunk. |
 | **Auth** | Worker's API key (same as job submission auth). |
 | **Rate limit** | 3 uploads/hour per worker account. Prevents abuse of coordinator bandwidth. |
+| **Concurrency limit** | 1 concurrent upload per worker. Prevents burst bandwidth abuse (e.g., 3 active jobs × 500 MB = 1.5 GB simultaneous). |
 | **Partial-upload cleanup** | Incomplete uploads expire after 10 minutes. Coordinator runs cleanup sweep every 5 minutes to reclaim temp storage. |
 | **Budget-aware admission** | Upload only accepted if worker has an active claimed job expecting an artifact. No speculative uploads. |
 
@@ -408,7 +409,11 @@ new_A = diag(sqrt(S[:rank])) @ Vh[:rank, :]
 
 **Known limitation:** Truncation back to rank 32 discards residual information every round. Monitor `discarded_residual_norm = ||merged_delta - new_B @ new_A||` to detect when compression is destructive.
 
-**Upgrade path:** Switch to FedEx-LoRA residual-carry (pushes residual into frozen base weights instead of discarding) when residual norm exceeds threshold. Reference: arXiv 2410.09432. If client ranks vary, design for QR-based aggregation (ILoRA). If shard distributions are strongly non-IID, server-side optimizer-state handling may matter more than merge algorithm choice.
+**Upgrade triggers (switch merge strategy when either is observed):**
+1. **Residual norm growth:** `discarded_residual_norm` exceeds threshold over consecutive rounds → compression is destroying signal. Switch to FedEx-LoRA residual-carry (arXiv 2410.09432).
+2. **Cross-domain regression pattern:** Merges consistently regress on domain X while improving domain Y → the merge is discarding information that matters for X. Investigate per-domain adapter separation (FedSA-LoRA style A/B split) or domain-stratified merge weighting before switching the core algorithm.
+
+If client ranks vary, design for QR-based aggregation (ILoRA). If shard distributions are strongly non-IID, server-side optimizer-state handling may matter more than merge algorithm choice.
 
 **Admission control (do NOT merge every passing adapter):**
 
@@ -500,8 +505,9 @@ When volume exceeds coordinator capacity, WoT-vouched `compute_verifier` account
 | Component | Source | Amount |
 |-----------|--------|--------|
 | **Verifier fee** | Carved from job budget at creation | 10% of posted price |
-| **Verifier bond** | Staked by verifier account | 10× the fee for that workload class |
+| **Verifier bond** | Staked by verifier account | 10× the fee for that workload class, minimum 0.500 HBD (prevents trivial stakes on cheap jobs) |
 | **Audit lottery** | Random re-verification by coordinator | 5% of verified jobs are re-checked |
+| **Verifier rotation** | No repeat verifier for same worker within 24h | Prevents verifier-worker collusion patterns |
 
 **Fee flow:**
 1. Job created with `budget = posted_price`. Verifier fee (10%) is reserved.
@@ -701,7 +707,20 @@ Per-tier λ values (configurable):
 - Standard (rep 20-49): λ = 1/hour
 - Trusted (rep 50+): λ = 0.5/hour (proven nodes, less overhead)
 
-Challenge content is server-generated with nonce. The nonce must drive a large challenge family — a small prompt catalog with a huge seed is still a small challenge space. Ensure the nonce expands into materially different tensors/prompts/shards so caching is not viable.
+Challenge content is server-generated with nonce. The nonce must drive a large challenge family — a small prompt catalog with a huge seed is still a small challenge space.
+
+**Concrete challenge family sizes:**
+
+| Tier | Challenge | Family Size | How Nonce Expands |
+|------|-----------|------------|-------------------|
+| 1 | Matrix multiply | Effectively infinite | Nonce seeds random matrix dimensions (128-4096) + element distribution. Different tensors every time. |
+| 2 | Model inference | 1000+ effective challenges | Prompt drawn from server-side rotating pool of 1000+ prompts. Pool rotated monthly. Exact token hash required. |
+| 3 | Micro LoRA forward | 50+ effective challenges | Test shard drawn from pool of 50+ held-out shards, rotated monthly. Loss value within tolerance. |
+
+**Known bypasses preempted:**
+- **Cached outputs:** Large family makes caching infeasible (Tier 1 infinite, Tier 2 1000+, Tier 3 50+ × monthly rotation)
+- **Relay/proxy:** Tight response window (2-8s) makes forwarding to a real GPU elsewhere impractical over WAN
+- **Challenge-specialized workers:** Challenges use same runtime stack (cuBLAS, torch, LoRA) as paid workloads — no divergence to optimize against
 
 ### What We Deliberately Do Not Prevent
 
@@ -906,20 +925,22 @@ After that, Phase 0 implementation can begin. No further design review needed fo
 
 ---
 
-## Review Questions for GPT (v4)
+## Known Implementation Risks (Architecture Fixed — These Are Build Risks)
 
-Previous reviews (v2, v3) addressed: schema source of truth, pricing model, verification policy, reputation ladder, merge algorithm, IPFS availability, registry storage, merge weighting. All resolved as binding decisions.
+Identified through four rounds of cross-AI review. These are not design questions — they are operational risks to track during implementation.
 
-v4 incorporates GPT's feedback on: container isolation timing, model-parallel deferral, concrete Phase 4 gates, verifier economics, aggregator interface design.
+| # | Risk | Phase | Severity | Mitigation |
+|---|------|-------|----------|------------|
+| R1 | **IPFS pin persistence across coordinator restarts.** If the coordinator's Kubo node loses pins on restart, verified artifacts are gone. | Phase 0 | High | Verify Kubo pin durability in Phase 0 acceptance testing. Add pin-count health check to coordinator startup. |
+| R2 | **Hidden eval set rotation logistics.** Doc says "rotate periodically" but doesn't specify: who maintains it, how often, where stored, how to prevent worker discovery. | Phase 1 | Medium | Specify eval set management as a Phase 1 implementation task. Eval set stored encrypted on coordinator, rotated every 30 days, never exposed via API. |
+| R3 | **Container image supply chain.** Pinned image SHA-256 is specified but not: who builds it, how it's signed, where it's hosted. | Phase 2 | Medium | Build image in CI (GitHub Actions), sign with cosign, host on GitHub Container Registry (ghcr.io). Workers verify signature before pulling. |
+| R4 | **Coordinator as single point of failure.** By design in v1 — coordinator is the system. No HA, no failover. | Phase 4+ | Low (v1) | Acceptable for v1. HA/failover is a Phase 4+ concern when volume justifies it. |
+| R5 | **Semantic sampling cost scaling.** 10% sampling at ~30s/batch is fine for v1 volumes. At 1000+ data_gen jobs/day, coordinator GPU becomes a bottleneck. | Phase 1+ | Low (v1) | Monitor coordinator GPU utilization. If bottleneck emerges, offload sampling to WoT-vouched external verifiers (v2 verifier pool). |
 
-Remaining questions (focused, not architectural):
+---
 
-1. **Is the HTTP artifact ingress design (POST to coordinator, coordinator pins to IPFS) the right NAT escape hatch?** Or should NATed workers use a relay/proxy IPFS node instead? The HTTP path is simpler to implement and audit, but creates coordinator bandwidth dependency.
+## Review Status
 
-2. **Is 10% semantic sampling (5 pairs per 50-pair batch, ~30s coordinator GPU) the right verification budget for data_generation?** What's the minimum sample rate that catches quality gaming without making verification a bottleneck?
+All architectural questions resolved through four rounds of cross-AI review (Claude + GPT). Pricing model settled (pay-per-job with compute wallet). Trust model settled (WoT). Phase order settled. No further design review needed for Phases 0-2.
 
-3. **Is the per-account 40% shard cap for Phase 4 federated rounds the right number?** With 3 workers minimum, 40% means one account can hold at most ~40% of shards. With 10 workers, it's still 40%. Should the cap decrease as pool size grows?
-
-4. **For the frozen Docker training image: should the worker pull from a public registry (Docker Hub) or from the coordinator's own registry?** Public is simpler but creates a supply-chain trust dependency on Docker Hub. Coordinator-hosted is more controlled but adds infrastructure.
-
-5. **Is the verifier bond (10× fee) the right ratio for the v2 external verifier pool?** Too low and rubber-stamping is profitable. Too high and nobody stakes. What's the equilibrium for a thin market?
+Implementation can begin after publishing canonical JSON Schema files in `schemas/` and adding CI validation on both repos.
