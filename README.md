@@ -28,7 +28,7 @@ Decentralized storage validation protocol built on the Hive L1 blockchain. Valid
 | **Validator Dashboard** | Real-time challenge monitoring, reputation history, blacklist management |
 | **Treasury Dashboard** | Authority ring visualization, signer status, WoT vouching, signature progress, transaction history, audit log viewer |
 | **Governance** | Live validator rankings by reputation, network health stats, treasury status sidebar |
-| **GPU Compute Marketplace** | Typed workload execution (eval sweeps, benchmarks, LoRA training, data generation) with lease-based job assignment, three-stage payouts, warm-up reputation, and content-addressed artifacts |
+| **GPU Compute Marketplace** | Typed workload execution (eval sweeps, benchmarks, LoRA training, data generation) with lease-based job assignment, three-stage payouts, warm-up reputation via directed protocol-conformance challenges, and content-addressed artifacts. Hardware-capability verification (resource-class proof, replay-resistant challenge semantics) is Phase 2. |
 | **Validator Opt-In/Out** | Eligible users choose whether to activate as a validator — resign any time from the dashboard |
 | **Content Moderation** | Community flagging, uploader bans, auto-blocklist for confirmed threats |
 | **Dark / Light Theme** | Toggle in the sidebar footer, persisted to localStorage |
@@ -38,7 +38,7 @@ Decentralized storage validation protocol built on the Hive L1 blockchain. Valid
 - 180+ API endpoints across 30 services
 - 47 database tables (Drizzle ORM, dual PostgreSQL + SQLite dialect)
 - 27 client pages (Treasury dashboard, governance, content moderation, video watch with P2P, pricing, and more)
-- 181 automated tests across 6 test suites (vitest)
+- 407 automated tests across 14 test suites (vitest)
 - Full Docker deployment stack
 - GitHub Pages static site with auto-deploy
 
