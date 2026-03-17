@@ -20,6 +20,7 @@ import {
 import { getIPFSClient } from "./ipfs-client";
 import { computeWalletService } from "./compute-wallet-service";
 import { computePayoutBroadcaster } from "./compute-payout-broadcaster";
+import { computePoaService } from "./compute-poa-service";
 import type {
   ComputeNode,
   ComputeJob,
@@ -200,7 +201,8 @@ export class ComputeService {
     await computePayoutBroadcaster.start();
 
     this.leaseSweepTimer = setInterval(() => this.sweepExpiredLeases(), LEASE_SWEEP_INTERVAL_MS);
-    logCompute.info("ComputeService started — lease sweeper + payout broadcaster active");
+    computePoaService.start();
+    logCompute.info("ComputeService started — lease sweeper + payout broadcaster + GPU PoA active");
   }
 
   /**
@@ -247,6 +249,7 @@ export class ComputeService {
       this.leaseSweepTimer = null;
     }
     computePayoutBroadcaster.stop();
+    computePoaService.stop();
   }
 
   // ============================================================

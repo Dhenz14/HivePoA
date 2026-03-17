@@ -167,7 +167,7 @@ import {
   type InsertComputePayoutBroadcast,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, and, sql, ilike, or, notInArray, gte, lte, lt } from "drizzle-orm";
+import { eq, desc, and, sql, ilike, or, notInArray, gte, lte, lt, isNull, isNotNull, inArray } from "drizzle-orm";
 
 export interface IStorage {
   // Storage Nodes
@@ -492,6 +492,7 @@ export interface IStorage {
   updateComputeNodeHeartbeat(id: string, jobsInProgress: number): Promise<void>;
   decrementComputeNodeJobs(id: string): Promise<void>;
   updateComputeNodeStats(id: string, completed: boolean, hbdEarned?: string): Promise<void>;
+  adjustComputeNodeReputation(id: string, delta: number): Promise<void>;
 
   // Phase 10: GPU Compute Marketplace — Jobs
   getComputeJob(id: string): Promise<ComputeJob | undefined>;
@@ -544,6 +545,12 @@ export interface IStorage {
   updatePayoutBroadcastAttempt(id: string, updates: Partial<ComputePayoutBroadcast>): Promise<void>;
   getPayoutBroadcastAttemptsByPayout(payoutId: string): Promise<ComputePayoutBroadcast[]>;
   ensureBroadcastTables(): Promise<void>;
+
+  // GPU PoA: challenge lifecycle
+  getNodesForPoaChallenge(cooldownMs: number, limit?: number): Promise<ComputeNode[]>;
+  stampNodePoaChallenge(nodeId: string, at: Date): Promise<void>;
+  getSettledPoaJobs(coordinatorUsername: string, since: Date): Promise<ComputeJob[]>;
+  getExpiredPoaJobs(coordinatorUsername: string, claimTimeoutMs: number): Promise<ComputeJob[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2525,6 +2532,12 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
+  async adjustComputeNodeReputation(id: string, delta: number): Promise<void> {
+    await db.update(computeNodes).set({
+      reputationScore: sql`GREATEST(0, LEAST(100, ${computeNodes.reputationScore} + ${delta}))`,
+    }).where(eq(computeNodes.id, id));
+  }
+
   // --- Jobs ---
   async getComputeJob(id: string): Promise<ComputeJob | undefined> {
     const [job] = await db.select().from(computeJobs).where(eq(computeJobs.id, id));
@@ -2625,6 +2638,7 @@ export class DatabaseStorage implements IStorage {
           AND min_vram_gb <= ${minVramGb}
           AND attempt_count < max_attempts
           AND (deadline_at IS NULL OR deadline_at > ${now})
+          AND (target_node_id IS NULL OR target_node_id = ${nodeId})
         ORDER BY cache_score DESC, priority DESC, created_at ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED
@@ -2946,6 +2960,55 @@ export class DatabaseStorage implements IStorage {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_payout_broadcasts_payout_attempt
       ON compute_payout_broadcasts(payout_id, attempt_number)
     `);
+  }
+
+  // --- GPU PoA ---
+
+  async getNodesForPoaChallenge(cooldownMs: number, limit = 10): Promise<ComputeNode[]> {
+    const cutoff = new Date(Date.now() - cooldownMs);
+    return db.select().from(computeNodes)
+      .where(
+        and(
+          eq(computeNodes.status, "online"),
+          or(
+            isNull(computeNodes.lastPoaChallengeAt),
+            lt(computeNodes.lastPoaChallengeAt, cutoff),
+          )!,
+        )!,
+      )
+      .orderBy(computeNodes.lastPoaChallengeAt) // null-first (never challenged → highest priority)
+      .limit(limit);
+  }
+
+  async stampNodePoaChallenge(nodeId: string, at: Date): Promise<void> {
+    await db.update(computeNodes)
+      .set({ lastPoaChallengeAt: at })
+      .where(eq(computeNodes.id, nodeId));
+  }
+
+  async getSettledPoaJobs(coordinatorUsername: string, since: Date): Promise<ComputeJob[]> {
+    return db.select().from(computeJobs)
+      .where(
+        and(
+          eq(computeJobs.creatorUsername, coordinatorUsername),
+          isNotNull(computeJobs.targetNodeId),
+          inArray(computeJobs.state, ["accepted", "rejected"]),
+          gte(computeJobs.completedAt, since),
+        )!,
+      );
+  }
+
+  async getExpiredPoaJobs(coordinatorUsername: string, claimTimeoutMs: number): Promise<ComputeJob[]> {
+    const cutoff = new Date(Date.now() - claimTimeoutMs);
+    return db.select().from(computeJobs)
+      .where(
+        and(
+          eq(computeJobs.creatorUsername, coordinatorUsername),
+          isNotNull(computeJobs.targetNodeId),
+          eq(computeJobs.state, "queued"),
+          lt(computeJobs.createdAt, cutoff),
+        )!,
+      );
   }
 
   // --- Stats ---

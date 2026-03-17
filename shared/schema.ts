@@ -939,6 +939,7 @@ export const computeNodes = pgTable("compute_nodes", {
   // State
   jobsInProgress: integer("jobs_in_progress").notNull().default(0),
   lastHeartbeatAt: timestamp("last_heartbeat_at"),
+  lastPoaChallengeAt: timestamp("last_poa_challenge_at"), // when coordinator last issued a PoA challenge to this node
   metadataJson: text("metadata_json"), // overflow for non-queryable fields
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -964,6 +965,8 @@ export const computeJobs = pgTable("compute_jobs", {
   attemptCount: integer("attempt_count").notNull().default(0),
   // Verification
   verificationPolicyJson: text("verification_policy_json"), // workload-specific verification config
+  // GPU PoA: directed challenge jobs target a specific node; null for open-market jobs
+  targetNodeId: varchar("target_node_id"), // references computeNodes.id; enforced in application code
   // Single-winner identity — at most one accepted attempt per job (Phase 0 invariant)
   // NOTE: Cannot use .references(() => computeJobAttempts.id) due to circular dependency.
   // FK enforced via DB migration SQL. Cross-job guard enforced in application code.

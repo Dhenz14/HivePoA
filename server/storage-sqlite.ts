@@ -2475,4 +2475,11 @@ export class SQLiteStorage implements IStorage {
   async updatePayoutBroadcastAttempt(_id: string, _updates: Partial<ComputePayoutBroadcast>): Promise<void> { }
   async getPayoutBroadcastAttemptsByPayout(_payoutId: string): Promise<ComputePayoutBroadcast[]> { return []; }
   async ensureBroadcastTables(): Promise<void> { }
+
+  // GPU PoA — not implemented in SQLite (desktop agent is single-user, no PoA needed)
+  async adjustComputeNodeReputation(_id: string, _delta: number): Promise<void> { }
+  async getNodesForPoaChallenge(_cooldownMs: number, _limit?: number): Promise<ComputeNode[]> { return []; }
+  async stampNodePoaChallenge(_nodeId: string, _at: Date): Promise<void> { }
+  async getSettledPoaJobs(_coordinatorUsername: string, _since: Date): Promise<ComputeJob[]> { return []; }
+  async getExpiredPoaJobs(_coordinatorUsername: string, _claimTimeoutMs: number): Promise<ComputeJob[]> { return []; }
 }
