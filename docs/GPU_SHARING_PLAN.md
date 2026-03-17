@@ -96,7 +96,7 @@ GPU compute adds one role to the existing trust registry:
 
 ---
 
-## Revised Plan: 5 Phases
+## Plan: 5 Phases
 
 ### Phase 0 — Artifact + Provenance Contract (PREREQUISITE)
 
@@ -655,7 +655,7 @@ Buy in bulk → deposited to compute wallet → spend at posted rates. No expira
 
 ---
 
-## Revised Security Model
+## Security Model
 
 ### Trust Hierarchy
 
@@ -824,7 +824,7 @@ Challenge content is server-generated with nonce. The nonce must drive a large c
 
 ## Design Decisions (Resolved)
 
-All seven review questions from v3 have been answered through three rounds of systems review (Claude + GPT). These are now **binding design decisions**, not open questions.
+Ten binding design decisions established through four rounds of cross-AI review (Claude + GPT).
 
 ### D1. Schema source of truth: Canonical JSON Schema (schema-first)
 
@@ -915,32 +915,18 @@ This is an **ops-configurable parameter**, not an immutable system invariant. Th
 
 ---
 
-## Implementation Gate
-
-The plan is now a **closed protocol specification** pending one action:
-
-> **Publish the canonical JSON Schema files in `schemas/` and add CI validation on both repos.**
-
-After that, Phase 0 implementation can begin. No further design review needed for Phases 0-2.
-
----
-
-## Known Implementation Risks (Architecture Fixed — These Are Build Risks)
-
-Identified through four rounds of cross-AI review. These are not design questions — they are operational risks to track during implementation.
+## Implementation Risks
 
 | # | Risk | Phase | Severity | Mitigation |
 |---|------|-------|----------|------------|
 | R1 | **IPFS pin persistence across coordinator restarts.** If the coordinator's Kubo node loses pins on restart, verified artifacts are gone. | Phase 0 | High | Verify Kubo pin durability in Phase 0 acceptance testing. Add pin-count health check to coordinator startup. |
-| R2 | **Hidden eval set rotation logistics.** Doc says "rotate periodically" but doesn't specify: who maintains it, how often, where stored, how to prevent worker discovery. | Phase 1 | Medium | Specify eval set management as a Phase 1 implementation task. Eval set stored encrypted on coordinator, rotated every 30 days, never exposed via API. |
-| R3 | **Container image supply chain.** Pinned image SHA-256 is specified but not: who builds it, how it's signed, where it's hosted. | Phase 2 | Medium | Build image in CI (GitHub Actions), sign with cosign, host on GitHub Container Registry (ghcr.io). Workers verify signature before pulling. |
-| R4 | **Coordinator as single point of failure.** By design in v1 — coordinator is the system. No HA, no failover. | Phase 4+ | Low (v1) | Acceptable for v1. HA/failover is a Phase 4+ concern when volume justifies it. |
-| R5 | **Semantic sampling cost scaling.** 10% sampling at ~30s/batch is fine for v1 volumes. At 1000+ data_gen jobs/day, coordinator GPU becomes a bottleneck. | Phase 1+ | Low (v1) | Monitor coordinator GPU utilization. If bottleneck emerges, offload sampling to WoT-vouched external verifiers (v2 verifier pool). |
+| R2 | **Hidden eval set rotation logistics.** Who maintains it, how often, where stored, how to prevent worker discovery. | Phase 1 | Medium | Eval set stored encrypted on coordinator, rotated every 30 days, never exposed via API. |
+| R3 | **Container image supply chain.** Who builds the frozen training image, how it's signed, where it's hosted. | Phase 2 | Medium | Build in CI (GitHub Actions), sign with cosign, host on GitHub Container Registry (ghcr.io). Workers verify signature before pulling. |
+| R4 | **Coordinator as single point of failure.** By design in v1. No HA, no failover. | Phase 4+ | Low (v1) | Acceptable for v1. HA/failover when volume justifies it. |
+| R5 | **Semantic sampling cost scaling.** 10% sampling at ~30s/batch is fine for v1. At 1000+ data_gen jobs/day, coordinator GPU becomes a bottleneck. | Phase 1+ | Low (v1) | Monitor coordinator GPU utilization. Offload to WoT-vouched external verifiers when needed. |
 
 ---
 
-## Review Status
+## Status
 
-All architectural questions resolved through four rounds of cross-AI review (Claude + GPT). Pricing model settled (pay-per-job with compute wallet). Trust model settled (WoT). Phase order settled. No further design review needed for Phases 0-2.
-
-Implementation can begin after publishing canonical JSON Schema files in `schemas/` and adding CI validation on both repos.
+Architecture, economics, trust model, and phase order are closed. Implementation begins after publishing canonical JSON Schema files in `schemas/` and adding CI validation on both repos.

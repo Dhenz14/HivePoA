@@ -381,7 +381,7 @@ Phase 4  ░░░░░░░░░░░░░░░░░░  Scale & marketp
 
 ## Resolved Questions (formerly "Open Questions for Review")
 
-All five original open questions have been resolved through three rounds of cross-AI review (Claude + GPT). Decisions are binding and documented in `GPU_SHARING_PLAN.md` v4.
+All five original open questions have been resolved through four rounds of cross-AI review (Claude + GPT). Decisions are binding and documented in `GPU_SHARING_PLAN.md` v4.
 
 1. **Liveness challenge frequency** — RESOLVED (D10): Flat Poisson, per-tier λ (warm-up: 2/hr, standard: 1/hr, trusted: 0.5/hr). Ops-configurable parameter, not frozen doctrine.
 
