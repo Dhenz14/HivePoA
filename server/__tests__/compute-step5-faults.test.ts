@@ -12,21 +12,81 @@
  *
  * Each scenario emits a standard assertion bundle to evidence/step5/.
  *
- * Frozen SHA pair:
- *   HivePoA: 724a8812f51afb9e1adebdac48e4668f28dd4b95
- *   Hive-AI: 718d68d24edbda0151e68efced7f9eea29c2180e
+ * SHA pair is derived from docs/CONTRACT_FREEZE.json — the normative
+ * authority. If the freeze file changes, these tests read the new values.
+ * If the freeze file is missing or malformed, the test suite fails hard.
+ *
+ * RECONSTRUCTION BOUNDARY DISCLAIMER:
+ * These tests prove protocol-level invariants (CAS single-winner, nonce
+ * isolation, idempotent replay, monotonic checkpoint stages) by exercising
+ * the real computeSubmissionPayloadHash function and simulating DB state
+ * transitions that follow the exact code paths in compute-service.ts.
+ *
+ * What these tests prove:
+ *   - Logic correctness of every fault scenario's state machine path
+ *   - Payload hash determinism and divergent-replay detection
+ *   - Nonce isolation between attempts
+ *   - CAS single-winner semantics under concurrent-attempt simulation
+ *   - Checkpoint stage monotonicity under each fault pattern
+ *
+ * What these tests do NOT prove (requires E2E burn-in):
+ *   - Cold reconstruction from persisted PostgreSQL rows + durable event log
+ *     after actual process kill. The reconstruction logs here are assembled
+ *     in-process, not recovered from a restarted service reading only from
+ *     DB tables and event storage.
+ *   - Network-level fault injection (TCP RST, partial HTTP response)
+ *   - Real IPFS pin/retrieval timeout behavior
+ *   - Actual lease sweeper timing under clock skew
+ *
+ * A Phase 1 burn-in should include at least AS-1 and AS-2 as cold-restart
+ * E2E tests: kill the process after server accept, restart, and verify
+ * reconstruction from DB + events only.
  */
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
-import { writeFileSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { computeSubmissionPayloadHash } from "../services/compute-service";
 
 // ================================================================
-// Frozen SHA pair — every assertion bundle references these
+// Normative authority: docs/CONTRACT_FREEZE.json
+// The SHA pair and fixture-set digest are derived from the freeze file,
+// not hardcoded. If the freeze file is missing, the entire suite fails.
 // ================================================================
-const HIVEPOA_SHA = "724a8812f51afb9e1adebdac48e4668f28dd4b95";
-const HIVEAI_SHA = "718d68d24edbda0151e68efced7f9eea29c2180e";
-const FIXTURE_SET_DIGEST = "sha256:a0b7e00c46dfe85bc9bc3cc536e935d218f8aaff83517a42998896bd98d3e669";
+const FREEZE_PATH = join(__dirname, "../../docs/CONTRACT_FREEZE.json");
+const FREEZE = JSON.parse(readFileSync(FREEZE_PATH, "utf8"));
+const HIVEPOA_SHA: string = FREEZE.sha_pair.hivepoa;
+const HIVEAI_SHA: string = FREEZE.sha_pair.hiveai;
+const FIXTURE_SET_DIGEST: string = FREEZE.sha_pair.fixture_set_digest;
+
+// ================================================================
+// Freeze file validation — must pass before any scenario runs
+// ================================================================
+describe("Step 5: Freeze file is normative authority", () => {
+  it("freeze file exists and is parseable JSON", () => {
+    expect(() => JSON.parse(readFileSync(FREEZE_PATH, "utf8"))).not.toThrow();
+  });
+
+  it("sha_pair.hivepoa is a 40-char hex SHA", () => {
+    expect(HIVEPOA_SHA).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it("sha_pair.hiveai is a 40-char hex SHA", () => {
+    expect(HIVEAI_SHA).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it("sha_pair.fixture_set_digest is a sha256: prefixed 64-char hex", () => {
+    expect(FIXTURE_SET_DIGEST).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+
+  it("freeze file defines step5_assertion_bundle_schema with required fields", () => {
+    const schema = FREEZE.step5_assertion_bundle_schema;
+    expect(schema).toBeDefined();
+    expect(schema.fields).toBeDefined();
+    expect(schema.fields.scenario_id).toBeDefined();
+    expect(schema.fields.assertions).toBeDefined();
+    expect(schema.fields.reconstruction_log).toBeDefined();
+  });
+});
 
 // ================================================================
 // Assertion bundle emitter
