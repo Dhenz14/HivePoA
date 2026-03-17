@@ -1,16 +1,29 @@
 {
-  "freeze_version": 2,
+  "freeze_version": 3,
   "frozen_at": "2026-03-16",
-  "description": "Phase 0 contract surface freeze — bilateral SHA pair for Step 5 fault injection",
+  "description": "Phase 0 contract surface freeze with three-layer SHA model",
 
-  "sha_pair": {
-    "hivepoa": "b1df0fbf2267955195abb014496035b0d86f7de7",
-    "hiveai": "95521d683ca497ee6ef377787af031ada624c3b1",
-    "fixture_set_digest": "sha256:a0b7e00c46dfe85bc9bc3cc536e935d218f8aaff83517a42998896bd98d3e669",
-    "_note": "hivepoa SHA is one commit behind the commit that contains this file update. The phase0-seal tag on both repos marks the exact publication point."
+  "three_layer_sha_model": {
+    "_doc": "Three distinct SHAs serve different roles. Do not conflate them.",
+    "schema_source_pin": {
+      "description": "The HivePoA commit pinned in Hive-AI's SCHEMA_MANIFEST.json. CI clones HivePoA at this SHA to verify vendored schemas match the canonical source. This is the SHA that public CI enforces.",
+      "hivepoa_sha": "4989e01320fee0a6233016d8ec450af01ba2cd9b",
+      "fixture_set_digest": "sha256:afd3ff28e63c7040708c93771da57aecdbef0161d2d36a8095384c0df37a8600",
+      "digest_note": "LF-normalized (platform-independent). Supersedes earlier CRLF-based digest."
+    },
+    "frozen_bilateral_pair": {
+      "description": "The commits where protocol enforcement was finalized: normative freeze readback, reconstruction boundary, path-set digest coverage. Step 5 evidence references this pair.",
+      "hivepoa": "b1df0fbf2267955195abb014496035b0d86f7de7",
+      "hiveai": "95521d683ca497ee6ef377787af031ada624c3b1"
+    },
+    "publication_seal": {
+      "description": "The phase0-seal tags on both repos. Stable human-auditable reference point.",
+      "hivepoa_tag": "phase0-seal",
+      "hivepoa_tip_at_tag": "4989e01320fee0a6233016d8ec450af01ba2cd9b",
+      "hiveai_tag": "phase0-seal",
+      "hiveai_tip_at_tag": "95521d683ca497ee6ef377787af031ada624c3b1"
+    }
   },
-
-  "seal_tag": "phase0-seal",
 
   "frozen_surface": {
     "schema_files": {
@@ -18,7 +31,7 @@
       "path": "schemas/",
       "count": { "schemas": 10, "fixtures": 14 },
       "pinned_version": 2,
-      "digest": "sha256:a0b7e00c46dfe85bc9bc3cc536e935d218f8aaff83517a42998896bd98d3e669"
+      "digest": "sha256:afd3ff28e63c7040708c93771da57aecdbef0161d2d36a8095384c0df37a8600"
     },
 
     "event_names_fields": {
