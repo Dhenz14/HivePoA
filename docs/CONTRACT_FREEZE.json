@@ -1,0 +1,152 @@
+{
+  "freeze_version": 1,
+  "frozen_at": "2026-03-16",
+  "description": "Phase 0 contract surface freeze — bilateral SHA pair for Step 5 fault injection",
+
+  "sha_pair": {
+    "hivepoa": "724a8812f51afb9e1adebdac48e4668f28dd4b95",
+    "hiveai": "718d68d24edbda0151e68efced7f9eea29c2180e",
+    "fixture_set_digest": "sha256:a0b7e00c46dfe85bc9bc3cc536e935d218f8aaff83517a42998896bd98d3e669"
+  },
+
+  "frozen_surface": {
+    "schema_files": {
+      "description": "10 JSON Schema files + 14 fixtures in HivePoA schemas/",
+      "path": "schemas/",
+      "count": { "schemas": 10, "fixtures": 14 },
+      "pinned_version": 2,
+      "digest": "sha256:a0b7e00c46dfe85bc9bc3cc536e935d218f8aaff83517a42998896bd98d3e669"
+    },
+
+    "event_names_fields": {
+      "description": "15 structured event emitters with correlation keys",
+      "path": "server/services/compute-events.ts",
+      "event_version": 1,
+      "events": [
+        "claim_issued",
+        "submit_accepted",
+        "submit_rejected",
+        "submit_idempotent",
+        "late_submit_rejected",
+        "attempt_accepted",
+        "attempt_rejected",
+        "acceptance_idempotent",
+        "acceptance_cas_failed",
+        "nonce_mismatch",
+        "divergent_replay",
+        "version_mismatch",
+        "settlement_attempted",
+        "settlement_blocked",
+        "lease_expired"
+      ],
+      "correlation_keys": ["jobId", "attemptId", "nodeId", "nonce"]
+    },
+
+    "manifest_result_payload": {
+      "description": "Schema-validated manifest/result payloads per workload type",
+      "path": "server/services/compute-service.ts",
+      "verification_functions": ["verifyStructural", "verifyWorkloadSpecific"],
+      "manifest_schemas": [
+        "manifest_eval_sweep.json",
+        "manifest_data_generation.json",
+        "manifest_domain_lora_train.json"
+      ],
+      "result_schemas": [
+        "result_eval_sweep.json",
+        "result_data_generation.json",
+        "result_domain_lora_train.json"
+      ]
+    },
+
+    "acceptance_cas_logic": {
+      "description": "Single-winner atomicity via CAS UPDATE",
+      "path": "server/storage.ts",
+      "function": "casAcceptJob",
+      "invariant": "UPDATE computeJobs SET acceptedAttemptId=? WHERE id=? AND acceptedAttemptId IS NULL",
+      "cross_job_fk": "computeJobs(acceptedAttemptId, id) → computeJobAttempts(id, job_id)"
+    },
+
+    "payout_freeze_inputs": {
+      "description": "Three-stage payout snapshotted at acceptance",
+      "path": "server/services/compute-service.ts",
+      "split": {
+        "validity_fee": "30% of budget",
+        "completion_fee": "40% of budget",
+        "bonus": "30% × verificationScore"
+      },
+      "frozen_at": "acceptance (not settlement)"
+    },
+
+    "nonce_rules": {
+      "description": "Server-issued UUIDv4 per attempt, echo-validated on submit",
+      "generation": "crypto.randomUUID() at claim time",
+      "validation": "submission.nonce === attempt.nonce (409 on mismatch)",
+      "scope": "per-attempt (new claim = new nonce)"
+    },
+
+    "replay_conflict_behavior": {
+      "description": "Canonical hash-based replay detection",
+      "hash_version": "v1",
+      "hash_algorithm": "SHA-256 over length-prefixed framing of outputSha256 + resultJson",
+      "exact_replay": "Same attemptId + nonce + payloadHash → cached result, zero side effects",
+      "divergent_replay": "Same attemptId + nonce, different payloadHash → 409 SUBMISSION_PAYLOAD_MISMATCH",
+      "nonce_mismatch": "Different nonce → 409 NONCE_MISMATCH"
+    },
+
+    "checkpoint_semantics": {
+      "description": "Worker-local advisory checkpoint, NOT server API",
+      "path": "hiveai/compute/checkpoint.py (Hive-AI)",
+      "stages_ordered": ["claimed", "started", "executing", "output_ready", "submit_prepared", "submit_sent", "acknowledged", "terminal"],
+      "recovery_rules": {
+        "before_submit_sent": "fail the job (incomplete output)",
+        "submit_sent": "retry submit with same nonce (server handles idempotency)",
+        "acknowledged_or_terminal": "clean up"
+      },
+      "persistence": "atomic write-then-rename to disk"
+    },
+
+    "lease_expiry": {
+      "description": "leaseExpiresAt is the sole expiry oracle",
+      "invariant": "Late iff server receipt > leaseExpiresAt",
+      "consequence": "Late submit → 409, provenance recorded"
+    }
+  },
+
+  "step5_assertion_bundle_schema": {
+    "description": "Standard output format for each Step 5 fault injection scenario",
+    "fields": {
+      "scenario_id": "string — e.g. SF-1, CF-1, AS-1",
+      "scenario_name": "string — human-readable description",
+      "hivepoa_sha": "string — 40-char SHA from sha_pair.hivepoa",
+      "hiveai_sha": "string — 40-char SHA from sha_pair.hiveai",
+      "fixture_set_digest": "string — from sha_pair.fixture_set_digest",
+      "assertions": {
+        "accepted_attempt_count": "integer — must be 0 or 1",
+        "payout_row_count": "integer — frozen payout rows created",
+        "final_job_state": "string — terminal state from state machine",
+        "checkpoint_stages_observed": "string[] — ordered stages recorded",
+        "checkpoint_monotonic": "boolean — stages only advance forward",
+        "duplicate_semantic_effects": "boolean — must be false",
+        "second_winner": "boolean — must be false"
+      },
+      "reconstruction_log": {
+        "description": "Forensic reconstruction from durable events + DB state only",
+        "entries": [
+          {
+            "source": "event | db",
+            "type": "string — event type or table name",
+            "timestamp": "ISO-8601",
+            "data": "object — relevant fields"
+          }
+        ]
+      },
+      "pass": "boolean — all assertions satisfied"
+    }
+  },
+
+  "policy": {
+    "bug_fixes_inside_test_harnesses": "allowed",
+    "protocol_surface_changes": "NOT allowed — if any fix mutates contract/event semantics, rerun the full Step 5 matrix",
+    "rerun_trigger": "Any change to files listed in frozen_surface paths"
+  }
+}
