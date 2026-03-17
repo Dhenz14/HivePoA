@@ -119,9 +119,11 @@ After Phase 0 fault injection passes:
 
 This is where PoGC diverges from pure job execution into active hardware verification.
 
+**Container isolation prerequisite:** Training workloads (`domain_lora_train`) require containerized execution starting in Phase 2. Frozen Docker image with pinned deps, GPU passthrough, network isolation. Eval/benchmark workloads remain bare-process.
+
 ### VRAM-Tiered Liveness Challenges
 
-Cheap proof-of-GPU separate from real workload verification. Validators issue random challenges to prove miners have real, responsive GPUs — even when no jobs are queued.
+Cheap proof-of-GPU separate from real workload verification. `compute_verifier` accounts (witnesses opted in via HivePoA dashboard, or WoT-vouched) issue random challenges to prove miners have real, responsive GPUs — even when no jobs are queued.
 
 | Tier | VRAM | Challenge | Expected Runtime | Verification |
 |------|------|-----------|-----------------|--------------|
@@ -130,10 +132,11 @@ Cheap proof-of-GPU separate from real workload verification. Validators issue ra
 | 3 | 24+ GB | Micro LoRA forward pass on test shard | 4-8s | Loss value within tolerance |
 
 **Key properties:**
-- Challenge content is server-generated with nonce (prevents precomputation)
+- Challenge content is server-generated with nonce (prevents precomputation). Nonce must drive a large challenge family — a small prompt catalog with a huge seed is still a small challenge space.
 - Response window: configurable, tight enough that "spin up on ping" fails
-- Challenge frequency: Poisson-distributed (~1/hour/miner, tunable) — irregular timing prevents gaming
+- Challenge frequency: Flat Poisson-distributed, per reputation tier: warm-up (rep 0-19) λ=2/hr, standard (rep 20-49) λ=1/hr, trusted (rep 50+) λ=0.5/hr. No adaptive scheduling in v1.
 - Challenges are NOT job execution — they're liveness probes that run alongside real work
+- All challenge/verification authority routes through `compute_verifier` role in the trust registry (same WoT opt-in pattern as storage validators and multisig signers)
 
 ### Hardware Fingerprinting
 
@@ -179,7 +182,15 @@ One-command GPU sharing via Electron desktop agent:
 
 ## Phase 3: Federated Training
 
-**Trigger:** Real queue pressure + Phase 2 stability proven. NOT a dataset size milestone.
+**Concrete trigger gates (ALL must be met):**
+
+| Gate | Threshold |
+|------|-----------|
+| Queue backlog | Sustained > 10 queued training jobs for 48+ hours |
+| Verifier false-accept rate | < 5% on hidden eval audits over trailing 30 days |
+| Stable worker pool | 3+ workers from 2+ distinct Hive accounts with rep ≥ 50 |
+| Dataset size | ≥ 50k verified pairs across 3+ domains |
+| Merge evaluation harness | Can detect 2% regression across domains within 1 round |
 
 ### Aggregation (NOT naive FedAvg)
 
@@ -190,15 +201,20 @@ LoRA factors (A, B matrices) cannot be averaged directly — `avg(B₁A₁, B₂
 3. **Truncated SVD** to project back into low-rank form
 4. **FedEx-LoRA** residual approach as exactness upgrade in later iterations
 
+The aggregator is implemented behind a swappable `MergeStrategy` interface. Dense-delta + SVD is the Phase 3 default. Swap to FedEx-LoRA, QR fusion, or FedSA-style A/B separation based on observed regime.
+
 ### Job Types
 
 | Type | Workers | Communication | Verification |
 |------|---------|---------------|-------------|
 | `eval_sweep` | 1 | None | Hidden re-run comparison |
 | `benchmark_run` | 1 | None | Hidden re-run comparison |
-| `domain_lora_train` | 1 | None | Loss curve + adapter quality |
+| `domain_lora_train` | 1 | None | Loss curve + adapter quality (containerized) |
 | `federated_lora` | N (coordinator assigns shards) | Coordinator collects deltas | Aggregated eval vs baseline |
-| `model_parallel` | 2-8 (vetted cluster) | NCCL mesh (Tailscale) | Joint eval |
+
+**Per-account shard cap:** No single Hive account may hold more than 40% of shards in a federated round. Enforced at the job scheduler level.
+
+> **Model-parallel (DEFERRED):** NCCL over WAN across untrusted nodes is a fundamentally different problem from federated LoRA. Not on the phase roadmap. Limited to vetted clusters under one operator or a tightly controlled LAN if ever needed.
 
 ### Data Integrity
 
@@ -217,10 +233,10 @@ LoRA factors (A, B matrices) cannot be averaged directly — `avg(B₁A₁, B₂
 
 ## Phase 4: Scale & Marketplace
 
-- **Size-aware IPFS timeouts** + NAT workers default to HTTP ingress
+- **Size-aware IPFS timeouts** + NAT workers default to HTTP artifact ingress (`POST /api/compute/artifacts/upload`)
 - **Hybrid registry**: off-chain DB for speed + Hive custom_json hash anchors for auditability
 - **Open job marketplace**: any Hive account can post compute jobs (eval, training, inference)
-- **Containerized execution**: Docker isolation mandatory for untrusted training workloads
+- **External verifier pool**: WoT-vouched `compute_verifier` accounts can serve as paid external verifiers (fee carved from job budget, bond + audit lottery for accountability)
 - **HBD stablecoin advantage**: workers paid in pegged stablecoin, zero price risk vs TAO/NOS/AKT
 
 ---
@@ -264,15 +280,24 @@ Cheating is economically unprofitable because:
 
 ## Security Model
 
+### Trust Model (SETTLED — Web of Trust)
+
+All trust and governance routes through the existing HivePoA trust registry (Phase 11). Two participant types:
+
+- **Workers** — anyone with a GPU and a Hive account. Untrusted. All work verified before payout. Self-register via `/api/compute/nodes/register`. Reputation earned through job completion.
+- **Validators** — Hive witnesses (opted in via HivePoA dashboard) + WoT-vouched accounts. Trusted. Same opt-in pattern as storage validators and multisig signers. No new trust primitives.
+
+The `compute_verifier` role in the trust registry (requires 2 vouches) covers both job verification and liveness challenge issuance. Hive accounts are the identity layer — no separate "operator" concept needed.
+
 ### Trust Boundaries
 
-| Boundary | Who | Trust Level |
-|----------|-----|-------------|
-| Job creation | Any Hive account with budget | Untrusted (manifest validated) |
-| Job execution | GPU worker | Untrusted (verified by coordinator) |
-| Job verification | Compute verifier role (WoT vouched) | Trusted |
-| Payout settlement | Treasury signers (3-of-5 multisig) | Highly trusted |
-| Liveness challenges | Validators (witness or WoT) | Trusted |
+| Boundary | Who | Trust Level | Governance |
+|----------|-----|-------------|------------|
+| Job creation | Any Hive account with budget | Untrusted (manifest validated) | Self-service |
+| Job execution | GPU worker | Untrusted (verified before payout) | Self-register, reputation-gated |
+| Job verification | `compute_verifier` role (WoT) | Trusted | Witness opt-in or 2 vouches |
+| Liveness challenges | `compute_verifier` role (WoT) | Trusted | Same as verification |
+| Payout settlement | `treasury_signer` role (WoT) | Highly trusted | Witness opt-in or 3 vouches, multisig quorum |
 
 ### Attack Surfaces (addressed)
 
@@ -284,6 +309,8 @@ Cheating is economically unprofitable because:
 6. **Stale claim** → nonce scoped to attempt, new claim = new nonce
 7. **Poisoned training** → behavioral canaries, hidden eval, capped diversity
 8. **Settlement race** → payout rows frozen at acceptance, settlement reads snapshot
+9. **Malicious worker patches local deps** → container isolation with pinned image SHA-256 (Phase 2+ training)
+10. **One account dominates federated round** → per-account shard cap (40%) at scheduler level
 
 ---
 
@@ -291,11 +318,13 @@ Cheating is economically unprofitable because:
 
 ```
 Phase 0  ████████████████░░  Transaction integrity (Steps 1-4 done, Step 5 pending)
-Phase 1  ░░░░░░░░░░░░░░░░░░  Production hardening (mock→real Hive, burn-in, IPFS)
-Phase 2  ░░░░░░░░░░░░░░░░░░  GPU liveness (tiered challenges, fingerprint, daemon UX)
-Phase 3  ░░░░░░░░░░░░░░░░░░  Federated training (dense-delta SVD, sharding, canaries)
-Phase 4  ░░░░░░░░░░░░░░░░░░  Scale & marketplace (open jobs, containerization, hybrid registry)
+Phase 1  ░░░░░░░░░░░░░░░░░░  Production hardening (mock→real Hive, burn-in, IPFS, HTTP artifact ingress)
+Phase 2  ░░░░░░░░░░░░░░░░░░  GPU liveness + containerized training (challenges, fingerprint, daemon UX, Docker isolation)
+Phase 3  ░░░░░░░░░░░░░░░░░░  Federated training (swappable aggregator, dense-delta SVD, sharding, canaries)
+Phase 4  ░░░░░░░░░░░░░░░░░░  Scale & marketplace (open jobs, external verifier pool, hybrid registry)
 ```
+
+> **Model-parallel:** Deferred indefinitely. Not a phase. Vetted-cluster-only if ever needed.
 
 ### Current State
 
@@ -325,14 +354,16 @@ Phase 4  ░░░░░░░░░░░░░░░░░░  Scale & marketp
 
 ---
 
-## Open Questions for Review
+## Resolved Questions (formerly "Open Questions for Review")
 
-1. **Liveness challenge frequency tuning** — How many challenges/hour/miner balances security vs bandwidth? Starting proposal: Poisson λ=1/hour, tunable per tier.
+All five original open questions have been resolved through three rounds of cross-AI review (Claude + GPT). Decisions are binding and documented in `GPU_SHARING_PLAN.md` v4.
 
-2. **Fingerprint spoofing resistance** — How much weight should hardware fingerprint carry vs challenge timing? Fingerprint alone is forgeable; combined with timing it's much harder.
+1. **Liveness challenge frequency** — RESOLVED (D10): Flat Poisson, per-tier λ (warm-up: 2/hr, standard: 1/hr, trusted: 0.5/hr). Ops-configurable parameter, not frozen doctrine.
 
-3. **Federated training trigger** — When exactly should Phase 3 activate? Current proposal: "real queue pressure + Phase 2 stable" is intentionally vague. Should there be a concrete metric?
+2. **Fingerprint spoofing resistance** — RESOLVED: Fingerprint is an identity continuity signal, not proof of compute. The real proof is passing unpredictable challenges within deadline. Fingerprint changes reset trust state.
 
-4. **Cross-phase dependency risk** — Phase 2 liveness challenges are the first feature that requires validators to actively probe workers (not just verify submitted results). This is a different trust model than Phase 0-1. Worth examining the validator incentive structure.
+3. **Federated training trigger** — RESOLVED: Five concrete operational gates (queue backlog, false-accept rate, worker pool diversity, dataset size, regression detection). All must be met. See Phase 3 trigger gates above.
 
-5. **Model-parallel feasibility** — Sharded 70B+ across untrusted workers via NCCL mesh is high-risk. Should this be deferred to Phase 5 or limited to vetted clusters only?
+4. **Validator incentive structure** — RESOLVED: v1 coordinator self-verifies (conscious deferral). v2 external verifier pool with explicit fee (10% of job budget), bond (10× fee), audit lottery (5%), and slash/reputation consequences. WoT-vouched `compute_verifier` role handles eligibility.
+
+5. **Model-parallel feasibility** — RESOLVED: Deferred indefinitely. Not a phase. Vetted-cluster-only if ever needed. NCCL over WAN across untrusted nodes is a different class of system from federated LoRA.
