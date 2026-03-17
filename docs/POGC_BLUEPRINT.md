@@ -342,11 +342,11 @@ The `compute_verifier` role in the trust registry (requires 2 vouches) covers bo
 ## Implementation Roadmap
 
 ```
-Phase 0  ████████████████░░  Transaction integrity (Steps 1-4 done, Step 5 pending)
-Phase 1  ░░░░░░░░░░░░░░░░░░  Production hardening (mock→real Hive, burn-in, IPFS, HTTP artifact ingress)
-Phase 2  ░░░░░░░░░░░░░░░░░░  GPU liveness + containerized training (challenges, fingerprint, daemon UX, Docker isolation)
-Phase 3  ░░░░░░░░░░░░░░░░░░  Federated training (swappable aggregator, dense-delta SVD, sharding, canaries)
-Phase 4  ░░░░░░░░░░░░░░░░░░  Scale & marketplace (open jobs, external verifier pool, hybrid registry)
+Phase 0  ████████████████████  SEALED — Transaction integrity proven, public CI green
+Phase 1  ▓▓░░░░░░░░░░░░░░░░░░  Production hardening (cold-restart E2E next, then IPFS, wallet, burn-in)
+Phase 2  ░░░░░░░░░░░░░░░░░░░░  GPU liveness + containerized training + 3-stage verification
+Phase 3  ░░░░░░░░░░░░░░░░░░░░  Federated training (merge weighting: cosine alignment + Shapley-lite bonus)
+Phase 4  ░░░░░░░░░░░░░░░░░░░░  Scale & marketplace (open jobs, external verifier pool, hybrid registry)
 ```
 
 > **Model-parallel:** Deferred indefinitely. Not a phase. Vetted-cluster-only if ever needed.
@@ -355,12 +355,45 @@ Phase 4  ░░░░░░░░░░░░░░░░░░  Scale & marketp
 
 | Repo | Commit | Tests | Status |
 |------|--------|-------|--------|
-| HivePoA | `18c0777` | 250 | Server integrity implemented |
-| Hive-AI | `acb73f2` | 52 | Worker durability implemented |
+| HivePoA | `9671b7e` | 267 | Phase 0 sealed, public CI green, `phase0-seal` tag |
+| Hive-AI | `6337f51` | 126 | Cross-repo enforcement green, `phase0-seal` tag on `95521d6` |
 
-### Next Milestone
+### Three-Layer SHA Model
 
-**Phase 0 Step 5: Fault injection** — 12 adversarial scenarios proving the entire claim→execute→submit→accept→settle path is deterministic under crash, replay, race, and ambiguous-success conditions.
+| Layer | SHA | Role |
+|-------|-----|------|
+| Schema source pin | HivePoA `4989e01` | What Hive-AI CI enforces (vendored schemas verified against this) |
+| Frozen bilateral pair | HivePoA `b1df0fb` / Hive-AI `95521d6` | What Step 5 evidence references |
+| Publication seal | `phase0-seal` tags | Stable human-auditable reference |
+
+### Phase 0 Completion Evidence
+
+- 12/12 fault injection scenarios pass (warm-harness proof)
+- Three invariants: no duplicate semantic effects, no second winner, all checkpoints monotonic
+- Evidence: `evidence/step5/` (12 assertion bundles + STEP5_SUMMARY.json)
+- Reconstruction boundary: cold-restart E2E for AS-1/AS-2 deferred to Phase 1
+
+### Phase 1 Next Steps
+
+1. **Cold-restart E2E** for AS-1 and AS-2 — upgrade reconstruction claim from warm-harness to operational
+2. HTTP artifact ingress endpoint (NATed workers)
+3. Compute wallet + HBD deposit reconciliation
+4. Mock → real Hive client
+5. 24-48h burn-in
+
+### Extracted Gems (placed in GPU_SHARING_PLAN.md)
+
+Three techniques extracted from architecture review, placed in their target phases:
+
+| Gem | Phase | Location |
+|-----|-------|----------|
+| Hidden minibatch loss (coordinator-held shard, never trust miner loss curves) | Phase 2 verification | `domain_lora_train` 3-stage verification table |
+| Cosine alignment to global delta (attenuate outlier adapters in merge) | Phase 3 merge weighting | Secondary merge weight signal |
+| Shapley-lite leave-one-out contribution (payout reflects actual merge contribution) | Phase 3 quality bonus | Replaces flat 30% × score for federated rounds |
+
+### CI Hygiene Debt (carry forward)
+
+`actions/checkout@v4` and `actions/setup-python@v5` show Node.js 20 deprecation warnings. GitHub forces Node.js 24 by default starting June 2, 2026. Update before that date.
 
 ---
 

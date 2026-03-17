@@ -366,7 +366,17 @@ Workers already running eval_sweep/benchmark_run (Phase 0-1) can continue withou
 }
 ```
 
-**Verification:** Full hidden quick eval (18-probe), not sampled. Training jobs are higher value and lower count — full verification is justified.
+**Verification (3-stage for training jobs):**
+
+Training jobs are higher value and lower count — full verification is justified, not sampled.
+
+| Stage | Check | Rationale |
+|-------|-------|-----------|
+| 1. Structural | Adapter file presence, tensor shape/rank/dtype, manifest hash match | Catches corrupt or no-op submissions instantly |
+| 2. Hidden eval | Full 18-probe quick eval on coordinator's private eval set | Catches low-quality adapters that pass structural checks |
+| 3. Hidden minibatch loss | Coordinator loads adapter, runs forward pass on a coordinator-held shard (never sent to worker), compares loss against baseline | Never trust miner-reported loss curves. This catches adapters that game the eval set but degrade on unseen data. Only needed for `domain_lora_train` — eval/benchmark workloads don't produce adapters. |
+
+Stage 3 is the key addition: miner-reported `training_log.json` loss curves are advisory telemetry, not verification input. The coordinator's own loss computation on held-out data is the trust anchor.
 
 **Adapter output must include:**
 - `adapter_model.safetensors`
@@ -431,9 +441,24 @@ Note: LoRA deltas are low-rank by construction. The sum of low-rank updates is r
 - Must not regress core baseline beyond threshold (3% on any domain)
 - Merge set is curated, not mechanical
 
-**Merge weighting:** Weight by **normalized improvement over baseline on the target domain**, clipped to [0.1, 2.0]. Do NOT use raw verifier score — it overweights adapters that are good on one hidden slice but broadly mediocre.
+**Merge weighting (two signals):**
 
-**Diversity bonus:** `target_domain_improvement × (1 + capped_diversity_bonus)` where diversity = distance to already-selected adapters. Diversity is a multiplier/tiebreaker, not the primary signal. Marginal-gain check after tentative merge: does adding this adapter actually improve the merged result? If not, exclude it even if it passes admission.
+Primary: **normalized improvement over baseline on the target domain**, clipped to [0.1, 2.0]. Do NOT use raw verifier score — it overweights adapters that are good on one hidden slice but broadly mediocre.
+
+Secondary: **cosine alignment to global delta.** After computing each adapter's dense delta ΔW_i = B_i @ A_i, measure cosine similarity between ΔW_i and the unweighted mean delta. Adapters that push in a consistent direction get higher merge weight; outliers (potentially noisy or adversarial) get attenuated. This catches adapters that pass eval but push weights in a divergent direction that would degrade the merged result.
+
+Combined: `weight_i = domain_improvement_i × (1 + α × cosine_alignment_i)` where α is a tunable scalar (start at 0.3, adjust based on merge quality).
+
+**Diversity bonus:** `weighted_score × (1 + capped_diversity_bonus)` where diversity = distance to already-selected adapters. Diversity is a multiplier/tiebreaker, not the primary signal. Marginal-gain check after tentative merge: does adding this adapter actually improve the merged result? If not, exclude it even if it passes admission.
+
+**Quality bonus payout (Shapley-lite, Phase 3+):**
+
+The current bonus formula (30% × verification_score) is adequate for Phase 1-2 where jobs are independent. In Phase 3, when multiple adapters contribute to a merged result, the bonus should reflect actual contribution to the merge:
+
+1. **Cosine alignment score:** How well did this adapter's delta align with the final merged direction?
+2. **Leave-one-out contribution:** Merge with vs. without this adapter — what was the eval delta? Adapters that improve the merge get proportionally higher bonus; adapters that were neutral get base completion fee only.
+
+This is Shapley-lite — not full combinatorial Shapley values (exponential in adapter count), but a practical 2-signal approximation that rewards honest contribution and makes free-riding unprofitable. Compute cost: one additional merge + eval per adapter per round. At Phase 3 volumes (3-5 adapters per round), this is ~5 extra evals, acceptable.
 
 **Baseline registry (immutable):**
 
