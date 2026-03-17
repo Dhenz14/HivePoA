@@ -60,6 +60,11 @@ const ARTIFACT_SIZE_LIMITS: Record<string, number> = {
 const ARTIFACT_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 const ARTIFACT_RATE_LIMIT_MAX = 30; // max 30 uploads per 15 min per node
 
+// Global concurrency cap — prevents N×500 MB buffers from living in RSS simultaneously.
+// Express.raw() materialises the full body before the handler runs, so this guard limits
+// the number of those buffers in active processing at any given time.
+const MAX_CONCURRENT_ARTIFACT_UPLOADS = 3;
+
 export interface JobManifest {
   schema_version: number;
   workload_type: WorkloadType;
@@ -179,6 +184,8 @@ export class ComputeService {
   private leaseSweepTimer: ReturnType<typeof setInterval> | null = null;
   // Per-node upload rate tracking: nodeId → list of upload timestamps
   private artifactRateMap: Map<string, number[]> = new Map();
+  // Global in-flight upload count — guarded by the synchronous preamble before first await
+  private activeUploads = 0;
 
   async start(): Promise<void> {
     // Phase 0: Ensure DB-level constraints for cross-job guard.
@@ -944,72 +951,84 @@ export class ComputeService {
   async uploadArtifact(upload: ArtifactUpload): Promise<ArtifactUploadResult> {
     const { data, expectedSha256, workloadType, nodeId } = upload;
 
-    // 1. Rate limit per node
-    this.enforceArtifactRateLimit(nodeId);
-
-    // 2. Workload type validation
-    const sizeLimit = ARTIFACT_SIZE_LIMITS[workloadType];
-    if (sizeLimit === undefined) {
-      emitArtifactRejected({ nodeId, reason: "INVALID_WORKLOAD_TYPE", workloadType });
-      throw Object.assign(new Error("INVALID_WORKLOAD_TYPE"), { statusCode: 400 });
+    // 0. Global concurrency guard — checked synchronously before any await so that
+    //    the JS single-threaded preamble accurately serialises the counter.
+    if (this.activeUploads >= MAX_CONCURRENT_ARTIFACT_UPLOADS) {
+      emitArtifactRejected({ nodeId, reason: "UPLOAD_CAPACITY_EXCEEDED", workloadType });
+      throw Object.assign(new Error("UPLOAD_CAPACITY_EXCEEDED"), { statusCode: 503 });
     }
+    this.activeUploads++;
 
-    // 3. Size check
-    if (data.length === 0) {
-      emitArtifactRejected({ nodeId, reason: "EMPTY_ARTIFACT", workloadType });
-      throw Object.assign(new Error("EMPTY_ARTIFACT"), { statusCode: 400 });
-    }
-    if (data.length > sizeLimit) {
-      emitArtifactRejected({
-        nodeId, reason: "ARTIFACT_TOO_LARGE", workloadType,
-        expectedSha256,
-      });
-      throw Object.assign(
-        new Error(`ARTIFACT_TOO_LARGE: ${data.length} bytes exceeds ${sizeLimit} byte limit for ${workloadType}`),
-        { statusCode: 413 },
-      );
-    }
-
-    // 4. SHA-256 verification — recompute and compare
-    const actualSha256 = createHash("sha256").update(data).digest("hex");
-    if (actualSha256 !== expectedSha256) {
-      emitArtifactRejected({
-        nodeId, reason: "SHA256_MISMATCH", workloadType,
-        expectedSha256,
-      });
-      throw Object.assign(
-        new Error("SHA256_MISMATCH"),
-        { statusCode: 422 },
-      );
-    }
-
-    // 5. Pin to IPFS — atomic: artifact is only visible if this succeeds
-    const ipfs = getIPFSClient();
-    let cid: string;
     try {
-      cid = await ipfs.addWithPin(data);
-    } catch (err) {
-      emitArtifactRejected({ nodeId, reason: "IPFS_PIN_FAILED", workloadType, expectedSha256 });
-      throw Object.assign(new Error("IPFS_PIN_FAILED"), { statusCode: 502 });
+      // 1. Rate limit per node
+      this.enforceArtifactRateLimit(nodeId);
+
+      // 2. Workload type validation
+      const sizeLimit = ARTIFACT_SIZE_LIMITS[workloadType];
+      if (sizeLimit === undefined) {
+        emitArtifactRejected({ nodeId, reason: "INVALID_WORKLOAD_TYPE", workloadType });
+        throw Object.assign(new Error("INVALID_WORKLOAD_TYPE"), { statusCode: 400 });
+      }
+
+      // 3. Size check
+      if (data.length === 0) {
+        emitArtifactRejected({ nodeId, reason: "EMPTY_ARTIFACT", workloadType });
+        throw Object.assign(new Error("EMPTY_ARTIFACT"), { statusCode: 400 });
+      }
+      if (data.length > sizeLimit) {
+        emitArtifactRejected({
+          nodeId, reason: "ARTIFACT_TOO_LARGE", workloadType,
+          expectedSha256,
+        });
+        throw Object.assign(
+          new Error(`ARTIFACT_TOO_LARGE: ${data.length} bytes exceeds ${sizeLimit} byte limit for ${workloadType}`),
+          { statusCode: 413 },
+        );
+      }
+
+      // 4. SHA-256 verification — recompute and compare
+      const actualSha256 = createHash("sha256").update(data).digest("hex");
+      if (actualSha256 !== expectedSha256) {
+        emitArtifactRejected({
+          nodeId, reason: "SHA256_MISMATCH", workloadType,
+          expectedSha256,
+        });
+        throw Object.assign(
+          new Error("SHA256_MISMATCH"),
+          { statusCode: 422 },
+        );
+      }
+
+      // 5. Pin to IPFS — atomic: artifact is only visible if this succeeds
+      const ipfs = getIPFSClient();
+      let cid: string;
+      try {
+        cid = await ipfs.addWithPin(data);
+      } catch (err) {
+        emitArtifactRejected({ nodeId, reason: "IPFS_PIN_FAILED", workloadType, expectedSha256 });
+        throw Object.assign(new Error("IPFS_PIN_FAILED"), { statusCode: 502 });
+      }
+
+      // 6. Record the upload timestamp for rate limiting
+      const now = Date.now();
+      const timestamps = this.artifactRateMap.get(nodeId) || [];
+      timestamps.push(now);
+      this.artifactRateMap.set(nodeId, timestamps);
+
+      emitArtifactUploaded({
+        nodeId, cid, sha256: actualSha256,
+        sizeBytes: data.length, workloadType,
+      });
+
+      logCompute.info({
+        nodeId, cid, sha256: actualSha256,
+        sizeBytes: data.length, workloadType,
+      }, "Artifact uploaded and pinned");
+
+      return { cid, sha256: actualSha256, sizeBytes: data.length };
+    } finally {
+      this.activeUploads--;
     }
-
-    // 6. Record the upload timestamp for rate limiting
-    const now = Date.now();
-    const timestamps = this.artifactRateMap.get(nodeId) || [];
-    timestamps.push(now);
-    this.artifactRateMap.set(nodeId, timestamps);
-
-    emitArtifactUploaded({
-      nodeId, cid, sha256: actualSha256,
-      sizeBytes: data.length, workloadType,
-    });
-
-    logCompute.info({
-      nodeId, cid, sha256: actualSha256,
-      sizeBytes: data.length, workloadType,
-    }, "Artifact uploaded and pinned");
-
-    return { cid, sha256: actualSha256, sizeBytes: data.length };
   }
 
   private enforceArtifactRateLimit(nodeId: string): void {

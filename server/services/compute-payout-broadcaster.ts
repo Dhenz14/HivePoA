@@ -11,11 +11,27 @@
  *
  * No handler outside this module may call hiveClient.transfer() for compute payouts.
  */
-import { storage } from "../storage";
+import { storage as globalStorage } from "../storage";
 import { logCompute } from "../logger";
 import { createHiveClient } from "./hive-client";
 import type { HiveClient, MockHiveClient } from "./hive-client";
-import type { ComputePayout, ComputePayoutBroadcast } from "@shared/schema";
+import type { ComputeNode, ComputePayout, ComputePayoutBroadcast, InsertComputePayoutBroadcast } from "@shared/schema";
+
+/**
+ * Minimal storage interface used by the broadcaster.
+ * Matches the relevant subset of DatabaseStorage — injected in production,
+ * replaced with an in-memory implementation in burn-in tests.
+ */
+export interface BroadcastStorage {
+  getQueuedComputePayouts(limit?: number): Promise<ComputePayout[]>;
+  getInflightBroadcastAttempts(): Promise<ComputePayoutBroadcast[]>;
+  getLatestBroadcastAttempt(payoutId: string): Promise<ComputePayoutBroadcast | undefined>;
+  getPayoutBroadcastAttemptsByPayout(payoutId: string): Promise<ComputePayoutBroadcast[]>;
+  createPayoutBroadcastAttempt(attempt: InsertComputePayoutBroadcast): Promise<ComputePayoutBroadcast>;
+  updatePayoutBroadcastAttempt(id: string, updates: Partial<ComputePayoutBroadcast>): Promise<void>;
+  updateComputePayoutStatus(id: string, status: string, treasuryTxId?: string): Promise<void>;
+  getComputeNode(nodeId: string): Promise<ComputeNode | undefined>;
+}
 import {
   emitBroadcastAttemptCreated,
   emitBroadcastSent,
@@ -35,10 +51,12 @@ const AMBIGUOUS_AGE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
 export class ComputePayoutBroadcaster {
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private hiveClient: HiveClient | MockHiveClient;
+  private storage: BroadcastStorage;
   private processing = false;
 
-  constructor(hiveClient?: HiveClient | MockHiveClient) {
+  constructor(hiveClient?: HiveClient | MockHiveClient, injectedStorage?: BroadcastStorage) {
     this.hiveClient = hiveClient ?? createHiveClient();
+    this.storage = injectedStorage ?? globalStorage;
   }
 
   async start(): Promise<void> {
@@ -62,7 +80,7 @@ export class ComputePayoutBroadcaster {
     this.processing = true;
     try {
       // Phase 1: Broadcast queued payouts
-      const queued = await storage.getQueuedComputePayouts(10);
+      const queued = await this.storage.getQueuedComputePayouts(10);
       for (const payout of queued) {
         try {
           await this.broadcastPayout(payout);
@@ -72,7 +90,7 @@ export class ComputePayoutBroadcaster {
       }
 
       // Phase 2: Confirm in-flight broadcasts
-      const inflight = await storage.getInflightBroadcastAttempts();
+      const inflight = await this.storage.getInflightBroadcastAttempts();
       for (const attempt of inflight) {
         try {
           await this.confirmBroadcast(attempt);
@@ -93,7 +111,7 @@ export class ComputePayoutBroadcaster {
 
   async broadcastPayout(payout: ComputePayout): Promise<void> {
     // 1. Check for existing in-flight attempt
-    const latest = await storage.getLatestBroadcastAttempt(payout.id);
+    const latest = await this.storage.getLatestBroadcastAttempt(payout.id);
     if (latest) {
       if (latest.status === "sent" || latest.status === "ambiguous" || latest.status === "created") {
         // An attempt is still in-flight; confirmBroadcast will handle it
@@ -101,26 +119,26 @@ export class ComputePayoutBroadcaster {
       }
       if (latest.status === "confirmed") {
         // Already confirmed — fix payout status if stale
-        await storage.updateComputePayoutStatus(payout.id, "confirmed", latest.hiveTxId ?? undefined);
+        await this.storage.updateComputePayoutStatus(payout.id, "confirmed", latest.hiveTxId ?? undefined);
         return;
       }
     }
 
     // 2. Count failed attempts
-    const allAttempts = await storage.getPayoutBroadcastAttemptsByPayout(payout.id);
+    const allAttempts = await this.storage.getPayoutBroadcastAttemptsByPayout(payout.id);
     const failedCount = allAttempts.filter(a =>
       a.status === "failed_expired" || a.status === "failed_error",
     ).length;
 
     if (failedCount >= MAX_BROADCAST_ATTEMPTS) {
-      await storage.updateComputePayoutStatus(payout.id, "failed");
+      await this.storage.updateComputePayoutStatus(payout.id, "failed");
       emitPayoutFailed({ payoutId: payout.id, totalAttempts: failedCount });
       logCompute.warn({ payoutId: payout.id, failedCount }, "Payout exhausted all broadcast attempts");
       return;
     }
 
     // 3. Resolve recipient
-    const node = await storage.getComputeNode(payout.nodeId);
+    const node = await this.storage.getComputeNode(payout.nodeId);
     if (!node) {
       logCompute.error({ payoutId: payout.id, nodeId: payout.nodeId }, "Cannot broadcast: node not found");
       return;
@@ -133,7 +151,7 @@ export class ComputePayoutBroadcaster {
     // 4. CREATE DURABLE PRE-BROADCAST IDENTITY (the safety surface)
     let attempt: ComputePayoutBroadcast;
     try {
-      attempt = await storage.createPayoutBroadcastAttempt({
+      attempt = await this.storage.createPayoutBroadcastAttempt({
         payoutId: payout.id,
         attemptNumber,
         idempotencyKey,
@@ -173,12 +191,12 @@ export class ComputePayoutBroadcaster {
       });
 
       // Success — record txId
-      await storage.updatePayoutBroadcastAttempt(attempt.id, {
+      await this.storage.updatePayoutBroadcastAttempt(attempt.id, {
         hiveTxId: tx.id,
         status: "sent",
         chainBlockNum: tx.blockNumber,
       });
-      await storage.updateComputePayoutStatus(payout.id, "broadcast");
+      await this.storage.updateComputePayoutStatus(payout.id, "broadcast");
 
       emitBroadcastSent({
         payoutId: payout.id,
@@ -193,7 +211,7 @@ export class ComputePayoutBroadcaster {
 
     } catch (err: any) {
       // AMBIGUOUS ACK — tx may have landed despite the error
-      await storage.updatePayoutBroadcastAttempt(attempt.id, {
+      await this.storage.updatePayoutBroadcastAttempt(attempt.id, {
         status: "ambiguous",
         errorMessage: (err.message || "Unknown error").slice(0, 500),
       });
@@ -221,7 +239,7 @@ export class ComputePayoutBroadcaster {
     if (attempt.status === "created") {
       if (age < CREATED_AGE_THRESHOLD_MS) return; // too young, may still be in-flight
       // Crash recovery: transfer was never sent
-      await storage.updatePayoutBroadcastAttempt(attempt.id, {
+      await this.storage.updatePayoutBroadcastAttempt(attempt.id, {
         status: "failed_error",
         errorMessage: "Pre-send row without broadcast (crash recovery)",
         resolvedAt: new Date(),
@@ -250,7 +268,7 @@ export class ComputePayoutBroadcaster {
           return;
 
         case "expired":
-          await storage.updatePayoutBroadcastAttempt(attempt.id, {
+          await this.storage.updatePayoutBroadcastAttempt(attempt.id, {
             status: "failed_expired",
             resolvedAt: new Date(),
           });
@@ -282,7 +300,7 @@ export class ComputePayoutBroadcaster {
     if (attempt.status === "ambiguous" && !attempt.hiveTxId) {
       if (age < AMBIGUOUS_AGE_THRESHOLD_MS) return; // too young
       // Aged out — mark failed to allow retry
-      await storage.updatePayoutBroadcastAttempt(attempt.id, {
+      await this.storage.updatePayoutBroadcastAttempt(attempt.id, {
         status: "failed_error",
         errorMessage: "Ambiguous broadcast with no txId — aged out",
         resolvedAt: new Date(),
@@ -301,12 +319,12 @@ export class ComputePayoutBroadcaster {
   // ================================================================
 
   private async markConfirmed(attempt: ComputePayoutBroadcast, blockNum: number): Promise<void> {
-    await storage.updatePayoutBroadcastAttempt(attempt.id, {
+    await this.storage.updatePayoutBroadcastAttempt(attempt.id, {
       status: "confirmed",
       chainBlockNum: blockNum,
       resolvedAt: new Date(),
     });
-    await storage.updateComputePayoutStatus(
+    await this.storage.updateComputePayoutStatus(
       attempt.payoutId, "confirmed", attempt.hiveTxId ?? undefined,
     );
 
