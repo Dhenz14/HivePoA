@@ -949,4 +949,6 @@ This is an **ops-configurable parameter**, not an immutable system invariant. Th
 
 ## Status
 
-Architecture, economics, trust model, and phase order are closed. Implementation begins after publishing canonical JSON Schema files in `schemas/` and adding CI validation on both repos.
+Architecture, economics, trust model, and phase order are closed. Zero first-order architecture questions remain; a few explicit pre-launch operational gates exist (verifier bond formula before v2, deposit reconciliation before exposing deposit endpoint, cross-architecture tolerance matrix before Phase 2, merge resource budget before Phase 3).
+
+Canonical JSON Schema files are already published in `schemas/` with fixtures and CI validation on HivePoA. The remaining gate is **cross-repo enforcement**: confirm Hive-AI consumes the same fixture corpus in its own CI, and both repos fail on protocol drift. Then Phase 0 implementation begins with deposit reconciliation included from day one.
