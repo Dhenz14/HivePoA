@@ -976,6 +976,9 @@ export const computeJobs = pgTable("compute_jobs", {
   cancelledAt: timestamp("cancelled_at"),
   completedAt: timestamp("completed_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+  // Compliance-challenge exact-once scoring: set atomically with the reputation mutation.
+  // Prevents restart double-score. NULL = unscored; non-null = already applied.
+  poaScoredAt: timestamp("poa_scored_at"),
 });
 
 // Compute Job Attempts - Each lease/execution attempt of a job

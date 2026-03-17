@@ -546,11 +546,16 @@ export interface IStorage {
   getPayoutBroadcastAttemptsByPayout(payoutId: string): Promise<ComputePayoutBroadcast[]>;
   ensureBroadcastTables(): Promise<void>;
 
-  // GPU PoA: challenge lifecycle
+  // Directed compliance-challenge lifecycle
   getNodesForPoaChallenge(cooldownMs: number, limit?: number): Promise<ComputeNode[]>;
   stampNodePoaChallenge(nodeId: string, at: Date): Promise<void>;
-  getSettledPoaJobs(coordinatorUsername: string, since: Date): Promise<ComputeJob[]>;
+  getUnscoredComplianceChallengeResults(coordinatorUsername: string): Promise<ComputeJob[]>;
   getExpiredPoaJobs(coordinatorUsername: string, claimTimeoutMs: number): Promise<ComputeJob[]>;
+  /**
+   * Atomically: mark job as scored (poaScoredAt) AND apply reputation delta.
+   * Returns true if scored, false if already scored (idempotent — safe on restart).
+   */
+  scoreComplianceChallengeAtomic(jobId: string, nodeId: string, delta: number): Promise<boolean>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2986,16 +2991,37 @@ export class DatabaseStorage implements IStorage {
       .where(eq(computeNodes.id, nodeId));
   }
 
-  async getSettledPoaJobs(coordinatorUsername: string, since: Date): Promise<ComputeJob[]> {
+  async getUnscoredComplianceChallengeResults(coordinatorUsername: string): Promise<ComputeJob[]> {
     return db.select().from(computeJobs)
       .where(
         and(
           eq(computeJobs.creatorUsername, coordinatorUsername),
           isNotNull(computeJobs.targetNodeId),
           inArray(computeJobs.state, ["accepted", "rejected"]),
-          gte(computeJobs.completedAt, since),
+          isNull(computeJobs.poaScoredAt), // Only unscored — restart-safe dedup
         )!,
       );
+  }
+
+  async scoreComplianceChallengeAtomic(jobId: string, nodeId: string, delta: number): Promise<boolean> {
+    let scored = false;
+    await db.transaction(async (tx: any) => {
+      // Conditional update: only fires if poaScoredAt is still NULL.
+      // If two processes race (restart overlap), exactly one wins.
+      const [updated] = await tx.update(computeJobs)
+        .set({ poaScoredAt: new Date() })
+        .where(and(eq(computeJobs.id, jobId), isNull(computeJobs.poaScoredAt))!)
+        .returning({ id: computeJobs.id });
+
+      if (!updated) return; // already scored — idempotent
+
+      await tx.update(computeNodes)
+        .set({ reputationScore: sql`GREATEST(0, LEAST(100, ${computeNodes.reputationScore} + ${delta}))` })
+        .where(eq(computeNodes.id, nodeId));
+
+      scored = true;
+    });
+    return scored;
   }
 
   async getExpiredPoaJobs(coordinatorUsername: string, claimTimeoutMs: number): Promise<ComputeJob[]> {
