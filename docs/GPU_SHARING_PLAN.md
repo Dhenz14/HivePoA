@@ -135,9 +135,10 @@ GPU compute adds one role to the existing trust registry:
 - All outputs > 1 KB go to IPFS. **`output_sha256` is the byte-identity truth; CID is the transport/routing handle.** CIDs depend on chunking algorithm, DAG layout, codec, CID version, and hash function — two identical files can produce different CIDs across Kubo versions or import settings. SHA-256 of the raw bytes is deterministic and version-independent.
 - **Canonical IPFS import profile (mandatory for all artifact uploads):** CIDv1, raw leaves, fixed-size chunker (256 KiB), SHA-256 hash, balanced DAG layout. Both worker and coordinator must use this profile. Mismatched CIDs with matching `output_sha256` are a warning (import profile drift), not a rejection.
 - Result JSON contains: `output_sha256` (canonical identity) + `output_cid` (IPFS routing handle) + `output_size_bytes`
+- **Canonical artifact packer (Phase 2 requirement for training outputs):** `output_sha256` as byte-identity truth only works if packaging is deterministic. `tar` with different file ordering, timestamps, or gzip settings produces different hashes for semantically identical adapters. Training artifacts must use a canonical packer: sorted file order, zeroed timestamps, fixed gzip compression level, deterministic `safetensors` serialization. JSONL batches (data_generation) are naturally deterministic — this only applies to adapter tar.gz outputs.
 - Size limits per workload type:
   - `data_generation`: max 50 MB (JSONL batch)
-  - `domain_lora_train`: max 500 MB (adapter tar.gz)
+  - `domain_lora_train`: max 500 MB (adapter tar.gz, canonical packer required)
   - `eval_sweep` / `benchmark_run`: max 5 MB (result JSON)
 
 **IPFS availability policy:**
@@ -236,6 +237,7 @@ Workers with 8 GB cards are eligible for eval/benchmark only. 12 GB unlocks data
 5. Worker submits result with wrong `job_nonce` → rejected
 6. NATed worker uploads artifact via HTTP ingress → coordinator pins, CID matches
 7. Direct worker pins locally → coordinator fetches by CID within timeout
+8. Compute wallet deposit via Hive transfer → `findTransaction()` + `confirmTransaction()` reconciliation succeeds, balance updated. RPC failure → deposit retried, not silently dropped. (Hard gate — do not expose deposit endpoint until this path is tested against RPC failure and replay.)
 
 ---
 
@@ -420,7 +422,7 @@ Monitor these signals across merge rounds. Switch criteria are benchmark-driven,
 2. **Cross-domain regression pattern:** Merges consistently regress on domain X while improving domain Y → the merge is discarding information that matters for X. Investigate per-domain adapter separation (FedSA-LoRA style A/B split) or domain-stratified merge weighting before switching the core algorithm.
 3. **Rank heterogeneity:** If workers produce different LoRA ranks, QR-based aggregation (ILoRA) handles heterogeneous fusion. If shard distributions are strongly non-IID, server-side optimizer-state handling may matter more than merge algorithm choice.
 
-Note: LoRA deltas are low-rank by construction. The sum of low-rank updates is representable through concatenated factors — full dense SVD of `d_model × d_model` matrices is not required. A GPU is desirable for aggregator throughput but is not an architectural requirement of dense-delta + SVD.
+Note: LoRA deltas are low-rank by construction. The sum of low-rank updates is representable through concatenated factors — full dense SVD of `d_model × d_model` matrices is not required. A GPU is desirable for aggregator throughput but is not an architectural requirement of dense-delta + SVD. However, "no GPU required" must not become "coordinator CPU is free" — Phase 3 implementation must define a resource budget for merge rounds (time, memory, maximum participating adapter count) to prevent the coordinator from becoming a hidden bottleneck under real concurrency.
 
 **Admission control (do NOT merge every passing adapter):**
 
@@ -529,6 +531,10 @@ When volume exceeds coordinator capacity, WoT-vouched `compute_verifier` account
 - **Who pays for verification compute:** In v1, the coordinator absorbs it. In v2, the fee is carved from the job budget before worker payout. Workers see slightly lower net payouts but get faster verification turnaround.
 
 **v1 implementation (CONSCIOUS DEFERRAL):** Coordinator self-verifies. Verifier fee is not carved out — full budget goes to worker. This is intentional: the external verifier pool is a scaling mechanism, not a v1 requirement. The carved-fee-from-budget mechanism, external verifier assignment, bond/slash, and audit lottery are implemented in v2 when volume demands it. The job manifest schema already has room for `verifier_account` and `verifier_fee_hbd` fields, so the protocol doesn't need to change.
+
+**v2 pre-launch requirements (must be defined before external verifiers go live):**
+- Explicit bond formula (not just "10× fee" guidance) — must model verifier capital requirements and simulate whether small honest verifiers can participate
+- Degradation rule: when eligible verifier count drops below a floor, relax pairing constraints or skip external assignment entirely rather than pretending v2 is healthy. The 3-per-7-day rotation rule assumes sufficient verifier liquidity — if the pool is thin, strict rotation drives up fallback rate and latency.
 
 ---
 
@@ -716,13 +722,15 @@ Per-tier λ values (configurable):
 
 **Treasury budget governor for liveness payouts:** Liveness micro-payouts (~0.001 HBD per pass) are funded from treasury. At scale, flat Poisson scheduling across many workers creates a treasury leak. Cap: maximum daily liveness payout budget = `min(5.0 HBD, 0.1 × daily_job_revenue)`. When the cap is reached, liveness challenges continue (security function) but payouts pause until the next day. This ensures liveness costs scale with actual marketplace revenue, not with worker count alone.
 
+**Bootstrap exception:** During marketplace cold start (first 90 days or until daily job revenue exceeds 10 HBD for 7 consecutive days), the governor uses a fixed floor of 2.0 HBD/day instead of the revenue-linked formula. This prevents the safety valve from accidentally punishing early worker onboarding when revenue is near zero. After the bootstrap window closes, the `min(5.0, 10%)` formula takes over.
+
 Challenge content is server-generated with nonce. The nonce must drive a large challenge family — a small prompt catalog with a huge seed is still a small challenge space.
 
 **Concrete challenge family sizes:**
 
 | Tier | Challenge | Family Size | How Nonce Expands |
 |------|-----------|------------|-------------------|
-| 1 | Matrix multiply | Effectively infinite | Nonce seeds random matrix dimensions (128-4096) + element distribution. Different tensors every time. Verification uses **tolerance band** (not exact checksum) to handle cross-architecture floating-point non-determinism (Ampere vs Ada vs Hopper). |
+| 1 | Matrix multiply | Effectively infinite | Nonce seeds random matrix dimensions (128-4096) + element distribution. Different tensors every time. Verification uses **tolerance band** (not exact checksum) to handle cross-architecture floating-point non-determinism (Ampere vs Ada vs Hopper). Phase 2 pre-launch: build a test matrix across representative compute capabilities to bound normal variance and set threshold. |
 | 2 | Model inference | 1000+ effective challenges | Prompt drawn from server-side rotating pool of 1000+ prompts. Pool rotated monthly. Exact token hash required (same model + quant + tokenizer = deterministic). |
 | 3 | Micro LoRA forward | **200+ effective challenges** | Test shard drawn from pool of 200+ held-out shards, 10% rotated weekly (not all monthly). Server nonce drives deterministic sub-sampling from the shard pool — no random perturbation (that would break reproducibility). Loss value within tolerance. |
 
