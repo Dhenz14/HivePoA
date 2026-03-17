@@ -132,8 +132,9 @@ GPU compute adds one role to the existing trust registry:
 
 **2. Artifact storage contract:**
 
-- All outputs > 1 KB go to IPFS (CID is the canonical reference)
-- Result JSON contains: `output_cid` (IPFS CID) + `output_sha256` + `output_size_bytes`
+- All outputs > 1 KB go to IPFS. **`output_sha256` is the byte-identity truth; CID is the transport/routing handle.** CIDs depend on chunking algorithm, DAG layout, codec, CID version, and hash function — two identical files can produce different CIDs across Kubo versions or import settings. SHA-256 of the raw bytes is deterministic and version-independent.
+- **Canonical IPFS import profile (mandatory for all artifact uploads):** CIDv1, raw leaves, fixed-size chunker (256 KiB), SHA-256 hash, balanced DAG layout. Both worker and coordinator must use this profile. Mismatched CIDs with matching `output_sha256` are a warning (import profile drift), not a rejection.
+- Result JSON contains: `output_sha256` (canonical identity) + `output_cid` (IPFS routing handle) + `output_size_bytes`
 - Size limits per workload type:
   - `data_generation`: max 50 MB (JSONL batch)
   - `domain_lora_train`: max 500 MB (adapter tar.gz)
@@ -167,7 +168,9 @@ NATed home workers are a real availability risk, not a corner case. DCUtR hole p
 | **Auth** | Worker's API key (same as job submission auth). |
 | **Rate limit** | 3 uploads/hour per worker account. Prevents abuse of coordinator bandwidth. |
 | **Concurrency limit** | 1 concurrent upload per worker. Prevents burst bandwidth abuse (e.g., 3 active jobs × 500 MB = 1.5 GB simultaneous). |
+| **Minimum throughput** | If upload speed drops below 10 KB/s for 30 seconds, kill connection immediately. Don't wait for the 10-minute TTL. Prevents slowloris-style stalled uploads from exhausting server connections. |
 | **Partial-upload cleanup** | Incomplete uploads expire after 10 minutes. Coordinator runs cleanup sweep every 5 minutes to reclaim temp storage. |
+| **Global temp-storage ceiling** | Reject new uploads when coordinator temp storage exceeds 10 GB. With 1-per-worker concurrency this is unlikely, but prevents edge-case disk exhaustion. |
 | **Budget-aware admission** | Upload only accepted if worker has an active claimed job expecting an artifact. No speculative uploads. |
 
 **Changes needed for HTTP ingress:**
@@ -409,11 +412,15 @@ new_A = diag(sqrt(S[:rank])) @ Vh[:rank, :]
 
 **Known limitation:** Truncation back to rank 32 discards residual information every round. Monitor `discarded_residual_norm = ||merged_delta - new_B @ new_A||` to detect when compression is destructive.
 
-**Upgrade triggers (switch merge strategy when either is observed):**
-1. **Residual norm growth:** `discarded_residual_norm` exceeds threshold over consecutive rounds → compression is destroying signal. Switch to FedEx-LoRA residual-carry (arXiv 2410.09432).
-2. **Cross-domain regression pattern:** Merges consistently regress on domain X while improving domain Y → the merge is discarding information that matters for X. Investigate per-domain adapter separation (FedSA-LoRA style A/B split) or domain-stratified merge weighting before switching the core algorithm.
+**Upgrade triggers (empirical, not hard-coded thresholds):**
 
-If client ranks vary, design for QR-based aggregation (ILoRA). If shard distributions are strongly non-IID, server-side optimizer-state handling may matter more than merge algorithm choice.
+Monitor these signals across merge rounds. Switch criteria are benchmark-driven, not automated — the `MergeStrategy` interface allows swapping, but the decision to swap is a human/coordinator judgment call informed by data:
+
+1. **Residual norm growth:** `discarded_residual_norm` growing over consecutive rounds suggests compression is destroying signal. FedEx-LoRA residual-carry (arXiv 2410.09432) preserves exact updates via residual terms but adds communication/state overhead — only justified when truncation loss is material.
+2. **Cross-domain regression pattern:** Merges consistently regress on domain X while improving domain Y → the merge is discarding information that matters for X. Investigate per-domain adapter separation (FedSA-LoRA style A/B split) or domain-stratified merge weighting before switching the core algorithm.
+3. **Rank heterogeneity:** If workers produce different LoRA ranks, QR-based aggregation (ILoRA) handles heterogeneous fusion. If shard distributions are strongly non-IID, server-side optimizer-state handling may matter more than merge algorithm choice.
+
+Note: LoRA deltas are low-rank by construction. The sum of low-rank updates is representable through concatenated factors — full dense SVD of `d_model × d_model` matrices is not required. A GPU is desirable for aggregator throughput but is not an architectural requirement of dense-delta + SVD.
 
 **Admission control (do NOT merge every passing adapter):**
 
@@ -505,9 +512,9 @@ When volume exceeds coordinator capacity, WoT-vouched `compute_verifier` account
 | Component | Source | Amount |
 |-----------|--------|--------|
 | **Verifier fee** | Carved from job budget at creation | 10% of posted price |
-| **Verifier bond** | Staked by verifier account | 10× the fee for that workload class, minimum 0.500 HBD (prevents trivial stakes on cheap jobs) |
+| **Verifier bond** | Staked by verifier account | 10× the fee for that workload class, minimum 0.500 HBD. v2+: bond should scale toward job-value-at-risk, not just fee multiple — fraud profit is the worker payout, not the verifier fee. |
 | **Audit lottery** | Random re-verification by coordinator | 5% of verified jobs are re-checked |
-| **Verifier rotation** | No repeat verifier for same worker within 24h | Prevents verifier-worker collusion patterns |
+| **Verifier rotation** | Max 3 verifications of the same worker per 7-day window + randomized assignment | Pair-frequency limits alone don't stop correlated-account verifier rings — randomized assignment makes collusion coordination harder |
 
 **Fee flow:**
 1. Job created with `budget = posted_price`. Verifier fee (10%) is reserved.
@@ -517,7 +524,7 @@ When volume exceeds coordinator capacity, WoT-vouched `compute_verifier` account
 5. If verdict contradicts coordinator audit: verifier fee withheld, bond slashed, reputation -5.
 
 **Edge cases (designed but not implemented until v2):**
-- **No verifier claims:** Job stays in `verifying` state. After 1-hour timeout, coordinator self-verifies as fallback. External verifiers are a throughput optimization, not a hard dependency.
+- **No verifier claims:** Job stays in `verifying` state. After 1-hour timeout, coordinator self-verifies as fallback. External verifiers are a throughput optimization, not a hard dependency. Track three metrics weekly: external claim rate, fallback-to-coordinator rate, and p95 verification latency by workload. Low claim rate alone is harmless if volume is low — the real signal is rising fallback rate or latency.
 - **Verification is mandatory vs sampled:** See Verification Throughput Policy — high-value workloads (training, data gen) are always verified. Low-value workloads (eval, benchmark) use probabilistic audit for proven workers. This policy is the same regardless of whether the coordinator or an external verifier runs the check.
 - **Who pays for verification compute:** In v1, the coordinator absorbs it. In v2, the fee is carved from the job budget before worker payout. Workers see slightly lower net payouts but get faster verification turnaround.
 
@@ -707,20 +714,23 @@ Per-tier λ values (configurable):
 - Standard (rep 20-49): λ = 1/hour
 - Trusted (rep 50+): λ = 0.5/hour (proven nodes, less overhead)
 
+**Treasury budget governor for liveness payouts:** Liveness micro-payouts (~0.001 HBD per pass) are funded from treasury. At scale, flat Poisson scheduling across many workers creates a treasury leak. Cap: maximum daily liveness payout budget = `min(5.0 HBD, 0.1 × daily_job_revenue)`. When the cap is reached, liveness challenges continue (security function) but payouts pause until the next day. This ensures liveness costs scale with actual marketplace revenue, not with worker count alone.
+
 Challenge content is server-generated with nonce. The nonce must drive a large challenge family — a small prompt catalog with a huge seed is still a small challenge space.
 
 **Concrete challenge family sizes:**
 
 | Tier | Challenge | Family Size | How Nonce Expands |
 |------|-----------|------------|-------------------|
-| 1 | Matrix multiply | Effectively infinite | Nonce seeds random matrix dimensions (128-4096) + element distribution. Different tensors every time. |
-| 2 | Model inference | 1000+ effective challenges | Prompt drawn from server-side rotating pool of 1000+ prompts. Pool rotated monthly. Exact token hash required. |
-| 3 | Micro LoRA forward | 50+ effective challenges | Test shard drawn from pool of 50+ held-out shards, rotated monthly. Loss value within tolerance. |
+| 1 | Matrix multiply | Effectively infinite | Nonce seeds random matrix dimensions (128-4096) + element distribution. Different tensors every time. Verification uses **tolerance band** (not exact checksum) to handle cross-architecture floating-point non-determinism (Ampere vs Ada vs Hopper). |
+| 2 | Model inference | 1000+ effective challenges | Prompt drawn from server-side rotating pool of 1000+ prompts. Pool rotated monthly. Exact token hash required (same model + quant + tokenizer = deterministic). |
+| 3 | Micro LoRA forward | **200+ effective challenges** | Test shard drawn from pool of 200+ held-out shards, 10% rotated weekly (not all monthly). Server nonce drives deterministic sub-sampling from the shard pool — no random perturbation (that would break reproducibility). Loss value within tolerance. |
 
 **Known bypasses preempted:**
-- **Cached outputs:** Large family makes caching infeasible (Tier 1 infinite, Tier 2 1000+, Tier 3 50+ × monthly rotation)
+- **Cached outputs:** Large family makes caching infeasible (Tier 1 infinite, Tier 2 1000+, Tier 3 200+ with weekly partial rotation)
 - **Relay/proxy:** Tight response window (2-8s) makes forwarding to a real GPU elsewhere impractical over WAN
 - **Challenge-specialized workers:** Challenges use same runtime stack (cuBLAS, torch, LoRA) as paid workloads — no divergence to optimize against
+- **Timing anomaly:** Low response-time variance across challenges is a weak signal for challenge escalation (higher λ temporarily), not evidence of cheating by itself — WAN jitter and machine contention swamp the signal
 
 ### What We Deliberately Do Not Prevent
 
@@ -922,8 +932,10 @@ This is an **ops-configurable parameter**, not an immutable system invariant. Th
 | R1 | **IPFS pin persistence across coordinator restarts.** If the coordinator's Kubo node loses pins on restart, verified artifacts are gone. | Phase 0 | High | Verify Kubo pin durability in Phase 0 acceptance testing. Add pin-count health check to coordinator startup. |
 | R2 | **Hidden eval set rotation logistics.** Who maintains it, how often, where stored, how to prevent worker discovery. | Phase 1 | Medium | Eval set stored encrypted on coordinator, rotated every 30 days, never exposed via API. |
 | R3 | **Container image supply chain.** Who builds the frozen training image, how it's signed, where it's hosted. | Phase 2 | Medium | Build in CI (GitHub Actions), sign with cosign, host on GitHub Container Registry (ghcr.io). Workers verify signature before pulling. |
-| R4 | **Coordinator as single point of failure.** By design in v1. No HA, no failover. | Phase 4+ | Low (v1) | Acceptable for v1. HA/failover when volume justifies it. |
-| R5 | **Semantic sampling cost scaling.** 10% sampling at ~30s/batch is fine for v1. At 1000+ data_gen jobs/day, coordinator GPU becomes a bottleneck. | Phase 1+ | Low (v1) | Monitor coordinator GPU utilization. Offload to WoT-vouched external verifiers when needed. |
+| R4 | **Compute wallet deposit reconciliation.** Deposit path says "verified via Hive transfer memo" but does not specify the verification flow. Needs the same `findTransaction()` + `confirmTransaction()` pattern used for treasury payouts. | Phase 0 | High | Define deposit reconciliation as a Phase 0 implementation task. Same Hive RPC pattern as existing payout verification. |
+| R5 | **CID stability across IPFS versions.** Identical files can produce different CIDs across Kubo versions or import settings. Mitigated by canonical import profile + `output_sha256` as byte-identity truth (see artifact storage contract). Verify in Phase 0 acceptance testing. | Phase 0 | Medium | Canonical import profile defined. `output_sha256` is the identity primitive, CID is routing only. |
+| R6 | **Semantic sampling cost scaling.** 10% sampling at ~30s/batch is fine for v1. At 1000+ data_gen jobs/day, coordinator GPU becomes a bottleneck. | Phase 1+ | Low (v1) | Monitor coordinator GPU utilization. Offload to WoT-vouched external verifiers when needed. |
+| R7 | **Coordinator as single point of failure.** By design in v1. No HA, no failover. | Phase 4+ | Low (v1) | Acceptable for v1. HA/failover when volume justifies it. |
 
 ---
 
