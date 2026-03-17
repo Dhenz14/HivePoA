@@ -63,6 +63,7 @@ import type {
   ComputePayout, InsertComputePayout,
   ComputeWallet, InsertComputeWallet,
   ComputeWalletLedgerEntry, InsertComputeWalletLedgerEntry,
+  ComputePayoutBroadcast, InsertComputePayoutBroadcast,
 } from "@shared/schema";
 
 // ============================================================
@@ -2464,4 +2465,14 @@ export class SQLiteStorage implements IStorage {
   async getComputeWalletBalance(_walletId: string): Promise<string> { return "0"; }
   async getWalletLedgerByIdempotencyKey(_key: string): Promise<ComputeWalletLedgerEntry | undefined> { return undefined; }
   async ensureWalletTables(): Promise<void> { }
+
+  // Phase 1 Step 3: Payout Broadcasts (stubs)
+  async getQueuedComputePayouts(_limit?: number): Promise<ComputePayout[]> { return []; }
+  async createPayoutBroadcastAttempt(_attempt: InsertComputePayoutBroadcast): Promise<ComputePayoutBroadcast> { this.computeNotSupported(); }
+  async getPayoutBroadcastAttempt(_id: string): Promise<ComputePayoutBroadcast | undefined> { return undefined; }
+  async getLatestBroadcastAttempt(_payoutId: string): Promise<ComputePayoutBroadcast | undefined> { return undefined; }
+  async getInflightBroadcastAttempts(): Promise<ComputePayoutBroadcast[]> { return []; }
+  async updatePayoutBroadcastAttempt(_id: string, _updates: Partial<ComputePayoutBroadcast>): Promise<void> { }
+  async getPayoutBroadcastAttemptsByPayout(_payoutId: string): Promise<ComputePayoutBroadcast[]> { return []; }
+  async ensureBroadcastTables(): Promise<void> { }
 }

@@ -161,6 +161,10 @@ import {
   type InsertComputeWallet,
   type ComputeWalletLedgerEntry,
   type InsertComputeWalletLedgerEntry,
+  // Phase 1 Step 3: Payout Broadcasts
+  computePayoutBroadcasts,
+  type ComputePayoutBroadcast,
+  type InsertComputePayoutBroadcast,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, sql, ilike, or, notInArray, gte, lte, lt } from "drizzle-orm";
@@ -530,6 +534,16 @@ export interface IStorage {
 
   // Phase 1 Step 2: DB DDL
   ensureWalletTables(): Promise<void>;
+
+  // Phase 1 Step 3: Payout Broadcasts
+  getQueuedComputePayouts(limit?: number): Promise<ComputePayout[]>;
+  createPayoutBroadcastAttempt(attempt: InsertComputePayoutBroadcast): Promise<ComputePayoutBroadcast>;
+  getPayoutBroadcastAttempt(id: string): Promise<ComputePayoutBroadcast | undefined>;
+  getLatestBroadcastAttempt(payoutId: string): Promise<ComputePayoutBroadcast | undefined>;
+  getInflightBroadcastAttempts(): Promise<ComputePayoutBroadcast[]>;
+  updatePayoutBroadcastAttempt(id: string, updates: Partial<ComputePayoutBroadcast>): Promise<void>;
+  getPayoutBroadcastAttemptsByPayout(payoutId: string): Promise<ComputePayoutBroadcast[]>;
+  ensureBroadcastTables(): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2845,6 +2859,92 @@ export class DatabaseStorage implements IStorage {
     await db.execute(sql`
       CREATE INDEX IF NOT EXISTS idx_wallet_ledger_reference
       ON compute_wallet_ledger(reference_type, reference_id)
+    `);
+  }
+
+  // --- Phase 1 Step 3: Payout Broadcasts ---
+
+  async getQueuedComputePayouts(limit = 50): Promise<ComputePayout[]> {
+    return db.select().from(computePayouts)
+      .where(eq(computePayouts.status, "queued"))
+      .orderBy(computePayouts.createdAt)
+      .limit(limit);
+  }
+
+  async createPayoutBroadcastAttempt(attempt: InsertComputePayoutBroadcast): Promise<ComputePayoutBroadcast> {
+    const [created] = await db.insert(computePayoutBroadcasts).values(attempt).returning();
+    return created;
+  }
+
+  async getPayoutBroadcastAttempt(id: string): Promise<ComputePayoutBroadcast | undefined> {
+    const [attempt] = await db.select().from(computePayoutBroadcasts)
+      .where(eq(computePayoutBroadcasts.id, id));
+    return attempt || undefined;
+  }
+
+  async getLatestBroadcastAttempt(payoutId: string): Promise<ComputePayoutBroadcast | undefined> {
+    const [attempt] = await db.select().from(computePayoutBroadcasts)
+      .where(eq(computePayoutBroadcasts.payoutId, payoutId))
+      .orderBy(desc(computePayoutBroadcasts.attemptNumber))
+      .limit(1);
+    return attempt || undefined;
+  }
+
+  async getInflightBroadcastAttempts(): Promise<ComputePayoutBroadcast[]> {
+    return db.select().from(computePayoutBroadcasts)
+      .where(
+        or(
+          eq(computePayoutBroadcasts.status, "created"),
+          eq(computePayoutBroadcasts.status, "sent"),
+          eq(computePayoutBroadcasts.status, "ambiguous"),
+        )!,
+      )
+      .orderBy(computePayoutBroadcasts.createdAt);
+  }
+
+  async updatePayoutBroadcastAttempt(id: string, updates: Partial<ComputePayoutBroadcast>): Promise<void> {
+    await db.update(computePayoutBroadcasts).set(updates)
+      .where(eq(computePayoutBroadcasts.id, id));
+  }
+
+  async getPayoutBroadcastAttemptsByPayout(payoutId: string): Promise<ComputePayoutBroadcast[]> {
+    return db.select().from(computePayoutBroadcasts)
+      .where(eq(computePayoutBroadcasts.payoutId, payoutId))
+      .orderBy(computePayoutBroadcasts.attemptNumber);
+  }
+
+  async ensureBroadcastTables(): Promise<void> {
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS compute_payout_broadcasts (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        payout_id VARCHAR NOT NULL REFERENCES compute_payouts(id),
+        attempt_number INTEGER NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        recipient_username TEXT NOT NULL,
+        amount_hbd TEXT NOT NULL,
+        memo TEXT NOT NULL,
+        hive_tx_id TEXT,
+        status TEXT NOT NULL DEFAULT 'created',
+        chain_block_num INTEGER,
+        error_message TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        resolved_at TIMESTAMPTZ
+      )
+    `);
+
+    await db.execute(sql`
+      CREATE INDEX IF NOT EXISTS idx_payout_broadcasts_payout_id
+      ON compute_payout_broadcasts(payout_id)
+    `);
+
+    await db.execute(sql`
+      CREATE INDEX IF NOT EXISTS idx_payout_broadcasts_status
+      ON compute_payout_broadcasts(status)
+    `);
+
+    await db.execute(sql`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_payout_broadcasts_payout_attempt
+      ON compute_payout_broadcasts(payout_id, attempt_number)
     `);
   }
 

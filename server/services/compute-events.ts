@@ -375,3 +375,103 @@ export function emitReconciliationCompleted(p: {
     errors: p.errors,
   });
 }
+
+// ================================================================
+// Broadcast Events
+// ================================================================
+
+export function emitBroadcastAttemptCreated(p: {
+  payoutId: string;
+  attemptId: string;
+  attemptNumber: number;
+  recipientUsername: string;
+  amountHbd: string;
+  memo: string;
+}): void {
+  emit("broadcast_attempt_created", { jobId: "" }, {
+    payoutId: p.payoutId,
+    attemptId: p.attemptId,
+    attemptNumber: p.attemptNumber,
+    recipientUsername: p.recipientUsername,
+    amountHbd: p.amountHbd,
+    memo: p.memo,
+  });
+}
+
+export function emitBroadcastSent(p: {
+  payoutId: string;
+  attemptId: string;
+  hiveTxId: string;
+}): void {
+  emit("broadcast_sent", { jobId: "" }, {
+    payoutId: p.payoutId,
+    attemptId: p.attemptId,
+    hiveTxId: p.hiveTxId,
+  });
+}
+
+export function emitBroadcastConfirmed(p: {
+  payoutId: string;
+  attemptId: string;
+  hiveTxId: string;
+  chainBlockNum: number;
+}): void {
+  emit("broadcast_confirmed", { jobId: "" }, {
+    payoutId: p.payoutId,
+    attemptId: p.attemptId,
+    hiveTxId: p.hiveTxId,
+    chainBlockNum: p.chainBlockNum,
+  });
+}
+
+export function emitBroadcastAmbiguous(p: {
+  payoutId: string;
+  attemptId: string;
+  errorMessage: string;
+}): void {
+  emit("broadcast_ambiguous", { jobId: "" }, {
+    payoutId: p.payoutId,
+    attemptId: p.attemptId,
+    errorMessage: p.errorMessage,
+  });
+}
+
+export function emitBroadcastFailed(p: {
+  payoutId: string;
+  attemptId: string;
+  reason: string;
+  errorMessage?: string;
+}): void {
+  emit("broadcast_failed", { jobId: "" }, {
+    payoutId: p.payoutId,
+    attemptId: p.attemptId,
+    reason: p.reason,
+    errorMessage: p.errorMessage,
+  });
+}
+
+export function emitPayoutConfirmed(p: {
+  payoutId: string;
+  hiveTxId: string;
+  chainBlockNum: number;
+  recipientUsername: string;
+  amountHbd: string;
+}): void {
+  emit("payout_confirmed", { jobId: "" }, {
+    payoutId: p.payoutId,
+    hiveTxId: p.hiveTxId,
+    chainBlockNum: p.chainBlockNum,
+    recipientUsername: p.recipientUsername,
+    amountHbd: p.amountHbd,
+  });
+}
+
+export function emitPayoutFailed(p: {
+  payoutId: string;
+  totalAttempts: number;
+}): void {
+  emit("payout_failed", { jobId: "" }, {
+    payoutId: p.payoutId,
+    totalAttempts: p.totalAttempts,
+  });
+}

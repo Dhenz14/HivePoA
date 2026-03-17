@@ -19,6 +19,7 @@ import {
 } from "./compute-events";
 import { getIPFSClient } from "./ipfs-client";
 import { computeWalletService } from "./compute-wallet-service";
+import { computePayoutBroadcaster } from "./compute-payout-broadcaster";
 import type {
   ComputeNode,
   ComputeJob,
@@ -187,8 +188,12 @@ export class ComputeService {
     // Phase 1 Step 2: Ensure wallet tables exist
     await this.ensureWalletTables();
 
+    // Phase 1 Step 3: Ensure broadcast tables + start payout broadcaster
+    await this.ensureBroadcastTables();
+    await computePayoutBroadcaster.start();
+
     this.leaseSweepTimer = setInterval(() => this.sweepExpiredLeases(), LEASE_SWEEP_INTERVAL_MS);
-    logCompute.info("ComputeService started — lease sweeper active");
+    logCompute.info("ComputeService started — lease sweeper + payout broadcaster active");
   }
 
   /**
@@ -220,11 +225,21 @@ export class ComputeService {
     }
   }
 
+  private async ensureBroadcastTables(): Promise<void> {
+    try {
+      await storage.ensureBroadcastTables();
+      logCompute.info("Broadcast tables verified");
+    } catch (err) {
+      logCompute.error({ err }, "Broadcast table setup failed");
+    }
+  }
+
   stop(): void {
     if (this.leaseSweepTimer) {
       clearInterval(this.leaseSweepTimer);
       this.leaseSweepTimer = null;
     }
+    computePayoutBroadcaster.stop();
   }
 
   // ============================================================

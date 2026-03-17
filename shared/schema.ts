@@ -1057,6 +1057,23 @@ export const computeWalletLedger = pgTable("compute_wallet_ledger", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Phase 1 Step 3: Compute Payout Broadcast Attempts — durable pre-send identity
+export const computePayoutBroadcasts = pgTable("compute_payout_broadcasts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  payoutId: varchar("payout_id").notNull().references(() => computePayouts.id),
+  attemptNumber: integer("attempt_number").notNull(),
+  idempotencyKey: text("idempotency_key").notNull().unique(),
+  recipientUsername: text("recipient_username").notNull(),
+  amountHbd: text("amount_hbd").notNull(),
+  memo: text("memo").notNull(), // hivepoa:compute:{payoutId}:{attemptNumber}
+  hiveTxId: text("hive_tx_id"),
+  status: text("status").notNull().default("created"), // created, sent, confirmed, failed_expired, failed_error, ambiguous
+  chainBlockNum: integer("chain_block_num"),
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  resolvedAt: timestamp("resolved_at"),
+});
+
 // ============================================================
 // PHASE 11: Generic Trusted-Role Registry
 // ============================================================
@@ -1177,6 +1194,11 @@ export const insertComputeWalletSchema = createInsertSchema(computeWallets).omit
 });
 
 export const insertComputeWalletLedgerSchema = createInsertSchema(computeWalletLedger).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertComputePayoutBroadcastSchema = createInsertSchema(computePayoutBroadcasts).omit({
   id: true,
   createdAt: true,
 });
@@ -1409,6 +1431,9 @@ export type InsertComputeWallet = z.infer<typeof insertComputeWalletSchema>;
 
 export type ComputeWalletLedgerEntry = typeof computeWalletLedger.$inferSelect;
 export type InsertComputeWalletLedgerEntry = z.infer<typeof insertComputeWalletLedgerSchema>;
+
+export type ComputePayoutBroadcast = typeof computePayoutBroadcasts.$inferSelect;
+export type InsertComputePayoutBroadcast = z.infer<typeof insertComputePayoutBroadcastSchema>;
 
 // Phase 11: Trusted-Role Registry Types
 export type TrustedRolePolicy = typeof trustedRolePolicies.$inferSelect;
