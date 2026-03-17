@@ -1,0 +1,131 @@
+{
+  "scenario_id": "AS-2-cold",
+  "scenario_name": "Settlement committed, ack lost, coordinator retries → cold restart → no duplicate payout",
+  "hivepoa_sha": "b1df0fbf2267955195abb014496035b0d86f7de7",
+  "hiveai_sha": "95521d683ca497ee6ef377787af031ada624c3b1",
+  "server_kills": 1,
+  "cold_restarts": 2,
+  "db_reconstruction": {
+    "jobs": [
+      {
+        "id": "f46546b2-a23f-4ec7-a6f7-fff45361c522",
+        "state": "accepted",
+        "accepted_attempt_id": "224561aa-bdf2-4b81-9966-1858bfd010a6",
+        "budget_hbd": "0.300",
+        "attempt_count": 1,
+        "workload_type": "eval_sweep",
+        "created_at": "2026-03-17T07:13:59.037Z",
+        "completed_at": "2026-03-17T14:13:59.064Z"
+      }
+    ],
+    "attempts": [
+      {
+        "id": "224561aa-bdf2-4b81-9966-1858bfd010a6",
+        "job_id": "f46546b2-a23f-4ec7-a6f7-fff45361c522",
+        "node_id": "4d386933-02db-42c1-b926-fd973b6794e9",
+        "nonce": "8c35a329-d37b-4099-9b24-6840a94322a7",
+        "state": "accepted",
+        "lease_token": "bc520327a3754952b84be09c83953fad4a017bf6fee2b480b7e0b525de97bdd7",
+        "submission_payload_hash": "8ad151aad7a5efee77ef853880f7884867c1c20cdf8b386f3da39e97e3a44b87",
+        "output_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "output_cid": "QmColdRestartTestCid",
+        "submitted_at": "2026-03-17T14:13:59.060Z",
+        "finished_at": "2026-03-17T14:13:59.065Z",
+        "failure_reason": null
+      }
+    ],
+    "payouts": [
+      {
+        "id": "602fbf32-f2b0-4ff8-8662-cd43f60fa643",
+        "job_id": "f46546b2-a23f-4ec7-a6f7-fff45361c522",
+        "attempt_id": "224561aa-bdf2-4b81-9966-1858bfd010a6",
+        "node_id": "4d386933-02db-42c1-b926-fd973b6794e9",
+        "amount_hbd": "0.090",
+        "reason": "validity_fee",
+        "status": "queued",
+        "treasury_tx_id": null
+      },
+      {
+        "id": "6e693d0b-a185-4b17-b31a-edff07354c13",
+        "job_id": "f46546b2-a23f-4ec7-a6f7-fff45361c522",
+        "attempt_id": "224561aa-bdf2-4b81-9966-1858bfd010a6",
+        "node_id": "4d386933-02db-42c1-b926-fd973b6794e9",
+        "amount_hbd": "0.120",
+        "reason": "completion_fee",
+        "status": "queued",
+        "treasury_tx_id": null
+      },
+      {
+        "id": "1d3c00a7-058d-4518-a9c5-ec401c86c259",
+        "job_id": "f46546b2-a23f-4ec7-a6f7-fff45361c522",
+        "attempt_id": "224561aa-bdf2-4b81-9966-1858bfd010a6",
+        "node_id": "4d386933-02db-42c1-b926-fd973b6794e9",
+        "amount_hbd": "0.090",
+        "reason": "bonus",
+        "status": "queued",
+        "treasury_tx_id": null
+      }
+    ],
+    "verifications": [
+      {
+        "id": "b2392614-017d-4d5e-8db5-7c5ab0e85ec5",
+        "job_id": "f46546b2-a23f-4ec7-a6f7-fff45361c522",
+        "attempt_id": "224561aa-bdf2-4b81-9966-1858bfd010a6",
+        "verifier_type": "structural",
+        "result": "pass",
+        "score": 1
+      },
+      {
+        "id": "26643080-4fc8-44c4-bd92-30c766cc683c",
+        "job_id": "f46546b2-a23f-4ec7-a6f7-fff45361c522",
+        "attempt_id": "224561aa-bdf2-4b81-9966-1858bfd010a6",
+        "verifier_type": "workload_specific",
+        "result": "pass",
+        "score": 0.8
+      }
+    ]
+  },
+  "assertions": {
+    "retry_returned_200": true,
+    "retry_settled_zero": true,
+    "exactly_three_payouts": true,
+    "no_duplicate_payouts": true,
+    "all_payouts_queued": true,
+    "job_state_still_accepted": true,
+    "exactly_one_attempt": true,
+    "attempt_state_accepted": true,
+    "accepted_attempt_id_matches": true
+  },
+  "timeline": [
+    {
+      "t": "2026-03-17T07:14:05.419Z",
+      "event": "server_3_started"
+    },
+    {
+      "t": "2026-03-17T07:14:05.419Z",
+      "event": "settle_sent_polling_db"
+    },
+    {
+      "t": "2026-03-17T07:14:05.480Z",
+      "event": "db_shows_payouts_queued"
+    },
+    {
+      "t": "2026-03-17T07:14:05.825Z",
+      "event": "server_3_killed"
+    },
+    {
+      "t": "2026-03-17T07:14:09.522Z",
+      "event": "server_4_started_cold"
+    },
+    {
+      "t": "2026-03-17T07:14:09.541Z",
+      "event": "retry_settle_response",
+      "detail": "status=200 settled=0"
+    },
+    {
+      "t": "2026-03-17T07:14:09.897Z",
+      "event": "server_4_stopped"
+    }
+  ],
+  "pass": true
+}

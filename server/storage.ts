@@ -2571,20 +2571,23 @@ export class DatabaseStorage implements IStorage {
     const now = new Date();
 
     // Build parameterized type array and cache array
-    const typeArray = allowedTypes;
-    const cacheArray = cachedModelsList.length > 0 ? cachedModelsList : [];
+    // Cast JS arrays to PostgreSQL array literals for ANY() operator
+    const typeArrayLiteral = `{${allowedTypes.map(t => `"${t}"`).join(",")}}`;
+    const cacheArrayLiteral = cachedModelsList.length > 0
+      ? `{${cachedModelsList.map(m => `"${m}"`).join(",")}}`
+      : "{}";
 
     const result = await db.execute(sql`
       WITH eligible AS (
         SELECT id,
           CASE
             WHEN required_models = '' OR required_models IS NULL THEN 1
-            WHEN required_models = ANY(${cacheArray}) THEN 1
+            WHEN required_models = ANY(${cacheArrayLiteral}::text[]) THEN 1
             ELSE 0
           END AS cache_score
         FROM compute_jobs
         WHERE state = 'queued'
-          AND workload_type = ANY(${typeArray})
+          AND workload_type = ANY(${typeArrayLiteral}::text[])
           AND min_vram_gb <= ${minVramGb}
           AND attempt_count < max_attempts
           AND (deadline_at IS NULL OR deadline_at > ${now})

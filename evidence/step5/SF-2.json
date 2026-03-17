@@ -3,7 +3,7 @@
   "scenario_name": "Worker crash after pin, before submit",
   "hivepoa_sha": "b1df0fbf2267955195abb014496035b0d86f7de7",
   "hiveai_sha": "95521d683ca497ee6ef377787af031ada624c3b1",
-  "fixture_set_digest": "sha256:a0b7e00c46dfe85bc9bc3cc536e935d218f8aaff83517a42998896bd98d3e669",
+  "fixture_set_digest": "sha256:afd3ff28e63c7040708c93771da57aecdbef0161d2d36a8095384c0df37a8600",
   "assertions": {
     "accepted_attempt_count": 0,
     "payout_row_count": 0,

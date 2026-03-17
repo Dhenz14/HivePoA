@@ -1,0 +1,18 @@
+{
+  "step": "Phase 1: Cold-Restart E2E",
+  "run_at": "2026-03-17T07:14:09.898Z",
+  "scenarios": [
+    {
+      "id": "AS-1-cold",
+      "pass": true
+    },
+    {
+      "id": "AS-2-cold",
+      "pass": true
+    }
+  ],
+  "total_server_kills": 2,
+  "total_cold_restarts": 4,
+  "reconstruction_boundary": "DB tables only — no in-process state, no event log, no request context",
+  "all_pass": true
+}

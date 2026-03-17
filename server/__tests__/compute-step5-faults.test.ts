@@ -54,9 +54,9 @@ import { computeSubmissionPayloadHash } from "../services/compute-service";
 // ================================================================
 const FREEZE_PATH = join(__dirname, "../../docs/CONTRACT_FREEZE.json");
 const FREEZE = JSON.parse(readFileSync(FREEZE_PATH, "utf8"));
-const HIVEPOA_SHA: string = FREEZE.sha_pair.hivepoa;
-const HIVEAI_SHA: string = FREEZE.sha_pair.hiveai;
-const FIXTURE_SET_DIGEST: string = FREEZE.sha_pair.fixture_set_digest;
+const HIVEPOA_SHA: string = FREEZE.three_layer_sha_model.frozen_bilateral_pair.hivepoa;
+const HIVEAI_SHA: string = FREEZE.three_layer_sha_model.frozen_bilateral_pair.hiveai;
+const FIXTURE_SET_DIGEST: string = FREEZE.three_layer_sha_model.schema_source_pin.fixture_set_digest;
 
 // ================================================================
 // Freeze file validation — must pass before any scenario runs
