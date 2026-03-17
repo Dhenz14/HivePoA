@@ -1,0 +1,59 @@
+{
+  "scenario_id": "SF-2",
+  "scenario_name": "Worker crash after pin, before submit",
+  "hivepoa_sha": "724a8812f51afb9e1adebdac48e4668f28dd4b95",
+  "hiveai_sha": "718d68d24edbda0151e68efced7f9eea29c2180e",
+  "fixture_set_digest": "sha256:a0b7e00c46dfe85bc9bc3cc536e935d218f8aaff83517a42998896bd98d3e669",
+  "assertions": {
+    "accepted_attempt_count": 0,
+    "payout_row_count": 0,
+    "final_job_state": "queued",
+    "checkpoint_stages_observed": [
+      "claimed",
+      "started",
+      "executing",
+      "output_ready",
+      "submit_prepared"
+    ],
+    "checkpoint_monotonic": true,
+    "duplicate_semantic_effects": false,
+    "second_winner": false
+  },
+  "reconstruction_log": [
+    {
+      "source": "event",
+      "type": "claim_issued",
+      "data": {
+        "jobId": "job-1",
+        "attemptId": "attempt-1",
+        "nonce": "nonce-aaa-bbb"
+      }
+    },
+    {
+      "source": "service",
+      "type": "worker_crash",
+      "data": {
+        "stage": "submit_prepared",
+        "artifact_pinned": true,
+        "submit_sent": false
+      }
+    },
+    {
+      "source": "event",
+      "type": "lease_expired",
+      "data": {
+        "jobId": "job-1",
+        "attemptId": "attempt-1"
+      }
+    },
+    {
+      "source": "db",
+      "type": "computeJobAttempts",
+      "data": {
+        "id": "attempt-1",
+        "state": "timed_out"
+      }
+    }
+  ],
+  "pass": true
+}
