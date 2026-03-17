@@ -146,10 +146,10 @@
         "second_winner": "boolean — must be false"
       },
       "reconstruction_log": {
-        "description": "Forensic reconstruction from durable events + DB state only",
+        "description": "Forensic reconstruction log (see evidence_tiers for what each tier proves)",
         "entries": [
           {
-            "source": "event | db",
+            "source": "event | db | service",
             "type": "string — event type or table name",
             "timestamp": "ISO-8601",
             "data": "object — relevant fields"
@@ -157,6 +157,21 @@
         ]
       },
       "pass": "boolean — all assertions satisfied"
+    }
+  },
+
+  "evidence_tiers": {
+    "_doc": "Two tiers of evidence exist. Do not conflate what they prove.",
+    "tier_1_warm_harness": {
+      "description": "Step 5 fault injection (evidence/step5/). 12 scenarios exercising protocol logic in-process. Reconstruction logs assembled in-process from simulated DB state + event emissions.",
+      "proves": "Logic correctness: CAS single-winner, nonce isolation, idempotent replay, checkpoint monotonicity, no duplicate semantic effects.",
+      "does_not_prove": "Cold recovery from persisted state after real process death."
+    },
+    "tier_2_cold_restart": {
+      "description": "Cold-restart E2E (evidence/cold-restart/). 2 scenarios with real SIGKILL + cold restart. Forensic queries read from computeJobs, computeJobAttempts, computePayouts, computeVerifications tables ONLY.",
+      "proves": "DB-only reconstruction after real process death. Idempotent submit replay and monotonic settlement-state replay survive cold restart.",
+      "does_not_prove": "Chain-boundary payout idempotency. AS-2 shows treasury_tx_id=null — no real Hive transfer was tested. End-to-end money movement idempotency requires mock-to-real Hive client burn-in (Phase 1).",
+      "reconstruction_boundary": "DB tables only. No durable event stream, no in-process state, no request context."
     }
   },
 
