@@ -3635,8 +3635,16 @@ export class DatabaseStorage implements IStorage {
   /**
    * Try to acquire a PostgreSQL advisory lock for cross-instance coordination.
    * Non-blocking: returns true if acquired, false if already held by another session.
-   * Lock is released by calling releaseAdvisoryLock with the same namespace/key,
-   * or automatically when the connection is closed.
+   *
+   * Uses session-level locks (pg_try_advisory_lock / pg_advisory_unlock).
+   * Lock is released by calling releaseAdvisoryLock, or automatically when the
+   * DB connection is closed (process death, pool reap, etc.).
+   *
+   * Session-level is correct here because:
+   *   - The lock must span multiple storage transactions (sweep processes many attempts)
+   *   - Transaction-level (pg_try_advisory_xact_lock) would release after the first commit
+   *   - On hard process death, the DB connection drops → lock releases immediately
+   *   - On graceful failure, the finally block calls releaseAdvisoryLock
    *
    * Namespace convention:
    *   1 = upload quota (existing)

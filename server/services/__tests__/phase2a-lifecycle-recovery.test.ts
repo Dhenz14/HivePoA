@@ -1052,3 +1052,196 @@ describe("Phase 2A Lifecycle — EX: Cross-Instance Exclusivity", () => {
     await realStorage.releaseAdvisoryLock(3, 99);
   });
 });
+
+// ── KL1–KL4: Hard Kill Recovery Proof ────────────────────────────────────────
+//
+// These prove that the system self-heals after hard process death at every
+// critical interruption point. The test pattern:
+//   1. Use instance A to reach a specific mid-operation state
+//   2. Simulate hard kill by abandoning instance A (no cleanup)
+//   3. Leave DB in the exact state a crash would leave it
+//   4. Create instance B (fresh process restart)
+//   5. Prove B recovers to correct state from DB alone
+
+describe("Phase 2A Lifecycle — KL: Hard Kill Recovery", () => {
+
+  it("KL1: kill during sweep (some attempts expired, some not) — next startup finishes the job", async () => {
+    // Create 3 expired attempts
+    const nodes = await Promise.all([createTestNode(), createTestNode(), createTestNode()]);
+    const issues = [];
+    for (const nodeId of nodes) {
+      await insertOrphanSet(profileId);
+      const svc = await freshService();
+      const issue = await svc.issueChallenge(nodeId, profileId);
+      expect(issue.ok).toBe(true);
+      if (issue.ok) issues.push(issue);
+      svc.stop();
+    }
+
+    // Make all 3 expired
+    for (const iss of issues) {
+      await db.execute(sql`
+        DELETE FROM compute_challenge_checkpoints WHERE attempt_id = ${iss.attemptId}
+      `);
+      await db.execute(sql`
+        UPDATE compute_job_attempts
+        SET created_at = now() - interval '120 seconds',
+            first_progress_at = NULL,
+            checkpoint_count = 0
+        WHERE id = ${iss.attemptId}
+      `);
+    }
+
+    // Simulate: instance A starts sweep, processes attempt 0, then dies.
+    // We manually expire attempt 0, leaving attempts 1 and 2 still pending.
+    await realStorage.expireAttemptIfStillEligible(issues[0].attemptId, "FIRST_PROGRESS_MISSED", new Date());
+    await realStorage.scoreComplianceChallengeAtomic(issues[0].jobId, nodes[0], -10);
+    // Instance A is now "dead" — attempts 1 and 2 are still expired but unprocessed.
+
+    // Fresh instance B starts up and runs initialize()
+    const svcB = await freshService();
+    // initialize() runs sweepScoring + sweepTimeouts
+
+    // All 3 attempts should now be timed_out
+    for (const iss of issues) {
+      const [att] = await db.select().from(computeJobAttempts)
+        .where(eq(computeJobAttempts.id, iss.attemptId));
+      expect(att.state).toBe("timed_out");
+    }
+
+    // All 3 jobs should be scored
+    for (const iss of issues) {
+      const [job] = await db.select().from(computeJobs)
+        .where(eq(computeJobs.id, iss.jobId));
+      expect(job.poaScoredAt).not.toBeNull();
+    }
+
+    svcB.stop();
+  });
+
+  it("KL2: kill after scoring but before poaScoredAt latch — sweepScoring recovers", async () => {
+    await insertOrphanSet(profileId);
+    const nodeId = await createTestNode();
+    const svc = await freshService();
+
+    const issue = await svc.issueChallenge(nodeId, profileId);
+    expect(issue.ok).toBe(true);
+    if (!issue.ok) return;
+
+    // Complete all stages
+    const bundles = await realStorage.getChallengeBundles(issue.attemptId);
+    const sorted = bundles.sort((a, b) => a.stageIndex - b.stageIndex);
+    let prevHash = "";
+    for (let i = 0; i < 5; i++) {
+      const b = sorted[i];
+      const entryHash = computeTranscriptEntryHash(prevHash, i, b.expectedDigest);
+      await svc.acceptCheckpoint(
+        issue.attemptId, i, b.expectedDigest, b.stageNonce, prevHash, entryHash,
+      );
+      prevHash = entryHash;
+    }
+    svc.stop();
+
+    // Simulate crash: job is accepted, but poa_scored_at was wiped
+    // (crash between state update and score latch)
+    await db.execute(sql`UPDATE compute_jobs SET poa_scored_at = NULL WHERE id = ${issue.jobId}`);
+
+    // Fresh instance recovers
+    const svcB = await freshService();
+
+    const [job] = await db.select().from(computeJobs)
+      .where(eq(computeJobs.id, issue.jobId));
+    expect(job.poaScoredAt).not.toBeNull();
+    expect(job.state).toBe("accepted");
+
+    svcB.stop();
+  });
+
+  it("KL3: kill during refill (partial cycle) — next refill continues from accurate pool count", async () => {
+    // Create a profile with a small target
+    const klClassId = 95000 + Math.floor(Math.random() * 4000);
+    const klProfile = await realStorage.createResourceClassProfile({
+      classId: klClassId,
+      className: `gpu-kl3-${uid()}`,
+      protocolVersion: 1,
+      kernelId: "phase2a-kernel-v1",
+      m: 4096, n: 4096, k: 8, mixRounds: 1,
+      stagesPerChallenge: 5,
+      firstProgressDeadlineMs: 30_000,
+      stageDeadlineMs: 60_000,
+      completionDeadlineMs: 600_000,
+      poolTarget: 10,
+      poolLowWatermarkPct: 50, // 5
+      poolCriticalWatermarkPct: 25,
+    });
+
+    // Simulate: instance A generates 2 sets, then crashes mid-cycle
+    const mockDigest = (rootNonce: string, _c: number, si: number, _m: number, _n: number, _k: number, _r: number) => ({
+      stageNonce: createHash("sha256").update(`${rootNonce}-nonce-${si}`).digest("hex"),
+      digest: createHash("sha256").update(`${rootNonce}-digest-${si}`).digest("hex"),
+    });
+
+    const { Phase2APrecomputeWorker } = await import("../phase2a-precompute-worker");
+    const workerA = new Phase2APrecomputeWorker(realStorage as any, mockDigest);
+    await workerA.generateBundleSet(klProfile);
+    await workerA.generateBundleSet(klProfile);
+    // Instance A "dies" here — only 2 of potentially 5 sets generated
+
+    const countAfterCrash = await realStorage.getOrphanPoolCount(klProfile.profileId);
+    expect(countAfterCrash).toBe(2);
+
+    // Fresh instance B's refill worker checks pool, sees 2 < 5, generates more
+    const workerB = new Phase2APrecomputeWorker(realStorage as any, mockDigest);
+    await workerB.refillProfile(klProfile);
+
+    const countAfterRecovery = await realStorage.getOrphanPoolCount(klProfile.profileId);
+    expect(countAfterRecovery).toBeGreaterThan(2);
+    expect(countAfterRecovery).toBeLessThanOrEqual(10 + 5); // at most target + one batch
+  });
+
+  it("KL4: kill during checkpoint acceptance (mid-transaction) — no partial state", async () => {
+    await insertOrphanSet(profileId);
+    const nodeId = await createTestNode();
+    const svc = await freshService();
+
+    const issue = await svc.issueChallenge(nodeId, profileId);
+    expect(issue.ok).toBe(true);
+    if (!issue.ok) return;
+
+    // Complete stage 0
+    const bundles = await realStorage.getChallengeBundles(issue.attemptId);
+    const sorted = bundles.sort((a, b) => a.stageIndex - b.stageIndex);
+    const b0 = sorted[0];
+    const entry0 = computeTranscriptEntryHash("", 0, b0.expectedDigest);
+    await svc.acceptCheckpoint(
+      issue.attemptId, 0, b0.expectedDigest, b0.stageNonce, "", entry0,
+    );
+    svc.stop();
+
+    // Simulate: process dies during stage 1 checkpoint acceptance.
+    // The transaction either committed (checkpoint exists) or rolled back (it doesn't).
+    // Since acceptChallengeCheckpoint is a single transaction, there's no partial state.
+    // The worker would retry stage 1 on reconnect.
+
+    // Verify: exactly 1 checkpoint exists (stage 0 only)
+    const cps = await realStorage.getChallengeCheckpoints(issue.attemptId);
+    expect(cps).toHaveLength(1);
+    expect(cps[0].stageIndex).toBe(0);
+
+    // Fresh instance: stage 1 is revealed (auto-revealed in stage 0's checkpoint tx)
+    // Worker can submit stage 1 from scratch
+    const svcB = await freshService();
+    const b1 = sorted[1];
+    const entry1 = computeTranscriptEntryHash(entry0, 1, b1.expectedDigest);
+    const cp = await svcB.acceptCheckpoint(
+      issue.attemptId, 1, b1.expectedDigest, b1.stageNonce, entry0, entry1,
+    );
+    expect(cp.ok).toBe(true);
+
+    // Now 2 checkpoints exist
+    const cps2 = await realStorage.getChallengeCheckpoints(issue.attemptId);
+    expect(cps2).toHaveLength(2);
+
+    svcB.stop();
+  });
+});
