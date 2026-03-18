@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, bigint, timestamp, boolean, real, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, bigint, timestamp, boolean, real, jsonb, uniqueIndex, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -1006,13 +1006,24 @@ export const computeJobAttempts = pgTable("compute_job_attempts", {
   leaseExpiresAt: timestamp("lease_expires_at").notNull(), // server-computed: createdAt + job.leaseSeconds
   submissionPayloadHash: text("submission_payload_hash"), // SHA256(outputSha256 + resultJson) — divergent-replay detection
   provenanceJson: text("provenance_json"), // structured provenance metadata (≤ 64 KB)
+  // Phase 2A: Challenge rollup (derived cache, not authority — recomputable from checkpoints + bundles)
+  challengeProtocolVersion: integer("challenge_protocol_version"), // 1 for Phase 2A; NULL for non-challenge attempts
+  challengeProfileId: varchar("challenge_profile_id"), // FK → compute_resource_class_profiles.profile_id (application-enforced)
+  firstProgressAt: timestamp("first_progress_at"), // when first checkpoint arrived
+  checkpointCount: integer("checkpoint_count").notNull().default(0), // count of checkpoints received
+  transcriptHash: text("transcript_hash"), // final transcript_entry_hash (convenience copy from last checkpoint)
   // Timestamps
   startedAt: timestamp("started_at"),
   heartbeatAt: timestamp("heartbeat_at"),
   submittedAt: timestamp("submitted_at"),
   finishedAt: timestamp("finished_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (table) => [
+  // Composite uniqueness: enables bundle (attempt_id, job_id) cross-job drift prevention.
+  // Bundle FK to this composite is enforced in application code (Drizzle lacks composite FK support).
+  uniqueIndex("compute_job_attempts_id_job_id_idx")
+    .on(table.id, table.jobId),
+]);
 
 // Compute Verifications - Trusted verifier outputs
 export const computeVerifications = pgTable("compute_verifications", {
@@ -1079,6 +1090,113 @@ export const computePayoutBroadcasts = pgTable("compute_payout_broadcasts", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   resolvedAt: timestamp("resolved_at"),
 });
+
+// ============================================================
+// PHASE 2A: Staged Challenge Protocol — Resource-Class Profiles,
+//           Precomputed Stage Bundles, Challenge Checkpoints
+// ============================================================
+
+// Resource-Class Profiles — immutable parameter sets for challenge workloads.
+// Each row defines the full workload shape, deadline bands, and pool config
+// for one (protocol_version, class) pair. Evidence-relevant: the verifier
+// needs these values, so they live in a table, not config.
+// Immutable once referenced by a bundle. Soft-disable via is_active only.
+export const computeResourceClassProfiles = pgTable("compute_resource_class_profiles", {
+  profileId: varchar("profile_id").primaryKey().default(sql`gen_random_uuid()`),
+  classId: integer("class_id").notNull(), // stable numeric ID used in kernel digest metadata (le32)
+  className: text("class_name").notNull(), // "gpu-small", "gpu-medium", "gpu-large"
+  protocolVersion: integer("protocol_version").notNull(), // 1 for phase2a-kernel-v1
+  kernelId: text("kernel_id").notNull(), // "phase2a-kernel-v1"
+  // Workload shape (defines the computation)
+  m: integer("m").notNull(), // matrix rows
+  n: integer("n").notNull(), // matrix cols
+  k: integer("k").notNull(), // batch width
+  mixRounds: integer("mix_rounds").notNull(),
+  stagesPerChallenge: integer("stages_per_challenge").notNull(), // 5
+  // Deadline bands (milliseconds)
+  firstProgressDeadlineMs: integer("first_progress_deadline_ms").notNull(),
+  stageDeadlineMs: integer("stage_deadline_ms").notNull(), // per-stage ceiling
+  completionDeadlineMs: integer("completion_deadline_ms").notNull(), // issue-to-final-submit
+  // Pool management
+  poolTarget: integer("pool_target").notNull(), // precompute target per class
+  poolLowWatermarkPct: integer("pool_low_watermark_pct").notNull(), // 50 → begin replenishment
+  poolCriticalWatermarkPct: integer("pool_critical_watermark_pct").notNull(), // 25 → stop issuing
+  // Lifecycle
+  isActive: boolean("is_active").notNull().default(true), // soft-disable for issuance, never delete
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("resource_class_profiles_version_class_id_idx")
+    .on(table.protocolVersion, table.classId),
+  uniqueIndex("resource_class_profiles_version_class_name_idx")
+    .on(table.protocolVersion, table.className),
+]);
+
+// Challenge Stage Bundles — precomputed challenge material + runtime bind/reveal facts.
+// Lifecycle: precomputed as orphans (job_id/attempt_id NULL) → claimed atomically as a
+// challenge set → stages revealed lazily one at a time.
+//
+// Mutation contract:
+//   Precomputed columns: NEVER modified after insert.
+//   job_id, attempt_id, claimed_at: set ONCE (pool → claimed).
+//   stage_issued_at, stage_deadline_at: set ONCE per stage (reveal).
+//   After all reveals: no further edits.
+//
+// Pool availability: attempt_id IS NULL.
+// workload_params_json is a SNAPSHOT built at precompute time from the authoritative
+// profile row. Never regenerated from current profile values.
+export const computeChallengeStageB = pgTable("compute_challenge_stage_bundles", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  challengeSetId: varchar("challenge_set_id").notNull(), // groups N stages into one atomic claimable unit
+  profileId: varchar("profile_id").notNull().references(() => computeResourceClassProfiles.profileId),
+  stageIndex: integer("stage_index").notNull(), // 0-based, contiguous
+  // Precomputed material (immutable once inserted)
+  rootNonce: text("root_nonce").notNull(), // UUIDv4, shared across all stages in a set
+  stageNonce: text("stage_nonce").notNull(), // hex, derived: SHA-256(rootNonce || stage_index_le32)
+  expectedDigest: text("expected_digest").notNull(), // hex, precomputed reference digest
+  workloadParamsJson: text("workload_params_json").notNull(), // snapshot: {protocol_version, kernel_id, class_id, stage_index, stage_nonce, M, N, K, mix_rounds}
+  precomputedAt: timestamp("precomputed_at").notNull().defaultNow(),
+  // Runtime bind/reveal (one-way mutable)
+  jobId: varchar("job_id").references(() => computeJobs.id), // NULL in pool, set once at claim
+  attemptId: varchar("attempt_id").references(() => computeJobAttempts.id), // NULL in pool, set once at claim
+  claimedAt: timestamp("claimed_at"), // set once when bound to attempt
+  stageIssuedAt: timestamp("stage_issued_at"), // set once when revealed to worker
+  stageDeadlineAt: timestamp("stage_deadline_at"), // computed: stage_issued_at + profile.stage_deadline_ms
+}, (table) => [
+  uniqueIndex("challenge_stage_bundles_set_stage_idx")
+    .on(table.challengeSetId, table.stageIndex),
+  // Hot path: verification and reveal joins
+  index("challenge_stage_bundles_attempt_stage_idx")
+    .on(table.attemptId, table.stageIndex),
+  // Orphan pool scan: find unclaimed sets for a given profile
+  index("challenge_stage_bundles_pool_idx")
+    .on(table.profileId, table.precomputedAt)
+    .where(sql`attempt_id IS NULL`),
+]);
+
+// Challenge Checkpoints — canonical stage-receipt store (NOT a transport log).
+// Row exists = checkpoint received. No status column. No update path.
+// Verdicts derived at verification time by comparing result_digest against
+// bundle.expected_digest. Insert-only; each (attempt, stage) slot accepts
+// exactly one INSERT. Duplicate transport attempts deduped before insert.
+export const computeChallengeCheckpoints = pgTable("compute_challenge_checkpoints", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  attemptId: varchar("attempt_id").notNull().references(() => computeJobAttempts.id),
+  stageIndex: integer("stage_index").notNull(),
+  // Worker-submitted evidence (immutable once inserted)
+  stageNonce: text("stage_nonce").notNull(), // worker echoes nonce (cross-check against bundle)
+  resultDigest: text("result_digest").notNull(), // hex, what the worker computed
+  checkpointReceivedAt: timestamp("checkpoint_received_at").notNull(), // server receipt time (timing authority)
+  telemetryJson: text("telemetry_json"), // optional worker self-report (untrusted)
+  // Transcript hash chain
+  transcriptPrevHash: text("transcript_prev_hash").notNull(), // hex, "" for stage 0
+  transcriptEntryHash: text("transcript_entry_hash").notNull(), // hex, H(prev || stage_index || result_digest)
+  // Metadata
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  // Canonical: exactly one checkpoint per (attempt, stage)
+  uniqueIndex("challenge_checkpoints_attempt_stage_idx")
+    .on(table.attemptId, table.stageIndex),
+]);
 
 // ============================================================
 // PHASE 11: Generic Trusted-Role Registry
@@ -1205,6 +1323,28 @@ export const insertComputeWalletLedgerSchema = createInsertSchema(computeWalletL
 });
 
 export const insertComputePayoutBroadcastSchema = createInsertSchema(computePayoutBroadcasts).omit({
+  id: true,
+  createdAt: true,
+});
+
+// Phase 2A: Challenge Protocol Insert Schemas
+export const insertComputeResourceClassProfileSchema = createInsertSchema(computeResourceClassProfiles).omit({
+  profileId: true,
+  createdAt: true,
+});
+
+export const insertComputeChallengeStageBundle = createInsertSchema(computeChallengeStageB).omit({
+  id: true,
+  precomputedAt: true,
+  // Runtime bind/reveal fields — set programmatically, never at insert
+  jobId: true,
+  attemptId: true,
+  claimedAt: true,
+  stageIssuedAt: true,
+  stageDeadlineAt: true,
+});
+
+export const insertComputeChallengeCheckpointSchema = createInsertSchema(computeChallengeCheckpoints).omit({
   id: true,
   createdAt: true,
 });
@@ -1440,6 +1580,16 @@ export type InsertComputeWalletLedgerEntry = z.infer<typeof insertComputeWalletL
 
 export type ComputePayoutBroadcast = typeof computePayoutBroadcasts.$inferSelect;
 export type InsertComputePayoutBroadcast = z.infer<typeof insertComputePayoutBroadcastSchema>;
+
+// Phase 2A: Challenge Protocol Types
+export type ComputeResourceClassProfile = typeof computeResourceClassProfiles.$inferSelect;
+export type InsertComputeResourceClassProfile = z.infer<typeof insertComputeResourceClassProfileSchema>;
+
+export type ComputeChallengeStageBundle = typeof computeChallengeStageB.$inferSelect;
+export type InsertComputeChallengeStageBundle = z.infer<typeof insertComputeChallengeStageBundle>;
+
+export type ComputeChallengeCheckpoint = typeof computeChallengeCheckpoints.$inferSelect;
+export type InsertComputeChallengeCheckpoint = z.infer<typeof insertComputeChallengeCheckpointSchema>;
 
 // Phase 11: Trusted-Role Registry Types
 export type TrustedRolePolicy = typeof trustedRolePolicies.$inferSelect;

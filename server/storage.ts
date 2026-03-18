@@ -165,6 +165,16 @@ import {
   computePayoutBroadcasts,
   type ComputePayoutBroadcast,
   type InsertComputePayoutBroadcast,
+  // Phase 2A: Staged Challenge Protocol
+  computeResourceClassProfiles,
+  computeChallengeStageB,
+  computeChallengeCheckpoints,
+  type ComputeResourceClassProfile,
+  type InsertComputeResourceClassProfile,
+  type ComputeChallengeStageBundle,
+  type InsertComputeChallengeStageBundle,
+  type ComputeChallengeCheckpoint,
+  type InsertComputeChallengeCheckpoint,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, sql, ilike, or, notInArray, gte, lte, lt, isNull, isNotNull, inArray } from "drizzle-orm";
@@ -556,6 +566,50 @@ export interface IStorage {
    * Returns true if scored, false if already scored (idempotent — safe on restart).
    */
   scoreComplianceChallengeAtomic(jobId: string, nodeId: string, delta: number): Promise<boolean>;
+
+  // Phase 2A: Staged Challenge Protocol — Storage Primitives
+  createResourceClassProfile(profile: InsertComputeResourceClassProfile): Promise<ComputeResourceClassProfile>;
+  getActiveResourceClassProfiles(): Promise<ComputeResourceClassProfile[]>;
+  insertPrecomputedBundleSet(bundles: InsertComputeChallengeStageBundle[]): Promise<ComputeChallengeStageBundle[]>;
+  getOrphanPoolCount(profileId: string): Promise<number>;
+
+  /**
+   * Atomically claim one orphan challenge set for a given profile.
+   * SELECT ... FOR UPDATE SKIP LOCKED on one challenge_set_id, verify set invariants,
+   * bind (job_id, attempt_id, claimed_at) on all rows.
+   * Returns null if no orphan sets available or invariant check fails.
+   */
+  claimOrphanChallengeSet(profileId: string, jobId: string, attemptId: string): Promise<ComputeChallengeStageBundle[] | null>;
+
+  /**
+   * Atomically reveal stage i: set stage_issued_at and stage_deadline_at.
+   * One-way: returns null if already revealed or bundle not found.
+   */
+  revealChallengeStage(attemptId: string, stageIndex: number): Promise<ComputeChallengeStageBundle | null>;
+
+  /**
+   * Atomically accept a canonical checkpoint.
+   * Validates: bundle exists & revealed, deadline, nonce, digest, transcript chain.
+   * Inserts checkpoint (idempotent on duplicate), updates attempt rollup,
+   * optionally reveals next stage in the same transaction.
+   * Returns the checkpoint and an optional revealed next bundle.
+   */
+  acceptChallengeCheckpoint(
+    attemptId: string,
+    stageIndex: number,
+    resultDigest: string,
+    stageNonce: string,
+    transcriptPrevHash: string,
+    transcriptEntryHash: string,
+    receivedAt: Date,
+    telemetryJson?: string | null,
+  ): Promise<{ checkpoint: ComputeChallengeCheckpoint; nextBundle: ComputeChallengeStageBundle | null } | { error: string }>;
+
+  /** Get all checkpoints for an attempt, ordered by stage_index. */
+  getChallengeCheckpoints(attemptId: string): Promise<ComputeChallengeCheckpoint[]>;
+
+  /** Get all bundles for an attempt, ordered by stage_index. */
+  getChallengeBundles(attemptId: string): Promise<ComputeChallengeStageBundle[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -3060,6 +3114,364 @@ export class DatabaseStorage implements IStorage {
       completedJobs: Number(jobStats?.completed) || 0,
       totalHbdPaid: payoutStats?.totalPaid || "0",
     };
+  }
+
+  // ============================================================
+  // Phase 2A: Staged Challenge Protocol — Storage Primitives
+  // ============================================================
+
+  async createResourceClassProfile(profile: InsertComputeResourceClassProfile): Promise<ComputeResourceClassProfile> {
+    const [created] = await db.insert(computeResourceClassProfiles)
+      .values(profile)
+      .returning();
+    return created;
+  }
+
+  async getActiveResourceClassProfiles(): Promise<ComputeResourceClassProfile[]> {
+    return db.select().from(computeResourceClassProfiles)
+      .where(eq(computeResourceClassProfiles.isActive, true));
+  }
+
+  async insertPrecomputedBundleSet(bundles: InsertComputeChallengeStageBundle[]): Promise<ComputeChallengeStageBundle[]> {
+    return db.insert(computeChallengeStageB)
+      .values(bundles)
+      .returning();
+  }
+
+  async getOrphanPoolCount(profileId: string): Promise<number> {
+    // Count distinct challenge_set_ids where all rows are unclaimed
+    const result = await db.execute(sql`
+      SELECT COUNT(DISTINCT challenge_set_id)::int AS cnt
+      FROM compute_challenge_stage_bundles
+      WHERE profile_id = ${profileId}
+        AND attempt_id IS NULL
+    `);
+    const rows = result.rows ?? result;
+    return Number((rows as any)[0]?.cnt) || 0;
+  }
+
+  async claimOrphanChallengeSet(
+    profileId: string,
+    jobId: string,
+    attemptId: string,
+  ): Promise<ComputeChallengeStageBundle[] | null> {
+    let claimed: ComputeChallengeStageBundle[] | null = null;
+
+    await db.transaction(async (tx: any) => {
+      // Step 1: Find candidate orphan sets and lock one atomically.
+      // Uses FOR UPDATE SKIP LOCKED on all rows of a candidate set.
+      // If any row in the set is locked by another transaction, all are skipped.
+      const candidateRows = await tx.execute(sql`
+        SELECT DISTINCT challenge_set_id
+        FROM compute_challenge_stage_bundles
+        WHERE profile_id = ${profileId}
+          AND attempt_id IS NULL
+        ORDER BY challenge_set_id
+        LIMIT 5
+      `);
+      const candidates = (candidateRows.rows ?? candidateRows) as any[];
+      if (!candidates || candidates.length === 0) return;
+
+      // Pre-load profile and attempt (invariant-checked once, used in loop)
+      const [profile] = await tx.select()
+        .from(computeResourceClassProfiles)
+        .where(eq(computeResourceClassProfiles.profileId, profileId));
+      if (!profile) return;
+
+      // Cross-job drift prevention: verify attempt belongs to the job
+      const [attempt] = await tx.select()
+        .from(computeJobAttempts)
+        .where(eq(computeJobAttempts.id, attemptId));
+      if (!attempt || attempt.jobId !== jobId) return;
+
+      // Try each candidate set: lock, validate invariants, bind.
+      // If a set fails validation (wrong count, non-contiguous, etc.), try next.
+      let rows: any[] = [];
+      let setId: string | null = null;
+      for (const candidate of candidates) {
+        // Lock all unlocked rows in this set
+        const lockResult = await tx.execute(sql`
+          SELECT *
+          FROM compute_challenge_stage_bundles
+          WHERE challenge_set_id = ${candidate.challenge_set_id}
+            AND attempt_id IS NULL
+          ORDER BY stage_index ASC
+          FOR UPDATE SKIP LOCKED
+        `);
+        const lockRows = (lockResult.rows ?? lockResult) as any[];
+
+        // Total rows in this set (including any that might be locked by another tx)
+        const countResult = await tx.execute(sql`
+          SELECT COUNT(*)::int AS cnt
+          FROM compute_challenge_stage_bundles
+          WHERE challenge_set_id = ${candidate.challenge_set_id}
+        `);
+        const totalCount = Number(((countResult.rows ?? countResult) as any[])[0]?.cnt);
+
+        // Must have locked ALL rows (no partial lock = no concurrent contention)
+        if (lockRows.length !== totalCount || lockRows.length === 0) continue;
+
+        // Invariant: all rows must be unclaimed
+        if (lockRows.some((r: any) => r.attempt_id !== null)) continue;
+
+        // Invariant: all rows must share the same profile_id
+        if (lockRows.some((r: any) => r.profile_id !== profileId)) continue;
+
+        // Invariant: all rows must share the same root_nonce
+        const rootNonce = lockRows[0]?.root_nonce;
+        if (lockRows.some((r: any) => r.root_nonce !== rootNonce)) continue;
+
+        // Invariant: stage_index must be contiguous 0..N-1
+        let contiguous = true;
+        for (let i = 0; i < lockRows.length; i++) {
+          if (Number(lockRows[i].stage_index) !== i) { contiguous = false; break; }
+        }
+        if (!contiguous) continue;
+
+        // Invariant: set size must match profile's stages_per_challenge
+        if (lockRows.length !== profile.stagesPerChallenge) continue;
+
+        rows = lockRows;
+        setId = candidate.challenge_set_id;
+        break;
+      }
+      if (!setId || rows.length === 0) return;
+
+      // Step 3: Bind all rows atomically.
+      const now = new Date();
+      const updated = await tx.update(computeChallengeStageB)
+        .set({
+          jobId,
+          attemptId,
+          claimedAt: now,
+        })
+        .where(and(
+          eq(computeChallengeStageB.challengeSetId, setId),
+          isNull(computeChallengeStageB.attemptId),
+        )!)
+        .returning();
+
+      if (updated.length !== rows.length) return; // partial bind — should not happen under lock
+
+      // Step 4: Set attempt rollup fields.
+      await tx.update(computeJobAttempts)
+        .set({
+          challengeProtocolVersion: profile.protocolVersion,
+          challengeProfileId: profile.profileId,
+        })
+        .where(eq(computeJobAttempts.id, attemptId));
+
+      claimed = updated;
+    });
+
+    return claimed;
+  }
+
+  async revealChallengeStage(
+    attemptId: string,
+    stageIndex: number,
+  ): Promise<ComputeChallengeStageBundle | null> {
+    let revealed: ComputeChallengeStageBundle | null = null;
+
+    await db.transaction(async (tx: any) => {
+      // Locate the bundle row and lock it.
+      const rows = await tx.execute(sql`
+        SELECT *
+        FROM compute_challenge_stage_bundles
+        WHERE attempt_id = ${attemptId}
+          AND stage_index = ${stageIndex}
+        FOR UPDATE
+      `);
+      const bundleRows = (rows.rows ?? rows) as any[];
+      if (bundleRows.length === 0) return;
+
+      const row = bundleRows[0];
+      // One-way: reject if already revealed.
+      if (row.stage_issued_at !== null) return;
+      // Must be claimed.
+      if (row.claimed_at === null) return;
+
+      // Get deadline from profile.
+      const [profile] = await tx.select()
+        .from(computeResourceClassProfiles)
+        .where(eq(computeResourceClassProfiles.profileId, row.profile_id));
+      if (!profile) return;
+
+      const now = new Date();
+      const deadline = new Date(now.getTime() + profile.stageDeadlineMs);
+
+      const [updated] = await tx.update(computeChallengeStageB)
+        .set({
+          stageIssuedAt: now,
+          stageDeadlineAt: deadline,
+        })
+        .where(and(
+          eq(computeChallengeStageB.id, row.id),
+          isNull(computeChallengeStageB.stageIssuedAt),
+        )!)
+        .returning();
+
+      revealed = updated ?? null;
+    });
+
+    return revealed;
+  }
+
+  async acceptChallengeCheckpoint(
+    attemptId: string,
+    stageIndex: number,
+    resultDigest: string,
+    stageNonce: string,
+    transcriptPrevHash: string,
+    transcriptEntryHash: string,
+    receivedAt: Date,
+    telemetryJson: string | null = null,
+  ): Promise<{ checkpoint: ComputeChallengeCheckpoint; nextBundle: ComputeChallengeStageBundle | null } | { error: string }> {
+    let result: { checkpoint: ComputeChallengeCheckpoint; nextBundle: ComputeChallengeStageBundle | null } | { error: string } = { error: "transaction did not complete" };
+
+    await db.transaction(async (tx: any) => {
+      // Step 1: Idempotent dedup — if checkpoint already exists, return it.
+      const [existing] = await tx.select()
+        .from(computeChallengeCheckpoints)
+        .where(and(
+          eq(computeChallengeCheckpoints.attemptId, attemptId),
+          eq(computeChallengeCheckpoints.stageIndex, stageIndex),
+        )!);
+      if (existing) {
+        result = { checkpoint: existing, nextBundle: null };
+        return;
+      }
+
+      // Step 2: Load the issued bundle row via Drizzle ORM (proper type coercion).
+      const [bundle] = await tx.select()
+        .from(computeChallengeStageB)
+        .where(and(
+          eq(computeChallengeStageB.attemptId, attemptId),
+          eq(computeChallengeStageB.stageIndex, stageIndex),
+        )!);
+      if (!bundle) {
+        result = { error: "No bundle for this attempt/stage" };
+        return;
+      }
+
+      // Step 3: Validate bundle is revealed.
+      if (bundle.stageIssuedAt === null) {
+        result = { error: "CHECKPOINT_BEFORE_REVEAL" };
+        return;
+      }
+
+      // Step 4: Deadline check.
+      if (bundle.stageDeadlineAt && receivedAt.getTime() > bundle.stageDeadlineAt.getTime()) {
+        result = { error: "STAGE_DEADLINE_MISSED" };
+        return;
+      }
+
+      // Step 5: Nonce cross-check.
+      if (stageNonce !== bundle.stageNonce) {
+        result = { error: "STAGE_NONCE_MISMATCH" };
+        return;
+      }
+
+      // Step 6: Digest comparison.
+      if (resultDigest !== bundle.expectedDigest) {
+        result = { error: "STAGE_DIGEST_MISMATCH" };
+        return;
+      }
+
+      // Step 7: Transcript chain validation.
+      if (stageIndex === 0) {
+        if (transcriptPrevHash !== "") {
+          result = { error: "TRANSCRIPT_HASH_MISMATCH" };
+          return;
+        }
+      } else {
+        const [prevCp] = await tx.select()
+          .from(computeChallengeCheckpoints)
+          .where(and(
+            eq(computeChallengeCheckpoints.attemptId, attemptId),
+            eq(computeChallengeCheckpoints.stageIndex, stageIndex - 1),
+          )!);
+        if (!prevCp) {
+          result = { error: "STAGE_ORDER_INVALID" };
+          return;
+        }
+        if (transcriptPrevHash !== prevCp.transcriptEntryHash) {
+          result = { error: "TRANSCRIPT_HASH_MISMATCH" };
+          return;
+        }
+      }
+
+      // Step 8: Insert the canonical checkpoint.
+      const [checkpoint] = await tx.insert(computeChallengeCheckpoints)
+        .values({
+          attemptId,
+          stageIndex,
+          stageNonce,
+          resultDigest,
+          checkpointReceivedAt: receivedAt,
+          telemetryJson,
+          transcriptPrevHash,
+          transcriptEntryHash,
+        })
+        .returning();
+
+      // Step 9: Update attempt rollup.
+      const rollupUpdates: any = {
+        checkpointCount: sql`${computeJobAttempts.checkpointCount} + 1`,
+        transcriptHash: transcriptEntryHash,
+      };
+      if (stageIndex === 0) {
+        rollupUpdates.firstProgressAt = receivedAt;
+      }
+      await tx.update(computeJobAttempts)
+        .set(rollupUpdates)
+        .where(eq(computeJobAttempts.id, attemptId));
+
+      // Step 10: Optionally reveal next stage in the same transaction.
+      let nextBundle: ComputeChallengeStageBundle | null = null;
+      const [nextStageBundle] = await tx.select()
+        .from(computeChallengeStageB)
+        .where(and(
+          eq(computeChallengeStageB.attemptId, attemptId),
+          eq(computeChallengeStageB.stageIndex, stageIndex + 1),
+          isNull(computeChallengeStageB.stageIssuedAt),
+        )!);
+      if (nextStageBundle) {
+        const [profile] = await tx.select()
+          .from(computeResourceClassProfiles)
+          .where(eq(computeResourceClassProfiles.profileId, nextStageBundle.profileId));
+        if (profile) {
+          const now = new Date();
+          const [revealedNext] = await tx.update(computeChallengeStageB)
+            .set({
+              stageIssuedAt: now,
+              stageDeadlineAt: new Date(now.getTime() + profile.stageDeadlineMs),
+            })
+            .where(and(
+              eq(computeChallengeStageB.id, nextStageBundle.id),
+              isNull(computeChallengeStageB.stageIssuedAt),
+            )!)
+            .returning();
+          nextBundle = revealedNext ?? null;
+        }
+      }
+
+      result = { checkpoint, nextBundle };
+    });
+
+    return result;
+  }
+
+  async getChallengeCheckpoints(attemptId: string): Promise<ComputeChallengeCheckpoint[]> {
+    return db.select().from(computeChallengeCheckpoints)
+      .where(eq(computeChallengeCheckpoints.attemptId, attemptId))
+      .orderBy(computeChallengeCheckpoints.stageIndex);
+  }
+
+  async getChallengeBundles(attemptId: string): Promise<ComputeChallengeStageBundle[]> {
+    return db.select().from(computeChallengeStageB)
+      .where(eq(computeChallengeStageB.attemptId, attemptId))
+      .orderBy(computeChallengeStageB.stageIndex);
   }
 }
 

@@ -2483,4 +2483,15 @@ export class SQLiteStorage implements IStorage {
   async getUnscoredComplianceChallengeResults(_coordinatorUsername: string): Promise<ComputeJob[]> { return []; }
   async getExpiredPoaJobs(_coordinatorUsername: string, _claimTimeoutMs: number): Promise<ComputeJob[]> { return []; }
   async scoreComplianceChallengeAtomic(_jobId: string, _nodeId: string, _delta: number): Promise<boolean> { return false; }
+
+  // Phase 2A: Staged Challenge Protocol — not available on SQLite (PG-only compute tables)
+  async createResourceClassProfile(_profile: any): Promise<any> { throw new Error("Phase 2A: PG-only"); }
+  async getActiveResourceClassProfiles(): Promise<any[]> { return []; }
+  async insertPrecomputedBundleSet(_bundles: any[]): Promise<any[]> { throw new Error("Phase 2A: PG-only"); }
+  async getOrphanPoolCount(_profileId: string): Promise<number> { return 0; }
+  async claimOrphanChallengeSet(_profileId: string, _jobId: string, _attemptId: string): Promise<any> { return null; }
+  async revealChallengeStage(_attemptId: string, _stageIndex: number): Promise<any> { return null; }
+  async acceptChallengeCheckpoint(_attemptId: string, _stageIndex: number, _resultDigest: string, _stageNonce: string, _transcriptPrevHash: string, _transcriptEntryHash: string, _receivedAt: Date, _telemetryJson?: string | null): Promise<any> { return { error: "Phase 2A: PG-only" }; }
+  async getChallengeCheckpoints(_attemptId: string): Promise<any[]> { return []; }
+  async getChallengeBundles(_attemptId: string): Promise<any[]> { return []; }
 }
