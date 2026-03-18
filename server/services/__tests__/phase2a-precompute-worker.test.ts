@@ -336,22 +336,29 @@ describe("Phase 2A Precompute Worker — PW7: Real Kernel Integration", () => {
       return;
     }
 
-    // Compile using a lock-file pattern to avoid racing with the kernel-ref test.
-    // Use flock on the source file to serialize compilation attempts.
+    // Compile to a separate binary path to avoid racing with the kernel-ref test.
     const evidenceDir = "/mnt/c/Users/theyc/Hive\\ AI/HivePoA/evidence/phase2a";
+    const testBinary = `${evidenceDir}/phase2a_kernel_pw7_test`;
     const { execSync } = await import("child_process");
-    execSync(`wsl -d Ubuntu-24.04 -- bash -c "flock ${evidenceDir}/phase2a_kernel_ref_v1.c cc -std=c99 -O2 -o ${evidenceDir}/phase2a_kernel_ref_v1 ${evidenceDir}/phase2a_kernel_ref_v1.c"`, {
+    execSync(`wsl -d Ubuntu-24.04 -- bash -c "cc -std=c99 -O2 -o ${testBinary} ${evidenceDir}/phase2a_kernel_ref_v1.c"`, {
       encoding: "utf-8",
       timeout: 30_000,
     });
 
-    // Use the real digest function with known small parameters
-    const result = computeStageDigest(
-      "test-nonce-12345678",
-      1, // class_id
-      0, // stage_index
-      8, 8, 2, 1, // small M, N, K, mix_rounds for speed
+    // Use the compiled test binary directly (not the shared production binary)
+    const output = execSync(
+      `wsl -d Ubuntu-24.04 -- bash -c "${testBinary} --digest test-nonce-12345678 1 0 8 8 2 1"`,
+      { encoding: "utf-8", timeout: 30_000 },
     );
+    const nonceMatch = output.match(/stage_nonce=([0-9a-f]{64})/);
+    const digestMatch = output.match(/digest=([0-9a-f]{64})/);
+    const result = {
+      stageNonce: nonceMatch ? nonceMatch[1] : "",
+      digest: digestMatch ? digestMatch[1] : "",
+    };
+
+    // Cleanup test binary
+    try { execSync(`wsl -d Ubuntu-24.04 -- bash -c "rm -f ${testBinary}"`, { timeout: 5000 }); } catch { /* ignore */ }
 
     expect(result.stageNonce).toMatch(/^[0-9a-f]{64}$/);
     expect(result.digest).toMatch(/^[0-9a-f]{64}$/);

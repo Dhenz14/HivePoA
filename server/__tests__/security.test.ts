@@ -89,6 +89,8 @@ describe("Bearer Token Auth", () => {
     { method: "post" as const, path: "/api/blocklist" },
     { method: "post" as const, path: "/api/wallet/deposits" },
     { method: "post" as const, path: "/api/cdn/heartbeat/test-node" },
+    // Phase 2A: coordinator-facing challenge issuance
+    { method: "post" as const, path: "/api/compute/challenges/issue" },
   ];
 
   for (const endpoint of protectedEndpoints) {
@@ -117,6 +119,10 @@ describe("Agent API Key Auth", () => {
     { method: "post" as const, path: "/api/encoding/jobs/test-id/complete" },
     { method: "post" as const, path: "/api/encoding/jobs/test-id/fail" },
     { method: "post" as const, path: "/api/encoding/offers/test-id/accept" },
+    // Phase 2A: worker-facing challenge routes
+    { method: "get" as const, path: "/api/compute/challenges/test-attempt/stage" },
+    { method: "post" as const, path: "/api/compute/challenges/test-attempt/checkpoint" },
+    { method: "get" as const, path: "/api/compute/challenges/test-attempt/status" },
   ];
 
   for (const endpoint of agentEndpoints) {
