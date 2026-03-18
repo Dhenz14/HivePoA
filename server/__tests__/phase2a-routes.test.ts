@@ -56,9 +56,9 @@ let httpServer: Server;
 let storage: DatabaseStorage;
 let profileId: string;
 
-// Auth credentials
+// Auth credentials — coordinator must match POA_COORDINATOR_USERNAME (default: "validator-police")
 const COORD_TOKEN = `coord-token-${uid()}`;
-const COORD_USER = `coord-user-${uid()}`;
+const COORD_USER = process.env.POA_COORDINATOR_USERNAME ?? "validator-police";
 const WORKER_API_KEY = `worker-key-${uid()}`;
 const WORKER_USER = `worker-user-${uid()}`;
 
@@ -317,13 +317,17 @@ describe("Phase 2A Routes — RT3: Duplicate Submission", () => {
       .send(body);
     expect(cp1.status).toBe(200);
 
-    // Duplicate submission — should return same checkpoint
+    // Duplicate submission — should return same checkpoint with full continuation state
     const cp2 = await request(app)
       .post(`/api/compute/challenges/${attemptId}/checkpoint`)
       .set(workerAuth)
       .send(body);
     expect(cp2.status).toBe(200);
     expect(cp2.body.checkpointId).toBe(cp1.body.checkpointId);
+    // CRITICAL: duplicate response must include nextStage so retries are fully resumable
+    expect(cp2.body.nextStage).not.toBeNull();
+    expect(cp2.body.nextStage.stageIndex).toBe(1);
+    expect(cp2.body.final).toBe(false);
 
     // Only one checkpoint row should exist
     const cps = await storage.getChallengeCheckpoints(attemptId);
@@ -366,7 +370,7 @@ describe("Phase 2A Routes — RT4: Late Checkpoint", () => {
         transcriptEntryHash: entry0,
       });
     expect(res.status).toBe(408);
-    expect(res.body.error).toBe("STAGE_DEADLINE_MISSED");
+    expect(res.body.error.code).toBe("STAGE_DEADLINE_MISSED");
   });
 });
 
@@ -398,7 +402,7 @@ describe("Phase 2A Routes — RT5: Wrong Stage/Binding", () => {
         transcriptEntryHash: entry0,
       });
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe("STAGE_DIGEST_MISMATCH");
+    expect(res.body.error.code).toBe("STAGE_DIGEST_MISMATCH");
   });
 
   it("RT5b: wrong nonce returns 400", async () => {
@@ -428,7 +432,7 @@ describe("Phase 2A Routes — RT5: Wrong Stage/Binding", () => {
         transcriptEntryHash: entry0,
       });
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe("STAGE_NONCE_MISMATCH");
+    expect(res.body.error.code).toBe("STAGE_NONCE_MISMATCH");
   });
 
   it("RT5c: nonexistent attempt returns 404", async () => {
@@ -574,7 +578,7 @@ describe("Phase 2A Routes — RT7: Terminal Attempt", () => {
         transcriptEntryHash: entry0,
       });
     expect(res.status).toBe(410);
-    expect(res.body.error).toBe("ATTEMPT_TERMINAL");
+    expect(res.body.error.code).toBe("ATTEMPT_TERMINAL");
     expect(res.body.state).toBe("timed_out");
   });
 
@@ -598,7 +602,7 @@ describe("Phase 2A Routes — RT7: Terminal Attempt", () => {
       .get(`/api/compute/challenges/${attemptId}/stage`)
       .set(workerAuth);
     expect(res.status).toBe(410);
-    expect(res.body.error).toBe("ATTEMPT_TERMINAL");
+    expect(res.body.error.code).toBe("ATTEMPT_TERMINAL");
   });
 
   it("RT7c: status fetch for terminal attempt still works (informational)", async () => {

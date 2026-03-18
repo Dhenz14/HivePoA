@@ -5335,9 +5335,45 @@ export async function registerRoutes(
     phase2aPrecompute.start(30_000); // check pool every 30s
   }
 
-  // POST /api/compute/challenges/issue — Issue a Phase 2A challenge to a specific node (coordinator)
+  // ── Phase 2A error code contract (frozen) ──────────────────────────────────
+  // Machine-readable error codes returned by challenge routes.
+  // Workers SHOULD branch on `code`, not parse `message`.
+  // `retriable` indicates whether the same request might succeed later.
+  // `terminal` indicates the attempt is permanently done and no further work is possible.
+  const PHASE2A_ERRORS: Record<string, { status: number; retriable: boolean; terminal: boolean; message: string }> = {
+    SERVICE_NOT_READY:        { status: 503, retriable: true,  terminal: false, message: "Challenge service is starting up — retry after a few seconds" },
+    POOL_EXHAUSTED:           { status: 503, retriable: true,  terminal: false, message: "No precomputed challenge sets available — retry later" },
+    CLAIM_FAILED:             { status: 503, retriable: true,  terminal: false, message: "Challenge set claim failed due to contention — retry" },
+    REVEAL_FAILED:            { status: 500, retriable: false, terminal: false, message: "Internal error during stage reveal" },
+    ATTEMPT_TERMINAL:         { status: 410, retriable: false, terminal: true,  message: "Attempt has reached a terminal state" },
+    STAGE_DEADLINE_MISSED:    { status: 408, retriable: false, terminal: false, message: "Checkpoint arrived after stage deadline" },
+    STAGE_NONCE_MISMATCH:     { status: 400, retriable: false, terminal: false, message: "Stage nonce does not match expected value" },
+    STAGE_DIGEST_MISMATCH:    { status: 400, retriable: false, terminal: false, message: "Computed digest does not match expected digest" },
+    TRANSCRIPT_HASH_MISMATCH: { status: 400, retriable: false, terminal: false, message: "Transcript chain hash does not match previous entry" },
+    STAGE_ORDER_INVALID:      { status: 400, retriable: false, terminal: false, message: "Stage index is out of order or missing prerequisite" },
+    CHECKPOINT_BEFORE_REVEAL: { status: 409, retriable: true,  terminal: false, message: "Stage has not been revealed yet — wait for reveal" },
+  };
+
+  function phase2aErrorResponse(res: Response, code: string, extra?: Record<string, any>): void {
+    const def = PHASE2A_ERRORS[code] ?? { status: 400, retriable: false, terminal: false, message: code };
+    res.status(def.status).json({
+      error: { code, retriable: def.retriable, terminal: def.terminal, message: def.message },
+      ...extra,
+    });
+  }
+
+  // POST /api/compute/challenges/issue — Coordinator control-plane route (admin only)
+  // This is NOT a worker-facing route. Workers discover challenges through the
+  // existing job claim flow (workload_type = "gpu_poa_challenge").
   app.post("/api/compute/challenges/issue", requireAuth, async (req, res) => {
     try {
+      // Admin gate: only the coordinator username may issue challenges
+      const coordinatorUsername = process.env.POA_COORDINATOR_USERNAME ?? "validator-police";
+      if (req.authenticatedUser !== coordinatorUsername) {
+        res.status(403).json({ error: { code: "FORBIDDEN", retriable: false, terminal: false, message: "Only the challenge coordinator may issue challenges" } });
+        return;
+      }
+
       const schema = z.object({
         nodeId: z.string().min(1),
         profileId: z.string().min(1),
@@ -5345,13 +5381,7 @@ export async function registerRoutes(
       const { nodeId, profileId } = schema.parse(req.body);
       const result = await phase2aService.issueChallenge(nodeId, profileId);
       if (!result.ok) {
-        const statusMap: Record<string, number> = {
-          SERVICE_NOT_READY: 503,
-          POOL_EXHAUSTED: 503,
-          CLAIM_FAILED: 503,
-          REVEAL_FAILED: 500,
-        };
-        res.status(statusMap[result.reason] || 400).json({ error: result.reason });
+        phase2aErrorResponse(res, result.reason);
         return;
       }
       res.status(201).json({
@@ -5361,7 +5391,7 @@ export async function registerRoutes(
       });
     } catch (err: any) {
       logCompute.error({ err }, "Phase 2A challenge issuance failed");
-      res.status(400).json({ error: err.message });
+      res.status(400).json({ error: { code: "INVALID_REQUEST", retriable: false, terminal: false, message: err.message } });
     }
   });
 
@@ -5371,26 +5401,27 @@ export async function registerRoutes(
       const { attemptId } = req.params;
       const attempt = await storage.getComputeJobAttempt(attemptId);
       if (!attempt) {
-        res.status(404).json({ error: "Attempt not found" });
+        res.status(404).json({ error: { code: "NOT_FOUND", retriable: false, terminal: false, message: "Attempt not found" } });
         return;
       }
 
       // Verify the worker owns this attempt's node
       const node = await storage.getComputeNode(attempt.nodeId);
       if (!node || node.hiveUsername !== req.authenticatedUser!) {
-        res.status(403).json({ error: "Not authorized for this attempt" });
+        res.status(403).json({ error: { code: "FORBIDDEN", retriable: false, terminal: false, message: "Not authorized for this attempt" } });
         return;
       }
 
-      // Terminal check
+      // Terminal check — stage material is unavailable for terminal attempts.
+      // Workers should use GET /status to learn the terminal outcome.
       if (["accepted", "rejected", "timed_out", "failed"].includes(attempt.state)) {
-        res.status(410).json({ error: "ATTEMPT_TERMINAL", state: attempt.state });
+        phase2aErrorResponse(res, "ATTEMPT_TERMINAL", { state: attempt.state });
         return;
       }
 
       const bundles = await storage.getChallengeBundles(attemptId);
       if (bundles.length === 0) {
-        res.status(404).json({ error: "No challenge bundles bound to this attempt" });
+        res.status(404).json({ error: { code: "NO_BUNDLES", retriable: false, terminal: false, message: "No challenge bundles bound to this attempt" } });
         return;
       }
 
@@ -5402,7 +5433,6 @@ export async function registerRoutes(
         .sort((a, b) => a.stageIndex - b.stageIndex)[0];
 
       if (!currentStage) {
-        // All revealed stages are completed (or none revealed yet)
         res.json({
           attemptId,
           state: attempt.state,
@@ -5451,18 +5481,18 @@ export async function registerRoutes(
       // Verify the worker owns this attempt's node
       const attempt = await storage.getComputeJobAttempt(attemptId);
       if (!attempt) {
-        res.status(404).json({ error: "Attempt not found" });
+        res.status(404).json({ error: { code: "NOT_FOUND", retriable: false, terminal: false, message: "Attempt not found" } });
         return;
       }
       const node = await storage.getComputeNode(attempt.nodeId);
       if (!node || node.hiveUsername !== req.authenticatedUser!) {
-        res.status(403).json({ error: "Not authorized for this attempt" });
+        res.status(403).json({ error: { code: "FORBIDDEN", retriable: false, terminal: false, message: "Not authorized for this attempt" } });
         return;
       }
 
       // Terminal check — reject submissions to terminal attempts
       if (["accepted", "rejected", "timed_out", "failed"].includes(attempt.state)) {
-        res.status(410).json({ error: "ATTEMPT_TERMINAL", state: attempt.state });
+        phase2aErrorResponse(res, "ATTEMPT_TERMINAL", { state: attempt.state });
         return;
       }
 
@@ -5477,48 +5507,67 @@ export async function registerRoutes(
       );
 
       if (!result.ok) {
-        const statusMap: Record<string, number> = {
-          STAGE_DEADLINE_MISSED: 408,
-          STAGE_NONCE_MISMATCH: 400,
-          STAGE_DIGEST_MISMATCH: 400,
-          TRANSCRIPT_HASH_MISMATCH: 400,
-          STAGE_ORDER_INVALID: 400,
-          CHECKPOINT_BEFORE_REVEAL: 409,
-        };
-        res.status(statusMap[result.reason] || 400).json({ error: result.reason });
+        phase2aErrorResponse(res, result.reason);
         return;
+      }
+
+      // Build canonical continuation response.
+      // On duplicate checkpoint (idempotent replay), the service returns the
+      // existing checkpoint but nextStage may be null. Reconstruct the full
+      // continuation state so retries are fully resumable.
+      let nextStage = result.nextStage;
+      if (!nextStage && !result.final) {
+        // Duplicate path: look up the current revealed-but-unanswered stage
+        const bundles = await storage.getChallengeBundles(attemptId);
+        const checkpoints = await storage.getChallengeCheckpoints(attemptId);
+        const completedStages = new Set(checkpoints.map(c => c.stageIndex));
+        const revealed = bundles
+          .filter(b => b.stageIssuedAt !== null && !completedStages.has(b.stageIndex))
+          .sort((a, b) => a.stageIndex - b.stageIndex)[0];
+        if (revealed) {
+          let wp: any;
+          try { wp = JSON.parse(revealed.workloadParamsJson); } catch { wp = {}; }
+          nextStage = {
+            stageIndex: revealed.stageIndex,
+            stageNonce: revealed.stageNonce,
+            workloadParams: wp,
+            deadlineAt: revealed.stageDeadlineAt,
+          };
+        }
       }
 
       res.json({
         checkpointId: result.checkpoint.id,
         stageIndex: result.checkpoint.stageIndex,
         final: result.final,
-        nextStage: result.nextStage,
+        nextStage,
       });
     } catch (err: any) {
       if (err.name === "ZodError") {
-        res.status(400).json({ error: "Invalid payload", details: err.issues });
+        res.status(400).json({ error: { code: "INVALID_PAYLOAD", retriable: false, terminal: false, message: "Invalid request payload" }, details: err.issues });
         return;
       }
       logCompute.error({ err, attemptId: req.params.attemptId }, "Phase 2A checkpoint submission failed");
-      res.status(500).json({ error: "Internal error" });
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", retriable: true, terminal: false, message: "Internal error" } });
     }
   });
 
-  // GET /api/compute/challenges/:attemptId/status — Get attempt status (worker)
+  // GET /api/compute/challenges/:attemptId/status — Authoritative attempt status (worker)
+  // Always returns 200 with current state — including terminal states.
+  // This is the canonical endpoint for workers to learn challenge outcomes.
   app.get("/api/compute/challenges/:attemptId/status", requireAgentAuth, async (req, res) => {
     try {
       const { attemptId } = req.params;
       const attempt = await storage.getComputeJobAttempt(attemptId);
       if (!attempt) {
-        res.status(404).json({ error: "Attempt not found" });
+        res.status(404).json({ error: { code: "NOT_FOUND", retriable: false, terminal: false, message: "Attempt not found" } });
         return;
       }
 
       // Verify the worker owns this attempt's node
       const node = await storage.getComputeNode(attempt.nodeId);
       if (!node || node.hiveUsername !== req.authenticatedUser!) {
-        res.status(403).json({ error: "Not authorized for this attempt" });
+        res.status(403).json({ error: { code: "FORBIDDEN", retriable: false, terminal: false, message: "Not authorized for this attempt" } });
         return;
       }
 
@@ -5537,7 +5586,7 @@ export async function registerRoutes(
       });
     } catch (err: any) {
       logCompute.error({ err, attemptId: req.params.attemptId }, "Phase 2A status fetch failed");
-      res.status(500).json({ error: "Internal error" });
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", retriable: true, terminal: false, message: "Internal error" } });
     }
   });
 
