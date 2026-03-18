@@ -66,9 +66,9 @@ describe("Phase 2A kernel reference", () => {
       );
     }
 
-    // Compile the reference implementation in WSL
+    // Compile the reference implementation in WSL (flock to avoid race with parallel tests)
     wsl(
-      `cd ${WSL_EVIDENCE_DIR} && cc -std=c99 -O2 -o phase2a_kernel_ref_v1 phase2a_kernel_ref_v1.c`,
+      `flock ${WSL_EVIDENCE_DIR}/phase2a_kernel_ref_v1.c cc -std=c99 -O2 -o ${WSL_EVIDENCE_DIR}/phase2a_kernel_ref_v1 ${WSL_EVIDENCE_DIR}/phase2a_kernel_ref_v1.c`,
     );
   });
 
