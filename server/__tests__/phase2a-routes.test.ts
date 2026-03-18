@@ -371,6 +371,9 @@ describe("Phase 2A Routes — RT4: Late Checkpoint", () => {
       });
     expect(res.status).toBe(408);
     expect(res.body.error.code).toBe("STAGE_DEADLINE_MISSED");
+    expect(res.body.error.retriable).toBe(false);
+    expect(res.body.error.terminal).toBe(false);
+    expect(typeof res.body.error.message).toBe("string");
   });
 });
 
@@ -579,6 +582,9 @@ describe("Phase 2A Routes — RT7: Terminal Attempt", () => {
       });
     expect(res.status).toBe(410);
     expect(res.body.error.code).toBe("ATTEMPT_TERMINAL");
+    expect(res.body.error.retriable).toBe(false);
+    expect(res.body.error.terminal).toBe(true);
+    expect(typeof res.body.error.message).toBe("string");
     expect(res.body.state).toBe("timed_out");
   });
 

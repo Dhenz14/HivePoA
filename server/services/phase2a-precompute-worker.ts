@@ -81,9 +81,8 @@ export interface PrecomputeStorage {
   releaseAdvisoryLock(namespace: number, key: number): Promise<void>;
 }
 
-// Advisory lock namespace/keys (shared with challenge service)
-const ADVISORY_LOCK_NAMESPACE = 3;
-const REFILL_LOCK_KEY = 2;
+// Advisory lock constants — single source of truth in challenge service
+import { PHASE2A_LOCK_NAMESPACE, PHASE2A_REFILL_LOCK_KEY } from "./phase2a-challenge-service";
 
 // ── Worker ───────────────────────────────────────────────────────────────────
 
@@ -125,7 +124,7 @@ export class Phase2APrecomputeWorker {
       // Cross-instance coordination: acquire advisory lock before refilling.
       // If another instance is already refilling, skip silently.
       // Prevents pool overfill when multiple instances run concurrently.
-      const acquired = await this.storage.tryAcquireAdvisoryLock(ADVISORY_LOCK_NAMESPACE, REFILL_LOCK_KEY);
+      const acquired = await this.storage.tryAcquireAdvisoryLock(PHASE2A_LOCK_NAMESPACE, PHASE2A_REFILL_LOCK_KEY);
       if (!acquired) {
         return { generated: 0 };
       }
@@ -136,7 +135,7 @@ export class Phase2APrecomputeWorker {
           totalGenerated += generated;
         }
       } finally {
-        await this.storage.releaseAdvisoryLock(ADVISORY_LOCK_NAMESPACE, REFILL_LOCK_KEY);
+        await this.storage.releaseAdvisoryLock(PHASE2A_LOCK_NAMESPACE, PHASE2A_REFILL_LOCK_KEY);
       }
     } catch (err) {
       logCompute.error({ err }, "Phase2APrecomputeWorker refill cycle failed");
