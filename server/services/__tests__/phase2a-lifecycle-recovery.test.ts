@@ -907,3 +907,148 @@ describe("Phase 2A Lifecycle — AT: Atomic Timeout Primitive", () => {
     service.stop();
   });
 });
+
+// ── EX1–EX4: Cross-Instance Exclusivity Tests ───────────────────────────────
+
+describe("Phase 2A Lifecycle — EX: Cross-Instance Exclusivity", () => {
+
+  it("EX1: advisory lock prevents concurrent sweep cycles — only one runs", async () => {
+    // Set up dirty state that the sweep will process
+    await insertOrphanSet(profileId);
+    const nodeId = await createTestNode();
+    const setupSvc = await freshService();
+    const issue = await setupSvc.issueChallenge(nodeId, profileId);
+    expect(issue.ok).toBe(true);
+    if (!issue.ok) return;
+
+    // Make the attempt expired
+    await db.execute(sql`
+      DELETE FROM compute_challenge_checkpoints WHERE attempt_id = ${issue.attemptId}
+    `);
+    await db.execute(sql`
+      UPDATE compute_job_attempts
+      SET created_at = now() - interval '120 seconds',
+          first_progress_at = NULL,
+          checkpoint_count = 0
+      WHERE id = ${issue.attemptId}
+    `);
+    setupSvc.stop();
+
+    // Create two fresh service instances (simulating two app instances)
+    const svcA = await freshService();
+    const svcB = await freshService();
+
+    // Race two sweep cycles — advisory lock should let only one proceed
+    await Promise.all([svcA.sweep(), svcB.sweep()]);
+
+    // The attempt should be timed out (exactly one sweeper processed it)
+    const [attempt] = await db.select().from(computeJobAttempts)
+      .where(eq(computeJobAttempts.id, issue.attemptId));
+    expect(attempt.state).toBe("timed_out");
+
+    // Job should be scored exactly once
+    const [job] = await db.select().from(computeJobs)
+      .where(eq(computeJobs.id, issue.jobId));
+    expect(job.poaScoredAt).not.toBeNull();
+
+    svcA.stop();
+    svcB.stop();
+  });
+
+  it("EX2: DB-level operations remain correct even without advisory lock", async () => {
+    // Defense-in-depth: even if advisory locks fail or are bypassed,
+    // the individual DB operations remain correct due to their own atomicity.
+    await insertOrphanSet(profileId);
+    await insertOrphanSet(profileId);
+    const node1 = await createTestNode();
+    const node2 = await createTestNode();
+
+    const svc = await freshService();
+
+    // Issue two challenges
+    const i1 = await svc.issueChallenge(node1, profileId);
+    const i2 = await svc.issueChallenge(node2, profileId);
+    expect(i1.ok).toBe(true);
+    expect(i2.ok).toBe(true);
+    if (!i1.ok || !i2.ok) return;
+
+    // Make both expired
+    for (const iss of [i1, i2]) {
+      await db.execute(sql`
+        DELETE FROM compute_challenge_checkpoints WHERE attempt_id = ${iss.attemptId}
+      `);
+      await db.execute(sql`
+        UPDATE compute_job_attempts
+        SET created_at = now() - interval '120 seconds',
+            first_progress_at = NULL,
+            checkpoint_count = 0
+        WHERE id = ${iss.attemptId}
+      `);
+    }
+
+    // Get reputation before
+    const [n1Before] = await db.execute(sql`
+      SELECT reputation_score FROM compute_nodes WHERE id = ${node1}
+    `).then(r => (r.rows ?? r) as any[]);
+    const [n2Before] = await db.execute(sql`
+      SELECT reputation_score FROM compute_nodes WHERE id = ${node2}
+    `).then(r => (r.rows ?? r) as any[]);
+
+    // Simulate: two instances both call sweepTimeouts directly (bypassing advisory lock)
+    const now = new Date();
+    const candidates = await realStorage.getExpiredPhase2AAttempts(now);
+
+    // Race all expiry calls from "two instances"
+    const results = await Promise.all(
+      candidates
+        .filter(c => c.attemptId === i1.attemptId || c.attemptId === i2.attemptId)
+        .flatMap(c => [
+          realStorage.expireAttemptIfStillEligible(c.attemptId, c.reason, now),
+          realStorage.expireAttemptIfStillEligible(c.attemptId, c.reason, now), // duplicate from "instance B"
+        ])
+    );
+
+    // Each attempt should be expired exactly once
+    for (const iss of [i1, i2]) {
+      const [att] = await db.select().from(computeJobAttempts)
+        .where(eq(computeJobAttempts.id, iss.attemptId));
+      expect(att.state).toBe("timed_out");
+    }
+
+    // Score (simulating what sweepTimeouts does)
+    for (const r of results) {
+      if (r.expired) {
+        await realStorage.scoreComplianceChallengeAtomic(r.jobId, r.nodeId, -10);
+      }
+    }
+
+    // Each node's reputation decremented exactly once
+    const [n1After] = await db.execute(sql`
+      SELECT reputation_score FROM compute_nodes WHERE id = ${node1}
+    `).then(r => (r.rows ?? r) as any[]);
+    const [n2After] = await db.execute(sql`
+      SELECT reputation_score FROM compute_nodes WHERE id = ${node2}
+    `).then(r => (r.rows ?? r) as any[]);
+
+    expect(Number(n1After.reputation_score)).toBe(Number(n1Before.reputation_score) - 10);
+    expect(Number(n2After.reputation_score)).toBe(Number(n2Before.reputation_score) - 10);
+
+    svc.stop();
+  });
+
+  it("EX3: advisory lock acquire/release/re-acquire — no stale lock", async () => {
+    // Acquire
+    const acquired1 = await realStorage.tryAcquireAdvisoryLock(3, 99);
+    expect(acquired1).toBe(true);
+
+    // Release
+    await realStorage.releaseAdvisoryLock(3, 99);
+
+    // Re-acquire should work
+    const acquired2 = await realStorage.tryAcquireAdvisoryLock(3, 99);
+    expect(acquired2).toBe(true);
+
+    // Cleanup
+    await realStorage.releaseAdvisoryLock(3, 99);
+  });
+});

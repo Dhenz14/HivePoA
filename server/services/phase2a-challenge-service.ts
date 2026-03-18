@@ -31,6 +31,11 @@ const CHALLENGE_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour between challenges per n
 const CLAIM_TIMEOUT_MS = 15 * 60 * 1000;       // 15 min to claim
 const FIRST_PROGRESS_TIMEOUT_MS = 90_000;       // 90s after reveal of stage 0
 
+// Advisory lock namespace/keys for cross-instance coordination (namespace 3)
+const ADVISORY_LOCK_NAMESPACE = 3;
+const SWEEP_LOCK_KEY = 1;   // sweep cycle exclusivity
+const REFILL_LOCK_KEY = 2;  // refill cycle exclusivity
+
 // Reputation deltas (Phase 1 calibration, carried forward)
 const REP_PASS = 5;
 const REP_FAIL = -10;
@@ -79,6 +84,10 @@ export interface Phase2AChallengeStorage {
     reason: "FIRST_PROGRESS_MISSED" | "STAGE_DEADLINE_MISSED" | "COMPLETION_DEADLINE_MISSED",
     now: Date,
   ): Promise<{ expired: true; jobId: string; nodeId: string } | { expired: false }>;
+
+  // Cross-instance coordination via PostgreSQL advisory locks
+  tryAcquireAdvisoryLock(namespace: number, key: number): Promise<boolean>;
+  releaseAdvisoryLock(namespace: number, key: number): Promise<void>;
 }
 
 /** Info about an expired Phase 2A attempt, returned by sweep query. */
@@ -347,8 +356,21 @@ export class Phase2AChallengeService {
     if (this.sweepRunning) return;
     this.sweepRunning = true;
     try {
-      await this.sweepScoring();
-      await this.sweepTimeouts();
+      // Cross-instance coordination: acquire advisory lock before sweeping.
+      // If another instance is already sweeping, skip silently.
+      // The individual operations (timeout, scoring) are already DB-safe,
+      // so this lock is an efficiency optimization, not a correctness requirement.
+      const acquired = await this.storage.tryAcquireAdvisoryLock(ADVISORY_LOCK_NAMESPACE, SWEEP_LOCK_KEY);
+      if (!acquired) {
+        logCompute.info("Phase2AChallengeService sweep: another instance holds the lock — skipping");
+        return;
+      }
+      try {
+        await this.sweepScoring();
+        await this.sweepTimeouts();
+      } finally {
+        await this.storage.releaseAdvisoryLock(ADVISORY_LOCK_NAMESPACE, SWEEP_LOCK_KEY);
+      }
     } catch (err) {
       logCompute.error({ err }, "Phase2AChallengeService sweep failed");
     } finally {

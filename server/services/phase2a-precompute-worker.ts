@@ -77,7 +77,13 @@ export interface PrecomputeStorage {
   getActiveResourceClassProfiles(): Promise<ComputeResourceClassProfile[]>;
   getOrphanPoolCount(profileId: string): Promise<number>;
   insertPrecomputedBundleSet(bundles: any[]): Promise<any[]>;
+  tryAcquireAdvisoryLock(namespace: number, key: number): Promise<boolean>;
+  releaseAdvisoryLock(namespace: number, key: number): Promise<void>;
 }
+
+// Advisory lock namespace/keys (shared with challenge service)
+const ADVISORY_LOCK_NAMESPACE = 3;
+const REFILL_LOCK_KEY = 2;
 
 // ── Worker ───────────────────────────────────────────────────────────────────
 
@@ -116,10 +122,21 @@ export class Phase2APrecomputeWorker {
     this.running = true;
     let totalGenerated = 0;
     try {
-      const profiles = await this.storage.getActiveResourceClassProfiles();
-      for (const profile of profiles) {
-        const generated = await this.refillProfile(profile);
-        totalGenerated += generated;
+      // Cross-instance coordination: acquire advisory lock before refilling.
+      // If another instance is already refilling, skip silently.
+      // Prevents pool overfill when multiple instances run concurrently.
+      const acquired = await this.storage.tryAcquireAdvisoryLock(ADVISORY_LOCK_NAMESPACE, REFILL_LOCK_KEY);
+      if (!acquired) {
+        return { generated: 0 };
+      }
+      try {
+        const profiles = await this.storage.getActiveResourceClassProfiles();
+        for (const profile of profiles) {
+          const generated = await this.refillProfile(profile);
+          totalGenerated += generated;
+        }
+      } finally {
+        await this.storage.releaseAdvisoryLock(ADVISORY_LOCK_NAMESPACE, REFILL_LOCK_KEY);
       }
     } catch (err) {
       logCompute.error({ err }, "Phase2APrecomputeWorker refill cycle failed");

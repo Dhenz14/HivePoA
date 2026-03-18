@@ -3632,6 +3632,27 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
+  /**
+   * Try to acquire a PostgreSQL advisory lock for cross-instance coordination.
+   * Non-blocking: returns true if acquired, false if already held by another session.
+   * Lock is released by calling releaseAdvisoryLock with the same namespace/key,
+   * or automatically when the connection is closed.
+   *
+   * Namespace convention:
+   *   1 = upload quota (existing)
+   *   2 = compute wallet budget (existing)
+   *   3 = Phase 2A sweep/refill coordination
+   */
+  async tryAcquireAdvisoryLock(namespace: number, key: number): Promise<boolean> {
+    const result = await db.execute(sql`SELECT pg_try_advisory_lock(${namespace}, ${key}) AS acquired`);
+    const rows = (result.rows ?? result) as any[];
+    return rows[0]?.acquired === true;
+  }
+
+  async releaseAdvisoryLock(namespace: number, key: number): Promise<void> {
+    await db.execute(sql`SELECT pg_advisory_unlock(${namespace}, ${key})`);
+  }
+
   async getUnscoredPhase2AJobs(): Promise<{ jobId: string; attemptId: string }[]> {
     // Jobs that reached a terminal state (accepted/rejected) but were never scored.
     // This catches crash-after-state-update-before-score-latch.
