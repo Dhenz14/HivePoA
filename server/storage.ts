@@ -3473,6 +3473,185 @@ export class DatabaseStorage implements IStorage {
       .where(eq(computeChallengeStageB.attemptId, attemptId))
       .orderBy(computeChallengeStageB.stageIndex);
   }
+
+  // ── Phase 2A Sweep Queries (read-only) ──────────────────────────────────────
+
+  async getExpiredPhase2AAttempts(now: Date): Promise<{ attemptId: string; jobId: string; nodeId: string; reason: "FIRST_PROGRESS_MISSED" | "STAGE_DEADLINE_MISSED" | "COMPLETION_DEADLINE_MISSED" }[]> {
+    // Three independent timeout conditions, UNION'd into one result set.
+    // Each condition is mutually exclusive by ordering: first_progress > stage > completion.
+    const result = await db.execute(sql`
+      WITH active_attempts AS (
+        SELECT a.id AS attempt_id, a.job_id, a.node_id, a.first_progress_at,
+               a.challenge_profile_id, a.created_at, a.checkpoint_count
+        FROM compute_job_attempts a
+        JOIN compute_jobs j ON j.id = a.job_id
+        WHERE a.challenge_protocol_version IS NOT NULL
+          AND a.state IN ('leased', 'running')
+          AND j.workload_type = 'gpu_poa_challenge'
+          AND j.state IN ('queued', 'leased', 'running')
+      )
+      -- Case 1: Claimed but never progressed (first_progress_at IS NULL and deadline passed)
+      SELECT aa.attempt_id, aa.job_id, aa.node_id, 'FIRST_PROGRESS_MISSED' AS reason
+      FROM active_attempts aa
+      JOIN compute_resource_class_profiles p ON p.profile_id = aa.challenge_profile_id
+      WHERE aa.first_progress_at IS NULL
+        AND aa.created_at + (p.first_progress_deadline_ms || ' milliseconds')::interval < ${now}
+
+      UNION ALL
+
+      -- Case 2: Stage deadline missed (revealed stage with no checkpoint, deadline passed)
+      SELECT aa.attempt_id, aa.job_id, aa.node_id, 'STAGE_DEADLINE_MISSED' AS reason
+      FROM active_attempts aa
+      WHERE aa.first_progress_at IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM compute_challenge_stage_bundles b
+          WHERE b.attempt_id = aa.attempt_id
+            AND b.stage_issued_at IS NOT NULL
+            AND b.stage_deadline_at < ${now}
+            AND NOT EXISTS (
+              SELECT 1 FROM compute_challenge_checkpoints c
+              WHERE c.attempt_id = aa.attempt_id
+                AND c.stage_index = b.stage_index
+            )
+        )
+
+      UNION ALL
+
+      -- Case 3: Overall completion deadline missed
+      SELECT aa.attempt_id, aa.job_id, aa.node_id, 'COMPLETION_DEADLINE_MISSED' AS reason
+      FROM active_attempts aa
+      JOIN compute_resource_class_profiles p ON p.profile_id = aa.challenge_profile_id
+      WHERE aa.first_progress_at IS NOT NULL
+        AND aa.created_at + (p.completion_deadline_ms || ' milliseconds')::interval < ${now}
+        AND NOT EXISTS (
+          -- Exclude already-caught stage deadline cases (avoid double-processing)
+          SELECT 1 FROM compute_challenge_stage_bundles b
+          WHERE b.attempt_id = aa.attempt_id
+            AND b.stage_issued_at IS NOT NULL
+            AND b.stage_deadline_at < ${now}
+            AND NOT EXISTS (
+              SELECT 1 FROM compute_challenge_checkpoints c
+              WHERE c.attempt_id = aa.attempt_id
+                AND c.stage_index = b.stage_index
+            )
+        )
+    `);
+    const rows = (result.rows ?? result) as any[];
+    return rows.map((r: any) => ({
+      attemptId: r.attempt_id,
+      jobId: r.job_id,
+      nodeId: r.node_id,
+      reason: r.reason as any,
+    }));
+  }
+
+  /**
+   * Atomic timeout application: lock + recheck + state transition in one transaction.
+   *
+   * Eliminates the TOCTOU race between candidate selection and timeout application.
+   * The entire eligibility recheck happens under SELECT FOR UPDATE on the attempt row,
+   * so concurrent progress (checkpoint acceptance) or concurrent sweepers cannot
+   * interleave between the recheck and the state transition.
+   *
+   * Scoring (scoreComplianceChallengeAtomic) stays outside this transaction —
+   * it has its own exact-once latch and extending the lock to cover it would
+   * hold the row lock across a second transaction unnecessarily.
+   *
+   * Returns { expired: true, jobId, nodeId } if the attempt was expired,
+   * or { expired: false } if the attempt was no longer eligible.
+   */
+  async expireAttemptIfStillEligible(
+    attemptId: string,
+    reason: "FIRST_PROGRESS_MISSED" | "STAGE_DEADLINE_MISSED" | "COMPLETION_DEADLINE_MISSED",
+    now: Date,
+  ): Promise<{ expired: true; jobId: string; nodeId: string } | { expired: false }> {
+    let result: { expired: true; jobId: string; nodeId: string } | { expired: false } = { expired: false };
+
+    await db.transaction(async (tx: any) => {
+      // Step 1: Lock the attempt row.
+      const attemptRows = await tx.execute(sql`
+        SELECT id, job_id, node_id, state, first_progress_at, challenge_profile_id, checkpoint_count
+        FROM compute_job_attempts
+        WHERE id = ${attemptId}
+        FOR UPDATE
+      `);
+      const attempt = ((attemptRows.rows ?? attemptRows) as any[])[0];
+      if (!attempt) return;
+
+      // Step 2: Attempt must still be non-terminal and timeout-eligible.
+      if (attempt.state !== "leased" && attempt.state !== "running") return;
+
+      // Step 3: Per-predicate recheck under the lock.
+      if (reason === "FIRST_PROGRESS_MISSED") {
+        if (attempt.first_progress_at !== null) return;
+      } else if (reason === "STAGE_DEADLINE_MISSED") {
+        // Check: at least one revealed stage with expired deadline and no checkpoint.
+        const expiredStageRows = await tx.execute(sql`
+          SELECT b.stage_index
+          FROM compute_challenge_stage_bundles b
+          WHERE b.attempt_id = ${attemptId}
+            AND b.stage_issued_at IS NOT NULL
+            AND b.stage_deadline_at < ${now}
+            AND NOT EXISTS (
+              SELECT 1 FROM compute_challenge_checkpoints c
+              WHERE c.attempt_id = ${attemptId}
+                AND c.stage_index = b.stage_index
+            )
+          LIMIT 1
+        `);
+        const expiredStages = (expiredStageRows.rows ?? expiredStageRows) as any[];
+        if (expiredStages.length === 0) return;
+      } else if (reason === "COMPLETION_DEADLINE_MISSED") {
+        // Check: not all stages completed.
+        const countRows = await tx.execute(sql`
+          SELECT
+            (SELECT COUNT(*)::int FROM compute_challenge_stage_bundles WHERE attempt_id = ${attemptId}) AS total_stages,
+            (SELECT COUNT(*)::int FROM compute_challenge_checkpoints WHERE attempt_id = ${attemptId}) AS completed_stages
+        `);
+        const counts = ((countRows.rows ?? countRows) as any[])[0];
+        if (Number(counts.completed_stages) >= Number(counts.total_stages)) return;
+      }
+
+      // Step 4: Apply the timeout — attempt and job state transitions.
+      await tx.execute(sql`
+        UPDATE compute_job_attempts
+        SET state = 'timed_out', finished_at = ${now}, failure_reason = ${reason}
+        WHERE id = ${attemptId}
+      `);
+
+      await tx.execute(sql`
+        UPDATE compute_jobs
+        SET state = 'rejected', completed_at = ${now}
+        WHERE id = ${attempt.job_id}
+          AND state IN ('queued', 'leased', 'running')
+      `);
+
+      result = { expired: true, jobId: attempt.job_id, nodeId: attempt.node_id };
+    });
+
+    return result;
+  }
+
+  async getUnscoredPhase2AJobs(): Promise<{ jobId: string; attemptId: string }[]> {
+    // Jobs that reached a terminal state (accepted/rejected) but were never scored.
+    // This catches crash-after-state-update-before-score-latch.
+    const result = await db.execute(sql`
+      SELECT j.id AS job_id, a.id AS attempt_id
+      FROM compute_jobs j
+      JOIN compute_job_attempts a ON a.job_id = j.id
+      WHERE j.workload_type = 'gpu_poa_challenge'
+        AND j.state IN ('accepted', 'rejected')
+        AND j.poa_scored_at IS NULL
+        AND a.challenge_protocol_version IS NOT NULL
+        AND a.state IN ('accepted', 'rejected', 'timed_out')
+      LIMIT 100
+    `);
+    const rows = (result.rows ?? result) as any[];
+    return rows.map((r: any) => ({
+      jobId: r.job_id,
+      attemptId: r.attempt_id,
+    }));
+  }
 }
 
 // Factory: SQLite when SQLITE_DB_PATH is set (desktop agent), PostgreSQL otherwise

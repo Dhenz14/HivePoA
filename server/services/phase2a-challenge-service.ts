@@ -68,6 +68,25 @@ export interface Phase2AChallengeStorage {
 
   // Exact-once scoring (existing Phase 1 latch)
   scoreComplianceChallengeAtomic(jobId: string, nodeId: string, delta: number): Promise<boolean>;
+
+  // Sweep queries (read-only, used by sweepTimeouts/sweepScoring)
+  getExpiredPhase2AAttempts(now: Date): Promise<ExpiredAttemptInfo[]>;
+  getUnscoredPhase2AJobs(): Promise<{ jobId: string; attemptId: string }[]>;
+
+  // Atomic timeout application (lock + recheck + state transition in one transaction)
+  expireAttemptIfStillEligible(
+    attemptId: string,
+    reason: "FIRST_PROGRESS_MISSED" | "STAGE_DEADLINE_MISSED" | "COMPLETION_DEADLINE_MISSED",
+    now: Date,
+  ): Promise<{ expired: true; jobId: string; nodeId: string } | { expired: false }>;
+}
+
+/** Info about an expired Phase 2A attempt, returned by sweep query. */
+export interface ExpiredAttemptInfo {
+  attemptId: string;
+  jobId: string;
+  nodeId: string;
+  reason: "FIRST_PROGRESS_MISSED" | "STAGE_DEADLINE_MISSED" | "COMPLETION_DEADLINE_MISSED";
 }
 
 // ── Result types ─────────────────────────────────────────────────────────────
@@ -94,12 +113,60 @@ export class Phase2AChallengeService {
   private storage: Phase2AChallengeStorage;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private sweepRunning = false;
+  private ready = false;
+  private initializing = false;
 
   constructor(injectedStorage?: Phase2AChallengeStorage) {
     this.storage = injectedStorage ?? (storage as unknown as Phase2AChallengeStorage);
   }
 
-  start(intervalMs: number = 60_000): void {
+  /**
+   * Startup reconciliation gate.
+   * MUST be called and awaited before the service accepts new work.
+   * Runs sweep scoring + sweep timeouts synchronously to reconcile any
+   * dirty state left by a prior process death, then marks the service ready.
+   *
+   * Failure semantics:
+   *   - If initialize() throws, ready remains false and the service stays inert.
+   *   - Partial reconciliation (sweepScoring succeeded, sweepTimeouts threw) is
+   *     idempotent on retry: exact-once latch + stale-checks prevent double-application.
+   *   - Re-entrant calls while init is in progress are rejected.
+   *
+   * Invariant: no new challenges are issued until this completes successfully.
+   */
+  async initialize(): Promise<void> {
+    if (this.ready) return;
+    if (this.initializing) {
+      throw new Error("Phase2AChallengeService: initialize() already in progress");
+    }
+    this.initializing = true;
+    try {
+      logCompute.info("Phase2AChallengeService: running startup reconciliation");
+      await this.sweepScoring();
+      await this.sweepTimeouts();
+      this.ready = true;
+      logCompute.info("Phase2AChallengeService: startup reconciliation complete, ready for issuance");
+    } finally {
+      this.initializing = false;
+    }
+  }
+
+  /** Whether startup reconciliation has completed. */
+  isReady(): boolean {
+    return this.ready;
+  }
+
+  /**
+   * Start the periodic sweep timer.
+   * Calls initialize() first if not already done — guarantees reconciliation
+   * precedes both new issuance and the first periodic sweep cycle.
+   * Idempotent: duplicate calls do not create duplicate timers.
+   */
+  async start(intervalMs: number = 60_000): Promise<void> {
+    if (!this.ready) {
+      await this.initialize();
+    }
+    if (this.sweepTimer) return; // already running
     this.sweepTimer = setInterval(() => this.sweep(), intervalMs);
     logCompute.info({ intervalMs }, "Phase2AChallengeService started");
   }
@@ -121,6 +188,11 @@ export class Phase2AChallengeService {
    * Returns the stage 0 payload from the persisted bundle snapshot.
    */
   async issueChallenge(nodeId: string, profileId: string): Promise<IssueResult> {
+    // Gate: refuse issuance until startup reconciliation has completed.
+    if (!this.ready) {
+      return { ok: false, reason: "SERVICE_NOT_READY" };
+    }
+
     // Step 1: Check pool availability before creating any job.
     const poolCount = await this.storage.getOrphanPoolCount(profileId);
     if (poolCount === 0) {
@@ -286,12 +358,27 @@ export class Phase2AChallengeService {
 
   /**
    * Score any completed-but-unscored Phase 2A challenges.
-   * Uses the existing exact-once poaScoredAt latch — same as Phase 1.
+   * Catches crash-after-complete: job reached accepted/rejected state but
+   * poaScoredAt never got set (crash between state update and score latch).
    */
   async sweepScoring(): Promise<void> {
-    // Reuses the existing unscored query filtered to gpu_poa_challenge workload type.
-    // The exact-once latch is on the job row — safe across restarts.
-    // Scoring logic is identical to Phase 1 compliance challenges.
+    const unscored = await this.storage.getUnscoredPhase2AJobs();
+    for (const { jobId, attemptId } of unscored) {
+      try {
+        const attempt = await this.storage.getComputeJobAttempt(attemptId);
+        if (!attempt) continue;
+
+        // Determine pass/fail from attempt state.
+        const passed = attempt.state === "accepted";
+        const delta = passed ? REP_PASS : REP_FAIL;
+        const scored = await this.storage.scoreComplianceChallengeAtomic(jobId, attempt.nodeId, delta);
+        if (scored) {
+          logCompute.info({ jobId, attemptId, delta }, "Phase2A sweepScoring: scored missed challenge");
+        }
+      } catch (err) {
+        logCompute.error({ jobId, attemptId, err }, "Phase2A sweepScoring: failed to score");
+      }
+    }
   }
 
   /**
@@ -304,20 +391,30 @@ export class Phase2AChallengeService {
    * (once claimed, sets are permanently bound — no recycling).
    */
   async sweepTimeouts(): Promise<void> {
-    // TODO: Implement timeout sweeps.
-    // This requires a query for attempts with:
-    //   - challengeProtocolVersion IS NOT NULL (Phase 2A attempts)
-    //   - state = 'leased' or 'running'
-    //   - first_progress_at IS NULL AND createdAt + first_progress_deadline has passed
-    //   - OR last checkpoint's stage_deadline_at has passed with no next checkpoint
-    //   - OR overall completion_deadline has passed
-    //
-    // Each expired attempt should:
-    //   1. Update attempt state to 'timed_out'
-    //   2. Update job state to 'rejected'
-    //   3. Score via exact-once latch with REP_FAIL
-    //
-    // This is deferred until after the service integration tests prove the happy path.
+    const now = new Date();
+    const candidates = await this.storage.getExpiredPhase2AAttempts(now);
+    for (const { attemptId, jobId, nodeId, reason } of candidates) {
+      try {
+        // Atomic timeout: lock + recheck + state transition in one transaction.
+        // Eliminates the TOCTOU race that the previous service-layer stale-check
+        // could only mitigate. If the attempt progressed or was already terminated
+        // between candidate selection and now, the primitive no-ops.
+        const result = await this.storage.expireAttemptIfStillEligible(attemptId, reason, now);
+        if (!result.expired) continue;
+
+        // Score as failure via exact-once latch (outside the lock transaction —
+        // the latch has its own atomicity via poa_scored_at).
+        const scored = await this.storage.scoreComplianceChallengeAtomic(
+          result.jobId, result.nodeId, REP_FAIL,
+        );
+        if (scored) {
+          logCompute.info({ jobId: result.jobId, attemptId, nodeId: result.nodeId, reason },
+            "Phase2A sweepTimeouts: expired and scored");
+        }
+      } catch (err) {
+        logCompute.error({ attemptId, jobId, err }, "Phase2A sweepTimeouts: failed to expire");
+      }
+    }
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────

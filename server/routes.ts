@@ -25,6 +25,8 @@ import { getIPFSClient } from "./services/ipfs-client";
 import { logRoutes, logWS, logEncoding, logWoT, logCompute } from "./logger";
 import { computeService, type WorkloadType, type JobManifest } from "./services/compute-service";
 import { computeWalletService } from "./services/compute-wallet-service";
+import { Phase2AChallengeService } from "./services/phase2a-challenge-service";
+import type { Phase2AChallengeStorage } from "./services/phase2a-challenge-service";
 import { TrustRegistryService } from "./services/trust-registry";
 import { hiveSimulator as hiveClientForTrust } from "./services/hive-simulator";
 import { createProofHash } from "./services/poa-crypto";
@@ -5302,6 +5304,231 @@ export async function registerRoutes(
     } catch (err: any) {
       const statusCode = err.statusCode || 400;
       res.status(statusCode).json({ error: err.message });
+    }
+  });
+
+  // ============================================================
+  // PHASE 2A: Staged Challenge Protocol — Worker HTTP API
+  // ============================================================
+  //
+  // These routes are thin HTTP wrappers around the Phase2AChallengeService.
+  // They contain NO workflow logic — all state transitions happen in the
+  // service and storage layers. Handlers only:
+  //   - validate/parse request payloads
+  //   - delegate to the service
+  //   - map service results to HTTP responses
+  //
+  // Auth: requireAgentAuth for worker routes, requireAuth for coordinator routes.
+
+  const phase2aService = new Phase2AChallengeService(storage as unknown as Phase2AChallengeStorage);
+  // Start with reconciliation + periodic sweep. Errors are logged, not fatal to server boot.
+  phase2aService.start(60_000).catch(err =>
+    logCompute.error({ err }, "Phase2AChallengeService start failed — challenges will not be issued until restart")
+  );
+
+  // POST /api/compute/challenges/issue — Issue a Phase 2A challenge to a specific node (coordinator)
+  app.post("/api/compute/challenges/issue", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        nodeId: z.string().min(1),
+        profileId: z.string().min(1),
+      });
+      const { nodeId, profileId } = schema.parse(req.body);
+      const result = await phase2aService.issueChallenge(nodeId, profileId);
+      if (!result.ok) {
+        const statusMap: Record<string, number> = {
+          SERVICE_NOT_READY: 503,
+          POOL_EXHAUSTED: 503,
+          CLAIM_FAILED: 503,
+          REVEAL_FAILED: 500,
+        };
+        res.status(statusMap[result.reason] || 400).json({ error: result.reason });
+        return;
+      }
+      res.status(201).json({
+        jobId: result.jobId,
+        attemptId: result.attemptId,
+        stage: result.stage0,
+      });
+    } catch (err: any) {
+      logCompute.error({ err }, "Phase 2A challenge issuance failed");
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // GET /api/compute/challenges/:attemptId/stage — Get current revealed stage payload (worker)
+  app.get("/api/compute/challenges/:attemptId/stage", requireAgentAuth, async (req, res) => {
+    try {
+      const { attemptId } = req.params;
+      const attempt = await storage.getComputeJobAttempt(attemptId);
+      if (!attempt) {
+        res.status(404).json({ error: "Attempt not found" });
+        return;
+      }
+
+      // Verify the worker owns this attempt's node
+      const node = await storage.getComputeNode(attempt.nodeId);
+      if (!node || node.hiveUsername !== req.authenticatedUser!) {
+        res.status(403).json({ error: "Not authorized for this attempt" });
+        return;
+      }
+
+      // Terminal check
+      if (["accepted", "rejected", "timed_out", "failed"].includes(attempt.state)) {
+        res.status(410).json({ error: "ATTEMPT_TERMINAL", state: attempt.state });
+        return;
+      }
+
+      const bundles = await storage.getChallengeBundles(attemptId);
+      if (bundles.length === 0) {
+        res.status(404).json({ error: "No challenge bundles bound to this attempt" });
+        return;
+      }
+
+      // Find the current revealed-but-unanswered stage
+      const checkpoints = await storage.getChallengeCheckpoints(attemptId);
+      const completedStages = new Set(checkpoints.map(c => c.stageIndex));
+      const currentStage = bundles
+        .filter(b => b.stageIssuedAt !== null && !completedStages.has(b.stageIndex))
+        .sort((a, b) => a.stageIndex - b.stageIndex)[0];
+
+      if (!currentStage) {
+        // All revealed stages are completed (or none revealed yet)
+        res.json({
+          attemptId,
+          state: attempt.state,
+          completedStages: checkpoints.length,
+          totalStages: bundles.length,
+          currentStage: null,
+        });
+        return;
+      }
+
+      let workloadParams: any;
+      try { workloadParams = JSON.parse(currentStage.workloadParamsJson); } catch { workloadParams = {}; }
+
+      res.json({
+        attemptId,
+        state: attempt.state,
+        completedStages: checkpoints.length,
+        totalStages: bundles.length,
+        currentStage: {
+          stageIndex: currentStage.stageIndex,
+          stageNonce: currentStage.stageNonce,
+          workloadParams,
+          deadlineAt: currentStage.stageDeadlineAt,
+        },
+      });
+    } catch (err: any) {
+      logCompute.error({ err, attemptId: req.params.attemptId }, "Phase 2A stage fetch failed");
+      res.status(500).json({ error: "Internal error" });
+    }
+  });
+
+  // POST /api/compute/challenges/:attemptId/checkpoint — Submit a checkpoint (worker)
+  app.post("/api/compute/challenges/:attemptId/checkpoint", requireAgentAuth, async (req, res) => {
+    try {
+      const { attemptId } = req.params;
+      const schema = z.object({
+        stageIndex: z.number().int().min(0),
+        resultDigest: z.string().length(64),
+        stageNonce: z.string().length(64),
+        transcriptPrevHash: z.string().max(64),
+        transcriptEntryHash: z.string().length(64),
+        telemetryJson: z.string().max(65536).optional(),
+      });
+      const body = schema.parse(req.body);
+
+      // Verify the worker owns this attempt's node
+      const attempt = await storage.getComputeJobAttempt(attemptId);
+      if (!attempt) {
+        res.status(404).json({ error: "Attempt not found" });
+        return;
+      }
+      const node = await storage.getComputeNode(attempt.nodeId);
+      if (!node || node.hiveUsername !== req.authenticatedUser!) {
+        res.status(403).json({ error: "Not authorized for this attempt" });
+        return;
+      }
+
+      // Terminal check — reject submissions to terminal attempts
+      if (["accepted", "rejected", "timed_out", "failed"].includes(attempt.state)) {
+        res.status(410).json({ error: "ATTEMPT_TERMINAL", state: attempt.state });
+        return;
+      }
+
+      const result = await phase2aService.acceptCheckpoint(
+        attemptId,
+        body.stageIndex,
+        body.resultDigest,
+        body.stageNonce,
+        body.transcriptPrevHash,
+        body.transcriptEntryHash,
+        body.telemetryJson ?? null,
+      );
+
+      if (!result.ok) {
+        const statusMap: Record<string, number> = {
+          STAGE_DEADLINE_MISSED: 408,
+          STAGE_NONCE_MISMATCH: 400,
+          STAGE_DIGEST_MISMATCH: 400,
+          TRANSCRIPT_HASH_MISMATCH: 400,
+          STAGE_ORDER_INVALID: 400,
+          CHECKPOINT_BEFORE_REVEAL: 409,
+        };
+        res.status(statusMap[result.reason] || 400).json({ error: result.reason });
+        return;
+      }
+
+      res.json({
+        checkpointId: result.checkpoint.id,
+        stageIndex: result.checkpoint.stageIndex,
+        final: result.final,
+        nextStage: result.nextStage,
+      });
+    } catch (err: any) {
+      if (err.name === "ZodError") {
+        res.status(400).json({ error: "Invalid payload", details: err.issues });
+        return;
+      }
+      logCompute.error({ err, attemptId: req.params.attemptId }, "Phase 2A checkpoint submission failed");
+      res.status(500).json({ error: "Internal error" });
+    }
+  });
+
+  // GET /api/compute/challenges/:attemptId/status — Get attempt status (worker)
+  app.get("/api/compute/challenges/:attemptId/status", requireAgentAuth, async (req, res) => {
+    try {
+      const { attemptId } = req.params;
+      const attempt = await storage.getComputeJobAttempt(attemptId);
+      if (!attempt) {
+        res.status(404).json({ error: "Attempt not found" });
+        return;
+      }
+
+      // Verify the worker owns this attempt's node
+      const node = await storage.getComputeNode(attempt.nodeId);
+      if (!node || node.hiveUsername !== req.authenticatedUser!) {
+        res.status(403).json({ error: "Not authorized for this attempt" });
+        return;
+      }
+
+      const bundles = await storage.getChallengeBundles(attemptId);
+      const checkpoints = await storage.getChallengeCheckpoints(attemptId);
+
+      res.json({
+        attemptId,
+        jobId: attempt.jobId,
+        state: attempt.state,
+        completedStages: checkpoints.length,
+        totalStages: bundles.length,
+        firstProgressAt: attempt.firstProgressAt,
+        transcriptHash: attempt.transcriptHash,
+        failureReason: attempt.failureReason ?? null,
+      });
+    } catch (err: any) {
+      logCompute.error({ err, attemptId: req.params.attemptId }, "Phase 2A status fetch failed");
+      res.status(500).json({ error: "Internal error" });
     }
   });
 
