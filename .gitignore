@@ -14,3 +14,7 @@ desktop-agent/build
 desktop-agent/release
 desktop-agent/kubo-bin
 out
+
+# Phase 2A compiled reference (source is checked in, binary is not)
+evidence/phase2a/phase2a_kernel_ref_v1
+evidence/phase2a/phase2a_kernel_ref_v1.exe
