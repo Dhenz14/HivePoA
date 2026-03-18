@@ -27,6 +27,8 @@ import { computeService, type WorkloadType, type JobManifest } from "./services/
 import { computeWalletService } from "./services/compute-wallet-service";
 import { Phase2AChallengeService } from "./services/phase2a-challenge-service";
 import type { Phase2AChallengeStorage } from "./services/phase2a-challenge-service";
+import { Phase2APrecomputeWorker } from "./services/phase2a-precompute-worker";
+import type { PrecomputeStorage } from "./services/phase2a-precompute-worker";
 import { TrustRegistryService } from "./services/trust-registry";
 import { hiveSimulator as hiveClientForTrust } from "./services/hive-simulator";
 import { createProofHash } from "./services/poa-crypto";
@@ -5325,6 +5327,13 @@ export async function registerRoutes(
   phase2aService.start(60_000).catch(err =>
     logCompute.error({ err }, "Phase2AChallengeService start failed — challenges will not be issued until restart")
   );
+
+  // Start the precompute worker to maintain the orphan bundle pool.
+  // Only runs in production mode (not during tests — kernel binary calls are expensive).
+  if (process.env.NODE_ENV !== "test" && process.env.VITEST !== "true") {
+    const phase2aPrecompute = new Phase2APrecomputeWorker(storage as unknown as PrecomputeStorage);
+    phase2aPrecompute.start(30_000); // check pool every 30s
+  }
 
   // POST /api/compute/challenges/issue — Issue a Phase 2A challenge to a specific node (coordinator)
   app.post("/api/compute/challenges/issue", requireAuth, async (req, res) => {
