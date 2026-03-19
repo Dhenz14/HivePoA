@@ -39,10 +39,10 @@ let profileId: string;
 let classId: number;
 
 /** Mock digest function: produces deterministic but fake digests for testing. */
-function mockDigestFn(
+async function mockDigestFn(
   rootNonce: string, _classId: number, stageIndex: number,
   _M: number, _N: number, _K: number, _mixRounds: number,
-): KernelDigestResult {
+): Promise<KernelDigestResult> {
   const stageNonce = createHash("sha256")
     .update(rootNonce + String.fromCharCode(stageIndex & 0xff, (stageIndex >> 8) & 0xff, (stageIndex >> 16) & 0xff, (stageIndex >> 24) & 0xff))
     .digest("hex");
@@ -294,10 +294,10 @@ describe("Phase 2A Precompute Worker — PW5: Idempotency", () => {
 describe("Phase 2A Precompute Worker — PW6: Error Handling", () => {
   it("PW6: digest function failure stops batch without partial corruption", async () => {
     let callCount = 0;
-    const failingDigestFn = (
+    const failingDigestFn = async (
       rootNonce: string, _classId: number, stageIndex: number,
       _M: number, _N: number, _K: number, _mixRounds: number,
-    ): KernelDigestResult => {
+    ): Promise<KernelDigestResult> => {
       callCount++;
       if (stageIndex === 2) {
         throw new Error("Simulated kernel crash");

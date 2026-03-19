@@ -18,7 +18,10 @@
  */
 import { storage } from "../storage";
 import { logCompute } from "../logger";
-import { execSync } from "child_process";
+import { execFile } from "child_process";
+import { promisify } from "util";
+
+const execFileAsync = promisify(execFile);
 import { randomUUID } from "crypto";
 import type { ComputeResourceClassProfile } from "@shared/schema";
 
@@ -41,21 +44,21 @@ export interface KernelDigestResult {
  * This is deliberately NOT a reimplementation — the C99 binary IS the spec.
  * Any divergence between this output and a worker's output is a worker bug.
  */
-export function computeStageDigest(
+export async function computeStageDigest(
   rootNonce: string,
   classId: number,
   stageIndex: number,
   M: number, N: number, K: number, mixRounds: number,
-): KernelDigestResult {
+): Promise<KernelDigestResult> {
   const evidenceDir = "/mnt/c/Users/theyc/Hive\\ AI/HivePoA/evidence/phase2a";
   const binary = `${evidenceDir}/phase2a_kernel_ref_v1`;
 
   const cmd = `${binary} --digest ${rootNonce} ${classId} ${stageIndex} ${M} ${N} ${K} ${mixRounds}`;
 
-  const output = execSync(`wsl -d Ubuntu-24.04 -- bash -c "${cmd}"`, {
-    encoding: "utf-8",
-    timeout: 60_000, // generous timeout for large matrix computations
-  });
+  const { stdout: output } = await execFileAsync(
+    "wsl", ["-d", "Ubuntu-24.04", "--", "bash", "-c", cmd],
+    { encoding: "utf-8", timeout: 120_000 },
+  );
 
   // Parse output: stage_nonce=<hex>\ndigest=<hex>\n
   const nonceMatch = output.match(/stage_nonce=([0-9a-f]{64})/);
@@ -194,7 +197,7 @@ export class Phase2APrecomputeWorker {
 
     const bundles = [];
     for (let stageIndex = 0; stageIndex < stages; stageIndex++) {
-      const result = this.digestFn(
+      const result = await this.digestFn(
         rootNonce,
         profile.classId,
         stageIndex,
