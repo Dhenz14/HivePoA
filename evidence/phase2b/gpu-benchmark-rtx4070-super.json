@@ -1,0 +1,121 @@
+{
+  "benchmark_id": "gpu-bench-rtx4070-super-001",
+  "benchmark_date": "2026-03-18",
+  "benchmark_type": "GPU execution timing — calibration measurement artifact",
+
+  "device_identity": {
+    "model": "NVIDIA GeForce RTX 4070 SUPER",
+    "uuid": "GPU-421e7312-7564-496c-4082-637184ffa83b",
+    "architecture": "Ada Lovelace",
+    "vram_mib": 12282,
+    "vram_gb": 12,
+    "memory_bus_bits": 192,
+    "memory_bandwidth_gbps": 504.0,
+    "cuda_cores": null,
+    "sm_count": 56,
+    "compute_capability": "8.9",
+    "boost_clock_mhz": 2505,
+    "memory_clock_mhz": 10501,
+    "tdp_watts": 220,
+    "l2_cache_kb": 49152,
+    "pcie": "Gen 4",
+    "multi_gpu": false,
+    "driver_version": "560.94",
+    "cuda_version": "12.6",
+    "vram_tier": "T2 (7-12 GB)"
+  },
+
+  "host_identity": {
+    "hostname": "DESKTOP-634RFU2",
+    "os": "WSL2 on Windows",
+    "nvcc_version": "CUDA toolkit (compiled with -arch=sm_89)"
+  },
+
+  "kernel_identity": {
+    "source": "evidence/phase2b/phase2a_kernel_gpu.cu",
+    "reference": "evidence/phase2a/phase2a_kernel_ref_v1.c",
+    "golden_vectors_verified": true,
+    "golden_vector_count": 3,
+    "digest_match": "EXACT — GPU kernel produces identical digests to C99 reference"
+  },
+
+  "benchmark_conditions": {
+    "vram_free_gb": 11.59,
+    "vram_total_gb": 12.88,
+    "warmup_run": true,
+    "runs_per_profile": 5,
+    "timing_method": "CUDA events (GPU) + clock_gettime CLOCK_MONOTONIC (CPU SHA-256)"
+  },
+
+  "results": {
+    "gpu_small_v2": {
+      "dimensions": { "M": 262144, "N": 4096, "K": 8, "mix_rounds": 1 },
+      "working_set_gb": 4.29,
+      "gpu_mem_needed_gb": 4.32,
+      "fits_on_device": true,
+      "per_stage_ms": {
+        "fill_A": 9.34,
+        "fill_X": 0.01,
+        "gemm": 36.34,
+        "mix": 0.07,
+        "gpu_total": 45.76,
+        "d2h_copy": 1.65,
+        "sha256_cpu": 52.05,
+        "total": 99.47
+      },
+      "per_stage_range_ms": { "best": 99.21, "worst": 99.71 },
+      "per_challenge_ms": 497.33,
+      "calibration_role": "T2 data point for gpu-small-v2 (non-floor, 12 GB not 8 GB)"
+    },
+
+    "gpu_medium_v2": {
+      "dimensions": { "M": 524288, "N": 4096, "K": 8, "mix_rounds": 2 },
+      "working_set_gb": 8.59,
+      "gpu_mem_needed_gb": 8.64,
+      "fits_on_device": true,
+      "per_stage_ms": {
+        "fill_A": 18.44,
+        "fill_X": 0.00,
+        "gemm": 71.46,
+        "mix": 0.23,
+        "gpu_total": 90.14,
+        "d2h_copy": 3.22,
+        "sha256_cpu": 104.38,
+        "total": 197.74
+      },
+      "per_stage_range_ms": { "best": 197.14, "worst": 198.28 },
+      "per_challenge_ms": 988.72,
+      "calibration_role": "NEGATIVE CONTROL for gpu-medium-v2 (T2 ceiling, 12 GB)"
+    },
+
+    "gpu_large_v2": {
+      "dimensions": { "M": 786432, "N": 4096, "K": 8, "mix_rounds": 2 },
+      "working_set_gb": 12.88,
+      "gpu_mem_needed_gb": 12.96,
+      "fits_on_device": false,
+      "failure_mode": "OOM — need 12.96 GB, only 11.59 GB free",
+      "calibration_role": "Confirms VRAM wall: 12 GB device cannot fit 12.96 GB working set"
+    }
+  },
+
+  "compute_competitiveness": {
+    "paired_with": "gpu-bench-rtx4070ti-super-001",
+    "positive_device": "RTX 4070 Ti SUPER (16 GB, T3 floor)",
+    "negative_device": "RTX 4070 SUPER (12 GB, T2 ceiling)",
+    "same_architecture": true,
+    "architecture": "Ada Lovelace",
+    "gpu_small_v2_slowdown": 1.36,
+    "gpu_medium_v2_slowdown": 1.33,
+    "threshold": 2.0,
+    "verdict": "PASS — compute-competitive (same architecture, slowdown < 2.0)",
+    "slowdown_explanation": "Proportional to hardware specs: bandwidth ratio 504/672=0.75, SM ratio 56/66=0.85. No class-level compute gap."
+  },
+
+  "vram_discrimination": {
+    "gpu_small_v2_4gb": "FITS both devices — no VRAM discrimination at this working set",
+    "gpu_medium_v2_8gb": "FITS both devices — 8.64 GB < 12 GB T2 ceiling. Discrimination occurs at T1 boundary (6 GB would OOM)",
+    "gpu_large_v2_13gb": "OOM on 12 GB device — VRAM wall confirmed. Binary discrimination between T3 (fits) and T2 (does not fit)"
+  },
+
+  "evidence_status": "BENCHMARK DATA — standalone GPU timing without challenge protocol. Protocol timing will be higher by network RTT + serialization. compute_slowdown computed from GPU-only medians as per calibration plan."
+}
