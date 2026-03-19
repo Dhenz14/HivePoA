@@ -22,3 +22,5 @@ evidence/phase2a/phase2a_kernel_ref_v1.exe
 # Phase 2B compiled GPU kernel (source is checked in, binary is not)
 evidence/phase2b/phase2a_kernel_gpu
 evidence/phase2b/phase2a_kernel_gpu.exe
+evidence/phase2b/staging/staging-results-*.jsonl
+evidence/phase2b/staging/calibration-timing-*.json

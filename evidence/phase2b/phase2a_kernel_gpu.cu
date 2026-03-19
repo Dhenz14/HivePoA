@@ -16,6 +16,8 @@
  *   ./phase2a_kernel_gpu --bench M N K R [runs]  (benchmark given dimensions)
  *   ./phase2a_kernel_gpu --bench-profiles         (all Phase 2A+2B profiles)
  *   ./phase2a_kernel_gpu --info                   (GPU info)
+ *   ./phase2a_kernel_gpu --digest ROOT CID SI M N K MR   (mirrors C99 ref interface)
+ *   ./phase2a_kernel_gpu --compute NONCE CID SI M N K MR (staging worker mode)
  */
 
 #include <cstdint>
@@ -212,6 +214,24 @@ static void hex_encode(const uint8_t *in, size_t len, char *out) {
         out[2*i + 1] = HEX[in[i] & 0x0f];
     }
     out[2*len] = '\0';
+}
+
+static int hex_val(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static int hex_decode(const char *hex, uint8_t *out, size_t out_len) {
+    if (strlen(hex) != out_len * 2) return -1;
+    for (size_t i = 0; i < out_len; i++) {
+        int hi = hex_val(hex[2*i]);
+        int lo = hex_val(hex[2*i + 1]);
+        if (hi < 0 || lo < 0) return -1;
+        out[i] = (uint8_t)((hi << 4) | lo);
+    }
+    return 0;
 }
 
 /* ======================== SplitMix64 (host) ======================== */
@@ -420,18 +440,18 @@ struct stage_timing_t {
     float total_ms;     /* everything including digest */
 };
 
-static int compute_stage_gpu(const char *root_nonce_ascii,
-                             uint32_t stage_index,
-                             uint32_t resource_class_id,
-                             uint32_t M, uint32_t N, uint32_t K,
-                             uint32_t mix_rounds,
-                             uint8_t out_digest[32],
-                             stage_timing_t *timing) {
+/**
+ * Core GPU computation: takes pre-derived stage_nonce bytes.
+ * Used by both --digest (root_nonce → derive → core) and --compute (nonce hex → core).
+ */
+static int compute_stage_gpu_core(const uint8_t stage_nonce[32],
+                                  uint32_t stage_index,
+                                  uint32_t resource_class_id,
+                                  uint32_t M, uint32_t N, uint32_t K,
+                                  uint32_t mix_rounds,
+                                  uint8_t out_digest[32],
+                                  stage_timing_t *timing) {
     if (M == 0 || N == 0 || K == 0 || mix_rounds == 0) return -1;
-
-    /* Derive nonce on CPU */
-    uint8_t stage_nonce[32];
-    derive_stage_nonce(root_nonce_ascii, stage_index, stage_nonce);
 
     uint64_t count_A = (uint64_t)M * N;
     uint64_t count_X = (uint64_t)N * K;
@@ -572,6 +592,23 @@ static int compute_stage_gpu(const char *root_nonce_ascii,
     cudaEventDestroy(ev_d2h);
 
     return 0;
+}
+
+/**
+ * Original interface: derives stage_nonce from root_nonce, then delegates to core.
+ * Used by --bench, --selftest, and any path that has root_nonce.
+ */
+static int compute_stage_gpu(const char *root_nonce_ascii,
+                             uint32_t stage_index,
+                             uint32_t resource_class_id,
+                             uint32_t M, uint32_t N, uint32_t K,
+                             uint32_t mix_rounds,
+                             uint8_t out_digest[32],
+                             stage_timing_t *timing) {
+    uint8_t stage_nonce[32];
+    derive_stage_nonce(root_nonce_ascii, stage_index, stage_nonce);
+    return compute_stage_gpu_core(stage_nonce, stage_index, resource_class_id,
+                                  M, N, K, mix_rounds, out_digest, timing);
 }
 
 /* ======================== Golden vector verification ======================== */
@@ -865,16 +902,86 @@ static void cmd_info(void) {
     }
 }
 
+/* ======================== Digest mode (mirrors C99 reference interface) ======================== */
+
+/**
+ * --digest rootNonce classId stageIndex M N K mixRounds
+ * Output: stage_nonce=<hex>\ndigest=<hex>\n
+ * Identical interface to the C99 reference binary, but runs GEMM/mix on GPU.
+ */
+static int cmd_digest(const char *root_nonce, uint32_t class_id,
+                      uint32_t stage_index, uint32_t M, uint32_t N,
+                      uint32_t K, uint32_t mix_rounds) {
+    uint8_t stage_nonce[32];
+    derive_stage_nonce(root_nonce, stage_index, stage_nonce);
+
+    char nonce_hex[65];
+    hex_encode(stage_nonce, 32, nonce_hex);
+
+    uint8_t digest[32];
+    stage_timing_t timing;
+    int rc = compute_stage_gpu_core(stage_nonce, stage_index, class_id,
+                                    M, N, K, mix_rounds, digest, &timing);
+    if (rc != 0) {
+        fprintf(stderr, "compute_stage_gpu_core failed (rc=%d)\n", rc);
+        return 1;
+    }
+
+    char digest_hex[65];
+    hex_encode(digest, 32, digest_hex);
+
+    printf("stage_nonce=%s\n", nonce_hex);
+    printf("digest=%s\n", digest_hex);
+    return 0;
+}
+
+/* ======================== Compute mode (staging worker) ======================== */
+
+/**
+ * --compute stageNonceHex classId stageIndex M N K mixRounds
+ * Output: digest=<hex>\ngpu_ms=<float>\ntotal_ms=<float>\n
+ * Takes pre-derived stage_nonce as 64-char hex. Used by the staging GPU worker
+ * to compute challenge digests through the protocol without knowing root_nonce.
+ */
+static int cmd_compute(const char *nonce_hex, uint32_t class_id,
+                       uint32_t stage_index, uint32_t M, uint32_t N,
+                       uint32_t K, uint32_t mix_rounds) {
+    uint8_t stage_nonce[32];
+    if (hex_decode(nonce_hex, stage_nonce, 32) != 0) {
+        fprintf(stderr, "Invalid stage_nonce hex (need exactly 64 hex chars)\n");
+        return 1;
+    }
+
+    uint8_t digest[32];
+    stage_timing_t timing;
+    int rc = compute_stage_gpu_core(stage_nonce, stage_index, class_id,
+                                    M, N, K, mix_rounds, digest, &timing);
+    if (rc != 0) {
+        fprintf(stderr, "compute_stage_gpu_core failed (rc=%d)\n", rc);
+        return 1;
+    }
+
+    char digest_hex[65];
+    hex_encode(digest, 32, digest_hex);
+
+    printf("digest=%s\n", digest_hex);
+    printf("gpu_ms=%.2f\n", timing.total_gpu_ms);
+    printf("total_ms=%.2f\n", timing.total_ms);
+    return 0;
+}
+
 /* ======================== Main ======================== */
 
 static void print_usage(const char *argv0) {
     fprintf(stderr,
         "Usage:\n"
-        "  %s --selftest                Golden vector verification\n"
-        "  %s --bench M N K R [runs]    Benchmark (default 5 runs)\n"
-        "  %s --bench-profiles          All Phase 2A+2B profiles\n"
-        "  %s --info                    GPU information\n",
-        argv0, argv0, argv0, argv0);
+        "  %s --selftest                           Golden vector verification\n"
+        "  %s --bench M N K R [runs]               Benchmark (default 5 runs)\n"
+        "  %s --bench-profiles                     All Phase 2A+2B profiles\n"
+        "  %s --info                               GPU information\n"
+        "  %s --digest ROOT_NONCE CID SI M N K MR  Compute digest (mirrors C99 ref)\n"
+        "  %s --compute NONCE_HEX CID SI M N K MR  Compute from stage_nonce (worker)\n",
+        argv0, argv0, argv0, argv0, argv0, argv0);
 }
 
 int main(int argc, char **argv) {
@@ -886,6 +993,26 @@ int main(int argc, char **argv) {
     if (strcmp(argv[1], "--info") == 0) {
         cmd_info();
         return 0;
+    }
+
+    if (strcmp(argv[1], "--digest") == 0 && argc >= 9) {
+        return cmd_digest(argv[2],
+                          (uint32_t)strtoul(argv[3], NULL, 10),
+                          (uint32_t)strtoul(argv[4], NULL, 10),
+                          (uint32_t)strtoul(argv[5], NULL, 10),
+                          (uint32_t)strtoul(argv[6], NULL, 10),
+                          (uint32_t)strtoul(argv[7], NULL, 10),
+                          (uint32_t)strtoul(argv[8], NULL, 10));
+    }
+
+    if (strcmp(argv[1], "--compute") == 0 && argc >= 9) {
+        return cmd_compute(argv[2],
+                           (uint32_t)strtoul(argv[3], NULL, 10),
+                           (uint32_t)strtoul(argv[4], NULL, 10),
+                           (uint32_t)strtoul(argv[5], NULL, 10),
+                           (uint32_t)strtoul(argv[6], NULL, 10),
+                           (uint32_t)strtoul(argv[7], NULL, 10),
+                           (uint32_t)strtoul(argv[8], NULL, 10));
     }
 
     if (strcmp(argv[1], "--bench") == 0 && argc >= 6) {
