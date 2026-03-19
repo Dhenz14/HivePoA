@@ -5691,6 +5691,153 @@ export async function registerRoutes(
   });
 
   // ============================================================
+  // INFERENCE: Dual-Mode Inference API (the core user-facing endpoint)
+  // ============================================================
+
+  // POST /api/compute/inference — Execute inference request (local or cluster)
+  // This is THE endpoint the /inference page calls. Routes to Ollama (local)
+  // or vLLM (cluster) based on mode. No auth required for local mode.
+  app.post("/api/compute/inference", async (req, res) => {
+    try {
+      const schema = z.object({
+        prompt: z.string().min(1).max(100000),
+        mode: z.enum(["medium", "high_intel", "auto"]).default("medium"),
+        max_tokens: z.number().int().min(1).max(16384).default(2048),
+        temperature: z.number().min(0).max(2).default(0.7),
+        model: z.string().optional(),
+      });
+      const data = schema.parse(req.body);
+      const start = Date.now();
+
+      // Determine inference backend
+      const ollamaUrl = process.env.OLLAMA_URL || "http://localhost:11434";
+      const vllmUrl = process.env.VLLM_URL || "http://localhost:8100";
+      const useCluster = data.mode === "high_intel";
+
+      if (useCluster) {
+        // Cluster mode: route to vLLM (OpenAI-compatible API)
+        try {
+          const vllmRes = await fetch(`${vllmUrl}/v1/chat/completions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: data.model || "default",
+              messages: [{ role: "user", content: data.prompt }],
+              max_tokens: data.max_tokens,
+              temperature: data.temperature,
+              stream: false,
+            }),
+          });
+          if (vllmRes.ok) {
+            const vllmData = await vllmRes.json() as any;
+            const text = vllmData.choices?.[0]?.message?.content || "";
+            const tokens = vllmData.usage?.completion_tokens || text.split(/\s+/).length;
+            res.json({
+              text,
+              tokens_generated: tokens,
+              latency_ms: Date.now() - start,
+              strategy_used: "cluster",
+              model_used: vllmData.model || data.model || "vllm",
+            });
+            return;
+          }
+        } catch (vllmErr: any) {
+          logCompute.warn({ err: vllmErr.message }, "vLLM cluster unavailable, falling back to local");
+        }
+        // Fall through to local if cluster fails
+      }
+
+      // Local mode: route to Ollama
+      try {
+        const ollamaModel = data.model || process.env.OLLAMA_MODEL || "qwen3:14b";
+        const ollamaRes = await fetch(`${ollamaUrl}/api/generate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: ollamaModel,
+            prompt: data.prompt,
+            stream: false,
+            options: {
+              num_predict: data.max_tokens,
+              temperature: data.temperature,
+            },
+          }),
+        });
+        if (ollamaRes.ok) {
+          const ollamaData = await ollamaRes.json() as any;
+          const text = ollamaData.response || "";
+          const tokens = ollamaData.eval_count || text.split(/\s+/).length;
+          res.json({
+            text,
+            tokens_generated: tokens,
+            latency_ms: Date.now() - start,
+            strategy_used: "local",
+            model_used: ollamaModel,
+          });
+          return;
+        }
+      } catch (ollamaErr: any) {
+        logCompute.warn({ err: ollamaErr.message }, "Ollama unavailable");
+      }
+
+      // Both backends unavailable
+      res.status(503).json({
+        error: {
+          code: "NO_INFERENCE_BACKEND",
+          message: "No inference backend available. Start Ollama (local) or vLLM (cluster).",
+        },
+        text: "",
+        tokens_generated: 0,
+        latency_ms: Date.now() - start,
+        strategy_used: "none",
+      });
+    } catch (err: any) {
+      if (err?.name === "ZodError") {
+        res.status(400).json({ error: { code: "VALIDATION_ERROR", message: err.message } });
+        return;
+      }
+      logCompute.error({ err }, "Inference request failed");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Inference failed" } });
+    }
+  });
+
+  // GET /api/compute/inference/modes — Available inference modes
+  app.get("/api/compute/inference/modes", async (_req, res) => {
+    // Check which backends are available
+    const ollamaUrl = process.env.OLLAMA_URL || "http://localhost:11434";
+    const vllmUrl = process.env.VLLM_URL || "http://localhost:8100";
+
+    let ollamaAvailable = false;
+    let vllmAvailable = false;
+
+    try {
+      const r = await fetch(`${ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(2000) });
+      ollamaAvailable = r.ok;
+    } catch {}
+
+    try {
+      const r = await fetch(`${vllmUrl}/health`, { signal: AbortSignal.timeout(2000) });
+      vllmAvailable = r.ok;
+    } catch {}
+
+    res.json({
+      modes: {
+        medium: {
+          available: ollamaAvailable,
+          backend: "ollama",
+          description: "Local inference — free, private, offline-capable",
+        },
+        high_intel: {
+          available: vllmAvailable,
+          backend: "vllm",
+          description: "Cluster inference — community GPU pool",
+        },
+      },
+      anyAvailable: ollamaAvailable || vllmAvailable,
+    });
+  });
+
+  // ============================================================
   // PHASE 2B: VRAM Class Certification — Query Routes
   // ============================================================
 
