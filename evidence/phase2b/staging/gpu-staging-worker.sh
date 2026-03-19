@@ -5,11 +5,15 @@
 # Server measures timing (checkpoint_received_at - stage_issued_at) which includes
 # network RTT, GPU compute, worker serialization — exactly the calibration signal.
 #
+# Uses CUDA binary in --serve mode: one-time GPU init, then persistent process
+# handles all stages. This avoids the ~3 minute CUDA context init per invocation
+# on WSL2.
+#
 # Prerequisites:
 #   1. HivePoA server running at $SERVER_URL
 #   2. Database seeded (run seed-staging-db.sql first)
 #   3. Precompute pool populated (server's precompute worker refills automatically)
-#   4. CUDA kernel compiled (phase2a_kernel_gpu with --compute mode)
+#   4. CUDA kernel compiled (phase2a_kernel_gpu with --serve mode)
 #
 # Usage:
 #   ./gpu-staging-worker.sh [num_challenges] [profile_id]
@@ -20,7 +24,7 @@ set -euo pipefail
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-SERVER_URL="${SERVER_URL:-http://localhost:3000}"
+SERVER_URL="${SERVER_URL:-http://localhost:5000}"
 COORDINATOR_TOKEN="${COORDINATOR_TOKEN:-staging-coordinator-token-2026}"
 WORKER_API_KEY="${WORKER_API_KEY:-staging-gpu-worker-apikey-2026}"
 NODE_ID="${NODE_ID:-staging-node-rtx4070ti-001}"
@@ -30,6 +34,11 @@ NUM_CHALLENGES="${1:-20}"
 # CUDA binary — look in script directory first, then PATH
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CUDA_BIN="${CUDA_BIN:-${SCRIPT_DIR}/../phase2a_kernel_gpu}"
+
+# Max dimensions for --serve pre-allocation (gpu-medium-v2)
+SERVE_MAX_M="${SERVE_MAX_M:-524288}"
+SERVE_MAX_N="${SERVE_MAX_N:-4096}"
+SERVE_MAX_K="${SERVE_MAX_K:-8}"
 
 # ── Validate prerequisites ────────────────────────────────────────────────────
 
@@ -41,6 +50,7 @@ echo "Profile:    ${PROFILE_ID}"
 echo "Node:       ${NODE_ID}"
 echo "Challenges: ${NUM_CHALLENGES}"
 echo "CUDA bin:   ${CUDA_BIN}"
+echo "Serve dims: M=${SERVE_MAX_M} N=${SERVE_MAX_N} K=${SERVE_MAX_K}"
 echo "================================================================"
 echo ""
 
@@ -58,6 +68,79 @@ if [ "${HTTP_CODE}" = "000" ]; then
 fi
 echo "Server health: OK (${HTTP_CODE})"
 echo ""
+
+# ── Start CUDA serve process ─────────────────────────────────────────────────
+
+# Named pipes for bidirectional communication with serve process
+FIFO_IN=$(mktemp -u /tmp/cuda_serve_in_XXXXXX)
+FIFO_OUT=$(mktemp -u /tmp/cuda_serve_out_XXXXXX)
+mkfifo "${FIFO_IN}"
+mkfifo "${FIFO_OUT}"
+
+# Cleanup function
+cleanup() {
+    if [ -n "${CUDA_PID:-}" ] && kill -0 "${CUDA_PID}" 2>/dev/null; then
+        echo "EXIT" > "${FIFO_IN}" 2>/dev/null || true
+        wait "${CUDA_PID}" 2>/dev/null || true
+    fi
+    rm -f "${FIFO_IN}" "${FIFO_OUT}"
+}
+trap cleanup EXIT
+
+echo "Starting CUDA serve process (one-time GPU init — may take a few minutes)..."
+"${CUDA_BIN}" --serve "${SERVE_MAX_M}" "${SERVE_MAX_N}" "${SERVE_MAX_K}" \
+    < "${FIFO_IN}" > "${FIFO_OUT}" 2>&1 &
+CUDA_PID=$!
+
+# Keep the FIFO_IN open for writing (otherwise the serve process sees EOF)
+exec 3>"${FIFO_IN}"
+
+# Wait for READY signal
+echo "Waiting for GPU initialization..."
+while IFS= read -r line; do
+    if [[ "${line}" == *"READY"* ]]; then
+        echo "GPU ready!"
+        break
+    fi
+    # Print init messages (from stderr, mixed into stdout via 2>&1)
+    echo "  [init] ${line}"
+done < "${FIFO_OUT}"
+echo ""
+
+# ── Helper: send command to CUDA serve and read response ─────────────────────
+
+gpu_compute() {
+    local nonce_hex="$1"
+    local cid="$2"
+    local si="$3"
+    local M="$4"
+    local N="$5"
+    local K="$6"
+    local mr="$7"
+
+    # Send command
+    echo "${nonce_hex} ${cid} ${si} ${M} ${N} ${K} ${mr}" >&3
+
+    # Read response until DONE
+    RESULT_DIGEST=""
+    GPU_MS=""
+    TOTAL_MS=""
+    while IFS= read -r line; do
+        case "${line}" in
+            digest=*)   RESULT_DIGEST="${line#digest=}" ;;
+            gpu_ms=*)   GPU_MS="${line#gpu_ms=}" ;;
+            total_ms=*) TOTAL_MS="${line#total_ms=}" ;;
+            DONE)       break ;;
+            ERROR*)     echo "    GPU ERROR: ${line}"; return 1 ;;
+        esac
+    done < "${FIFO_OUT}"
+
+    if [ -z "${RESULT_DIGEST}" ]; then
+        echo "    GPU compute returned no digest"
+        return 1
+    fi
+    return 0
+}
 
 # ── Results tracking ──────────────────────────────────────────────────────────
 
@@ -85,10 +168,8 @@ for i in $(seq 1 "${NUM_CHALLENGES}"); do
 
         if [ "${ISSUE_ERROR}" = "POOL_EXHAUSTED" ]; then
             echo ""
-            echo "Pool exhausted. Waiting 60s for precompute worker to refill..."
-            sleep 60
-            # Retry this challenge
-            i=$((i - 1))
+            echo "Pool exhausted. Waiting 120s for precompute worker to refill..."
+            sleep 120
         fi
         continue
     fi
@@ -116,17 +197,10 @@ for i in $(seq 1 "${NUM_CHALLENGES}"); do
     while [ "${FINAL}" != "true" ]; do
         STAGE_START=$(date +%s%N)
 
-        # Step 2: Run CUDA kernel
-        COMPUTE_OUT=$("${CUDA_BIN}" --compute "${STAGE_NONCE}" "${CLASS_ID}" \
-                      "${STAGE_INDEX}" "${M}" "${N}" "${K}" "${MIX_ROUNDS}" 2>&1)
-
-        RESULT_DIGEST=$(echo "${COMPUTE_OUT}" | grep '^digest=' | cut -d= -f2)
-        GPU_MS=$(echo "${COMPUTE_OUT}" | grep '^gpu_ms=' | cut -d= -f2)
-        TOTAL_MS=$(echo "${COMPUTE_OUT}" | grep '^total_ms=' | cut -d= -f2)
-
-        if [ -z "${RESULT_DIGEST}" ]; then
-            echo "  CUDA kernel failed at stage ${STAGE_INDEX}:"
-            echo "  ${COMPUTE_OUT}"
+        # Step 2: Run GPU compute via serve process
+        if ! gpu_compute "${STAGE_NONCE}" "${CLASS_ID}" "${STAGE_INDEX}" \
+                         "${M}" "${N}" "${K}" "${MIX_ROUNDS}"; then
+            echo "  CUDA compute failed at stage ${STAGE_INDEX}"
             FAIL_COUNT=$((FAIL_COUNT + 1))
             break
         fi
@@ -189,6 +263,11 @@ for i in $(seq 1 "${NUM_CHALLENGES}"); do
 
     echo ""
 done
+
+# ── Shutdown serve process ────────────────────────────────────────────────────
+
+echo "EXIT" >&3
+exec 3>&-
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 

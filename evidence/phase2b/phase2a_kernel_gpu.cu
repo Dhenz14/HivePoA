@@ -970,6 +970,180 @@ static int cmd_compute(const char *nonce_hex, uint32_t class_id,
     return 0;
 }
 
+/**
+ * --serve mode: persistent GPU process for staging calibration.
+ *
+ * Initializes CUDA and pre-allocates GPU memory ONCE, then reads
+ * compute requests from stdin, one per line:
+ *   NONCE_HEX CID SI M N K MR
+ *
+ * For each line, outputs:
+ *   digest=<hex>
+ *   gpu_ms=<float>
+ *   total_ms=<float>
+ *   DONE
+ *
+ * Exits when stdin closes (EOF) or on "EXIT" line.
+ *
+ * This eliminates the ~3 minute CUDA context + memory allocation
+ * overhead that occurs per-invocation on WSL2.
+ */
+static int cmd_serve(uint32_t max_M, uint32_t max_N, uint32_t max_K) {
+    fprintf(stderr, "serve: initializing CUDA and pre-allocating for M=%u N=%u K=%u...\n",
+            max_M, max_N, max_K);
+
+    /* Force CUDA context initialization */
+    CUDA_CHECK(cudaSetDevice(0));
+    CUDA_CHECK(cudaFree(0));
+
+    uint64_t max_count_A = (uint64_t)max_M * max_N;
+    uint64_t max_count_X = (uint64_t)max_N * max_K;
+    uint64_t max_count_Y = (uint64_t)max_M * max_K;
+
+    uint32_t *d_A, *d_X, *d_Y, *d_buf_a, *d_buf_b;
+    CUDA_CHECK(cudaMalloc(&d_A, (size_t)max_count_A * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&d_X, (size_t)max_count_X * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&d_Y, (size_t)max_count_Y * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&d_buf_a, (size_t)max_count_Y * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&d_buf_b, (size_t)max_count_Y * sizeof(uint32_t)));
+
+    fprintf(stderr, "serve: READY — reading from stdin\n");
+    fflush(stderr);
+    printf("READY\n");
+    fflush(stdout);
+
+    char line[512];
+    while (fgets(line, sizeof(line), stdin)) {
+        /* Strip newline */
+        line[strcspn(line, "\r\n")] = '\0';
+
+        if (strcmp(line, "EXIT") == 0) break;
+        if (line[0] == '\0') continue;
+
+        /* Parse: NONCE_HEX CID SI M N K MR */
+        char nonce_hex[128];
+        uint32_t cid, si, M, N, K, mr;
+        if (sscanf(line, "%127s %u %u %u %u %u %u",
+                   nonce_hex, &cid, &si, &M, &N, &K, &mr) != 7) {
+            fprintf(stderr, "serve: bad input: %s\n", line);
+            printf("ERROR bad_input\n");
+            fflush(stdout);
+            continue;
+        }
+
+        if (M > max_M || N > max_N || K > max_K) {
+            fprintf(stderr, "serve: dimensions exceed pre-allocated max\n");
+            printf("ERROR dimensions_exceed_max\n");
+            fflush(stdout);
+            continue;
+        }
+
+        uint8_t stage_nonce[32];
+        if (hex_decode(nonce_hex, stage_nonce, 32) != 0) {
+            fprintf(stderr, "serve: invalid nonce hex\n");
+            printf("ERROR bad_nonce\n");
+            fflush(stdout);
+            continue;
+        }
+
+        /* Compute using pre-allocated buffers */
+        uint64_t count_A = (uint64_t)M * N;
+        uint64_t count_X = (uint64_t)N * K;
+        uint64_t count_Y = (uint64_t)M * K;
+
+        uint64_t base_A = stream_base_host(stage_nonce, 0u);
+        uint64_t base_X = stream_base_host(stage_nonce, 1u);
+        uint64_t base_mask = stream_base_host(stage_nonce, 2u);
+
+        cudaEvent_t ev_start, ev_fill_A, ev_fill_X, ev_gemm, ev_mix, ev_d2h;
+        CUDA_CHECK(cudaEventCreate(&ev_start));
+        CUDA_CHECK(cudaEventCreate(&ev_fill_A));
+        CUDA_CHECK(cudaEventCreate(&ev_fill_X));
+        CUDA_CHECK(cudaEventCreate(&ev_gemm));
+        CUDA_CHECK(cudaEventCreate(&ev_mix));
+        CUDA_CHECK(cudaEventCreate(&ev_d2h));
+
+        int threads = 256;
+        CUDA_CHECK(cudaEventRecord(ev_start));
+
+        { int blocks = (int)((count_A + threads - 1) / threads);
+          fill_tensor_kernel<<<blocks, threads>>>(d_A, count_A, base_A, SPLITMIX_GAMMA); }
+        CUDA_CHECK(cudaEventRecord(ev_fill_A));
+
+        { int blocks = (int)((count_X + threads - 1) / threads);
+          fill_tensor_kernel<<<blocks, threads>>>(d_X, count_X, base_X, SPLITMIX_GAMMA); }
+        CUDA_CHECK(cudaEventRecord(ev_fill_X));
+
+        { int blocks = (int)((M + threads - 1) / threads);
+          gemm_kernel<<<blocks, threads>>>(d_A, d_X, M, N, K, d_Y); }
+        CUDA_CHECK(cudaEventRecord(ev_gemm));
+
+        { uint32_t *src = d_Y, *dst = d_buf_a;
+          CUDA_CHECK(cudaMemcpy(d_buf_a, d_Y, (size_t)count_Y * sizeof(uint32_t),
+                                cudaMemcpyDeviceToDevice));
+          src = d_buf_a; dst = d_buf_b;
+          int mix_blocks = (int)((count_Y + threads - 1) / threads);
+          for (uint32_t round = 0; round < mr; round++) {
+              uint64_t perm_a, perm_b;
+              derive_perm_params(stage_nonce, round, count_Y, &perm_a, &perm_b);
+              uint64_t round_mask_base = base_mask + (uint64_t)round * count_Y * SPLITMIX_GAMMA;
+              mix_kernel<<<mix_blocks, threads>>>(src, dst, count_Y, perm_a, perm_b,
+                                                   round_mask_base, SPLITMIX_GAMMA);
+              uint32_t *tmp = src; src = dst; dst = tmp;
+          }
+          CUDA_CHECK(cudaMemcpy(d_Y, src, (size_t)count_Y * sizeof(uint32_t),
+                                cudaMemcpyDeviceToDevice));
+        }
+        CUDA_CHECK(cudaEventRecord(ev_mix));
+
+        uint32_t *h_Z = (uint32_t *)malloc((size_t)count_Y * sizeof(uint32_t));
+        if (!h_Z) { fprintf(stderr, "serve: malloc failed\n"); break; }
+        CUDA_CHECK(cudaMemcpy(h_Z, d_Y, (size_t)count_Y * sizeof(uint32_t),
+                              cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaEventRecord(ev_d2h));
+        CUDA_CHECK(cudaEventSynchronize(ev_d2h));
+
+        uint8_t digest[32];
+        struct timespec ts_start, ts_end;
+        clock_gettime(CLOCK_MONOTONIC, &ts_start);
+        compute_final_digest(cid, si, M, N, K, mr, stage_nonce, h_Z, digest);
+        clock_gettime(CLOCK_MONOTONIC, &ts_end);
+
+        float total_gpu_ms, d2h_ms, digest_ms;
+        CUDA_CHECK(cudaEventElapsedTime(&total_gpu_ms, ev_start, ev_mix));
+        CUDA_CHECK(cudaEventElapsedTime(&d2h_ms, ev_mix, ev_d2h));
+        digest_ms = (float)((ts_end.tv_sec - ts_start.tv_sec) * 1000.0 +
+                             (ts_end.tv_nsec - ts_start.tv_nsec) / 1e6);
+        float total_ms = total_gpu_ms + d2h_ms + digest_ms;
+
+        char digest_hex[65];
+        hex_encode(digest, 32, digest_hex);
+
+        printf("digest=%s\n", digest_hex);
+        printf("gpu_ms=%.2f\n", total_gpu_ms);
+        printf("total_ms=%.2f\n", total_ms);
+        printf("DONE\n");
+        fflush(stdout);
+
+        free(h_Z);
+        cudaEventDestroy(ev_start);
+        cudaEventDestroy(ev_fill_A);
+        cudaEventDestroy(ev_fill_X);
+        cudaEventDestroy(ev_gemm);
+        cudaEventDestroy(ev_mix);
+        cudaEventDestroy(ev_d2h);
+    }
+
+    cudaFree(d_A);
+    cudaFree(d_X);
+    cudaFree(d_Y);
+    cudaFree(d_buf_a);
+    cudaFree(d_buf_b);
+
+    fprintf(stderr, "serve: shutdown\n");
+    return 0;
+}
+
 /* ======================== Main ======================== */
 
 static void print_usage(const char *argv0) {
@@ -980,8 +1154,9 @@ static void print_usage(const char *argv0) {
         "  %s --bench-profiles                     All Phase 2A+2B profiles\n"
         "  %s --info                               GPU information\n"
         "  %s --digest ROOT_NONCE CID SI M N K MR  Compute digest (mirrors C99 ref)\n"
-        "  %s --compute NONCE_HEX CID SI M N K MR  Compute from stage_nonce (worker)\n",
-        argv0, argv0, argv0, argv0, argv0, argv0);
+        "  %s --compute NONCE_HEX CID SI M N K MR  Compute from stage_nonce (worker)\n"
+        "  %s --serve M N K                         Persistent mode (reads from stdin)\n",
+        argv0, argv0, argv0, argv0, argv0, argv0, argv0);
 }
 
 int main(int argc, char **argv) {
@@ -1028,6 +1203,12 @@ int main(int argc, char **argv) {
     if (strcmp(argv[1], "--bench-profiles") == 0) {
         cmd_bench_profiles();
         return 0;
+    }
+
+    if (strcmp(argv[1], "--serve") == 0 && argc >= 5) {
+        return cmd_serve((uint32_t)strtoul(argv[2], NULL, 10),
+                         (uint32_t)strtoul(argv[3], NULL, 10),
+                         (uint32_t)strtoul(argv[4], NULL, 10));
     }
 
     print_usage(argv[0]);
