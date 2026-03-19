@@ -1389,6 +1389,32 @@ export const insertExpertWeightShardSchema = createInsertSchema(expertWeightShar
   id: true, uploadedAt: true,
 });
 
+// Training Proofs — TOPLOC-style cryptographic training contribution verification
+export const trainingProofs = pgTable("training_proofs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  nodeId: varchar("node_id").notNull().references(() => computeNodes.id),
+  taskId: text("task_id").notNull(), // training task identifier
+  step: integer("step").notNull(), // training step number
+  loss: real("loss").notNull(), // loss value at this step
+  paramChecksum: text("param_checksum").notNull(), // SHA-256 of canonical parameter state
+  gradientNorm: real("gradient_norm"), // L2 norm of gradients
+  learningRate: real("learning_rate"),
+  batchSize: integer("batch_size"),
+  tokensProcessed: integer("tokens_processed"),
+  checkpointCid: text("checkpoint_cid"), // IPFS CID of checkpoint for verification
+  signature: text("signature"), // node's cryptographic signature
+  status: text("status").notNull().default("pending"), // pending, verified, failed, challenged
+  verifiedAt: timestamp("verified_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("training_proofs_task_step_idx").on(table.taskId, table.step),
+  index("training_proofs_node_task_idx").on(table.nodeId, table.taskId),
+]);
+
+export const insertTrainingProofSchema = createInsertSchema(trainingProofs).omit({
+  id: true, createdAt: true, verifiedAt: true,
+});
+
 // ============================================================
 // PHASE 11: Generic Trusted-Role Registry
 // ============================================================
@@ -1822,3 +1848,6 @@ export type InsertInferenceContribution = z.infer<typeof insertInferenceContribu
 
 export type ExpertWeightShard = typeof expertWeightShards.$inferSelect;
 export type InsertExpertWeightShard = z.infer<typeof insertExpertWeightShardSchema>;
+
+export type TrainingProof = typeof trainingProofs.$inferSelect;
+export type InsertTrainingProof = z.infer<typeof insertTrainingProofSchema>;

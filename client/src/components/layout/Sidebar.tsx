@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, HardDrive, Wallet, Server, Settings, Globe, Hexagon, Play, Wifi, Download, Coins, ShoppingBag, BarChart3, Shield, Zap, AlertTriangle, LogOut, FileText, Landmark, Users, Video, Key, ChevronRight, Sun, Moon, Flag, CreditCard } from "lucide-react";
+import { LayoutDashboard, HardDrive, Wallet, Server, Settings, Globe, Hexagon, Play, Wifi, Download, Coins, ShoppingBag, BarChart3, Shield, Zap, AlertTriangle, LogOut, FileText, Landmark, Users, Video, Key, ChevronRight, Sun, Moon, Flag, CreditCard, Brain, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useNodeConfig } from "@/contexts/NodeConfigContext";
 import { useValidatorAuth } from "@/contexts/ValidatorAuthContext";
@@ -87,6 +87,11 @@ export function Sidebar() {
     { href: "/browse", label: "Browse & Watch", icon: Play },
     { href: "/storage", label: "Storage", icon: HardDrive },
     { href: "/pricing", label: "Plans & Pricing", icon: CreditCard },
+  ];
+
+  const spiritBombLinks: NavItem[] = [
+    { href: "/inference", label: "AI Inference", icon: Brain },
+    { href: "/community-cloud", label: "Community Cloud", icon: Activity },
   ];
 
   const earnLinks: NavItem[] = [
@@ -202,6 +207,12 @@ export function Sidebar() {
         {/* Navigate */}
         <SectionLabel>Navigate</SectionLabel>
         {navigateLinks.map((item) => (
+          <NavLink key={item.href} item={item} location={location} />
+        ))}
+
+        {/* Spirit Bomb */}
+        <SectionLabel>Spirit Bomb</SectionLabel>
+        {spiritBombLinks.map((item) => (
           <NavLink key={item.href} item={item} location={location} />
         ))}
 
