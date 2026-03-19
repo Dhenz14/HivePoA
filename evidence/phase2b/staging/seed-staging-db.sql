@@ -100,9 +100,10 @@ VALUES (
   300000,                       -- completion_deadline_ms (5 min total)
   25,                           -- pool_target (25 bundles)
   50,                           -- pool_low_watermark_pct
-  25                            -- pool_critical_watermark_pct
+  25,                           -- pool_critical_watermark_pct
+  true                          -- is_active
 )
-ON CONFLICT ON CONSTRAINT resource_class_profiles_version_class_id_idx DO NOTHING;
+ON CONFLICT (protocol_version, class_id) DO NOTHING;
 
 -- ============================================================
 -- 5. gpu-small-v2 profile
@@ -132,9 +133,10 @@ VALUES (
   300000,                       -- completion_deadline_ms (5 min total)
   25,                           -- pool_target (25 bundles)
   50,                           -- pool_low_watermark_pct
-  25                            -- pool_critical_watermark_pct
+  25,                           -- pool_critical_watermark_pct
+  true                          -- is_active
 )
-ON CONFLICT ON CONSTRAINT resource_class_profiles_version_class_id_idx DO NOTHING;
+ON CONFLICT (protocol_version, class_id) DO NOTHING;
 
 COMMIT;
 
