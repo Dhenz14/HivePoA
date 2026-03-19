@@ -5,46 +5,26 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Brain, Download, CheckCircle2, Loader2, Zap, ArrowRight, Cpu, Globe, Rocket } from "lucide-react";
+import { Brain, Download, CheckCircle2, Loader2, Zap, ArrowRight, Cpu, Globe, Rocket, ExternalLink, Gpu, MessageSquare, Coins } from "lucide-react";
 import { Link } from "wouter";
 import { detectDesktopAgent } from "@/lib/desktop-agent";
 import { getApiBase } from "@/lib/api-mode";
 
-type Step = "detect" | "configure" | "ready";
+type Goal = "chat" | "contribute" | null;
 
 export default function QuickStart() {
-  const [step, setStep] = useState<Step>("detect");
-  const [agentDetected, setAgentDetected] = useState(false);
-  const [detecting, setDetecting] = useState(true);
-  const [hiveUsername, setHiveUsername] = useState("");
-  const [configuring, setConfiguring] = useState(false);
+  const [goal, setGoal] = useState<Goal>(null);
+  const [ollamaOk, setOllamaOk] = useState<boolean | null>(null);
 
-  // Auto-detect desktop agent on mount
+  // Check if Ollama is running
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setDetecting(true);
-      try {
-        const status = await detectDesktopAgent();
-        if (!cancelled) {
-          setAgentDetected(!!status?.running);
-          if (status?.hiveUsername) {
-            setHiveUsername(status.hiveUsername);
-            setStep("ready"); // Already configured
-          } else if (status?.running) {
-            setStep("configure");
-          }
-        }
-      } catch {
-        if (!cancelled) setAgentDetected(false);
-      } finally {
-        if (!cancelled) setDetecting(false);
-      }
-    })();
-    return () => { cancelled = true; };
+    fetch(`${getApiBase()}/api/compute/inference/modes`)
+      .then(r => r.json())
+      .then(data => setOllamaOk(data?.modes?.medium?.available ?? false))
+      .catch(() => setOllamaOk(false));
   }, []);
 
-  // Check community tier
+  // Check community stats
   const { data: tierData } = useQuery({
     queryKey: ["/api/community/tier"],
     queryFn: async () => {
@@ -53,216 +33,218 @@ export default function QuickStart() {
     },
   });
 
-  const handleConfigure = async () => {
-    if (!hiveUsername.trim()) return;
-    setConfiguring(true);
-    try {
-      // Try to configure desktop agent
-      await fetch("http://127.0.0.1:5111/api/config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hiveUsername: hiveUsername.trim() }),
-      });
-      setStep("ready");
-    } catch {
-      // Agent might not support config yet — proceed anyway
-      setStep("ready");
-    } finally {
-      setConfiguring(false);
-    }
-  };
-
   return (
     <div className="min-h-screen flex items-center justify-center p-6">
-      <div className="max-w-lg w-full space-y-6">
+      <div className="max-w-xl w-full space-y-6">
         {/* Header */}
-        <div className="text-center space-y-2">
+        <div className="text-center space-y-3">
           <div className="flex justify-center">
             <div className="rounded-full bg-primary/10 p-4">
               <Rocket className="h-8 w-8 text-primary" />
             </div>
           </div>
-          <h1 className="text-3xl font-bold">Spirit Bomb Quick Start</h1>
-          <p className="text-muted-foreground">
-            Join the community GPU cloud in 2 clicks
+          <h1 className="text-3xl font-bold">Welcome to Spirit Bomb</h1>
+          <p className="text-muted-foreground max-w-md mx-auto">
+            A community-powered AI that gets smarter as more people join.
+            Use it for free, or share your GPU to help the community and earn rewards.
           </p>
         </div>
 
-        {/* Progress */}
-        <div className="flex items-center justify-center gap-2">
-          {(["detect", "configure", "ready"] as Step[]).map((s, i) => (
-            <div key={s} className="flex items-center gap-2">
-              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
-                step === s ? "bg-primary text-primary-foreground" :
-                (["detect", "configure", "ready"].indexOf(step) > i) ? "bg-primary/20 text-primary" :
-                "bg-muted text-muted-foreground"
-              }`}>
-                {["detect", "configure", "ready"].indexOf(step) > i ? (
-                  <CheckCircle2 className="h-4 w-4" />
-                ) : (
-                  i + 1
-                )}
-              </div>
-              {i < 2 && <div className="w-8 h-0.5 bg-muted" />}
-            </div>
-          ))}
-        </div>
+        {/* Goal selection */}
+        {!goal && (
+          <div className="space-y-3">
+            <p className="text-center text-sm font-medium text-muted-foreground">
+              What would you like to do?
+            </p>
 
-        {/* Step 1: Detect */}
-        {step === "detect" && (
+            <button
+              type="button"
+              onClick={() => setGoal("chat")}
+              className="w-full text-left p-5 rounded-xl border-2 hover:border-primary transition-colors"
+            >
+              <div className="flex items-center gap-4">
+                <div className="rounded-full bg-blue-100 dark:bg-blue-900/30 p-3">
+                  <MessageSquare className="h-6 w-6 text-blue-600 dark:text-blue-400" />
+                </div>
+                <div>
+                  <p className="font-bold text-lg">Chat with AI</p>
+                  <p className="text-sm text-muted-foreground">
+                    Free, private, runs on your computer. No account needed.
+                  </p>
+                </div>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setGoal("contribute")}
+              className="w-full text-left p-5 rounded-xl border-2 hover:border-primary transition-colors"
+            >
+              <div className="flex items-center gap-4">
+                <div className="rounded-full bg-green-100 dark:bg-green-900/30 p-3">
+                  <Coins className="h-6 w-6 text-green-600 dark:text-green-400" />
+                </div>
+                <div>
+                  <p className="font-bold text-lg">Share my GPU & earn rewards</p>
+                  <p className="text-sm text-muted-foreground">
+                    Donate spare GPU power to the community. Earn HBD cryptocurrency in return.
+                  </p>
+                </div>
+              </div>
+            </button>
+          </div>
+        )}
+
+        {/* GOAL: Chat with AI */}
+        {goal === "chat" && (
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <Download className="h-5 w-5" />
-                Step 1: Desktop Agent
+                <MessageSquare className="h-5 w-5" />
+                Set Up AI Chat
               </CardTitle>
               <CardDescription>
-                The desktop agent runs your local AI inference engine
+                You need one thing: <strong>Ollama</strong> — a free app that runs AI models on your computer.
+                Your data stays private. Nothing is sent online.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {detecting ? (
-                <div className="flex items-center gap-3 text-muted-foreground">
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                  <span>Detecting desktop agent...</span>
+              {/* Ollama status */}
+              {ollamaOk === null ? (
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Checking...
                 </div>
-              ) : agentDetected ? (
+              ) : ollamaOk ? (
                 <div className="space-y-3">
-                  <div className="flex items-center gap-2 text-green-600">
+                  <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
                     <CheckCircle2 className="h-5 w-5" />
-                    <span className="font-medium">Desktop agent detected!</span>
+                    <span className="font-medium">Ollama is running — you're all set!</span>
                   </div>
-                  <Button onClick={() => setStep("configure")} className="w-full">
-                    Continue <ArrowRight className="h-4 w-4 ml-2" />
-                  </Button>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  <p className="text-sm text-muted-foreground">
-                    No desktop agent found. Download it to run local AI inference.
-                  </p>
-                  <Link href="/download">
-                    <Button variant="outline" className="w-full">
-                      <Download className="h-4 w-4 mr-2" />
-                      Download Desktop Agent
+                  <Link href="/inference">
+                    <Button className="w-full" size="lg">
+                      Start chatting <ArrowRight className="h-4 w-4 ml-2" />
                     </Button>
                   </Link>
-                  <Button
-                    variant="ghost"
-                    className="w-full"
-                    onClick={() => setStep("configure")}
-                  >
-                    Skip — use server mode instead
-                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="p-4 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800">
+                    <p className="font-medium text-amber-800 dark:text-amber-200 mb-2">
+                      Ollama not detected
+                    </p>
+                    <ol className="text-sm text-amber-700 dark:text-amber-300 space-y-1 list-decimal list-inside">
+                      <li>Download Ollama from the link below (it's free)</li>
+                      <li>Install and run it — it starts automatically</li>
+                      <li>Come back here and click "Check again"</li>
+                    </ol>
+                  </div>
+                  <div className="flex gap-2">
+                    <a href="https://ollama.ai" target="_blank" rel="noopener noreferrer" className="flex-1">
+                      <Button variant="outline" className="w-full gap-1">
+                        <Download className="h-4 w-4" /> Download Ollama
+                        <ExternalLink className="h-3 w-3" />
+                      </Button>
+                    </a>
+                    <Button
+                      variant="ghost"
+                      onClick={() => {
+                        setOllamaOk(null);
+                        fetch(`${getApiBase()}/api/compute/inference/modes`)
+                          .then(r => r.json())
+                          .then(data => setOllamaOk(data?.modes?.medium?.available ?? false))
+                          .catch(() => setOllamaOk(false));
+                      }}
+                    >
+                      Check again
+                    </Button>
+                  </div>
                 </div>
               )}
+
+              <Button variant="ghost" size="sm" onClick={() => setGoal(null)} className="w-full">
+                Back
+              </Button>
             </CardContent>
           </Card>
         )}
 
-        {/* Step 2: Configure */}
-        {step === "configure" && (
+        {/* GOAL: Share GPU */}
+        {goal === "contribute" && (
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <Zap className="h-5 w-5" />
-                Step 2: Connect Your Identity
+                <Coins className="h-5 w-5" />
+                Share Your GPU
               </CardTitle>
               <CardDescription>
-                Link your Hive account to earn HBD rewards
+                Your graphics card can help power AI for the whole community.
+                In return, you earn <strong>HBD</strong> (Hive-Backed Dollars — a cryptocurrency pegged to $1 USD).
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="hive-username">Hive Username</Label>
-                <Input
-                  id="hive-username"
-                  value={hiveUsername}
-                  onChange={(e) => setHiveUsername(e.target.value)}
-                  placeholder="your-hive-username"
-                  onKeyDown={(e) => e.key === "Enter" && handleConfigure()}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Your Hive account earns HBD for GPU contributions
-                </p>
+              <div className="space-y-3">
+                <h4 className="font-medium">How it works:</h4>
+                <ol className="text-sm space-y-2 list-decimal list-inside text-muted-foreground">
+                  <li>
+                    <strong className="text-foreground">Create a Hive account</strong> (free blockchain account)
+                    — this is where your rewards are sent
+                  </li>
+                  <li>
+                    <strong className="text-foreground">Run the Spirit Bomb worker</strong> on your computer
+                    — it uses your GPU in the background when it's idle
+                  </li>
+                  <li>
+                    <strong className="text-foreground">Earn HBD automatically</strong>
+                    — rewards are calculated based on how much AI work your GPU handles
+                  </li>
+                </ol>
               </div>
-              <Button
-                onClick={handleConfigure}
-                disabled={!hiveUsername.trim() || configuring}
-                className="w-full"
-              >
-                {configuring ? (
-                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Configuring...</>
-                ) : (
-                  <>Connect <ArrowRight className="h-4 w-4 ml-2" /></>
-                )}
-              </Button>
-              <Button
-                variant="ghost"
-                className="w-full"
-                onClick={() => setStep("ready")}
-              >
-                Skip — try without account
+
+              {/* Requirements */}
+              <div className="p-3 rounded-lg bg-muted text-sm">
+                <p className="font-medium mb-1">Requirements:</p>
+                <ul className="space-y-1 text-muted-foreground">
+                  <li>NVIDIA GPU with 8+ GB VRAM (GTX 1060 or newer)</li>
+                  <li>A Hive blockchain account (free to create)</li>
+                  <li>Python 3.10+ installed</li>
+                </ul>
+              </div>
+
+              {/* Quick start command */}
+              <div className="p-3 rounded-lg bg-muted font-mono text-sm">
+                <p className="text-xs text-muted-foreground mb-1">Run this command to start sharing:</p>
+                <code>python scripts/start_spiritbomb.py</code>
+              </div>
+
+              <div className="flex gap-2">
+                <a href="https://signup.hive.io" target="_blank" rel="noopener noreferrer" className="flex-1">
+                  <Button variant="outline" className="w-full gap-1">
+                    Create Hive Account <ExternalLink className="h-3 w-3" />
+                  </Button>
+                </a>
+                <Link href="/community-cloud" className="flex-1">
+                  <Button className="w-full">
+                    View Community Dashboard <ArrowRight className="h-4 w-4 ml-1" />
+                  </Button>
+                </Link>
+              </div>
+
+              <Button variant="ghost" size="sm" onClick={() => setGoal(null)} className="w-full">
+                Back
               </Button>
             </CardContent>
           </Card>
         )}
 
-        {/* Step 3: Ready */}
-        {step === "ready" && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <CheckCircle2 className="h-5 w-5 text-green-600" />
-                You're Ready!
-              </CardTitle>
-              <CardDescription>
-                Choose how you want to use AI inference
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Mode cards */}
-              <Link href="/inference">
-                <div className="p-4 rounded-lg border-2 border-primary bg-primary/5 cursor-pointer hover:bg-primary/10 transition-colors">
-                  <div className="flex items-center gap-3">
-                    <Cpu className="h-6 w-6 text-primary" />
-                    <div>
-                      <p className="font-bold">Start Local Inference</p>
-                      <p className="text-sm text-muted-foreground">
-                        Free, private, works offline — runs on your GPU
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              </Link>
-
-              <Link href="/community-cloud">
-                <div className="p-4 rounded-lg border cursor-pointer hover:border-primary/50 transition-colors">
-                  <div className="flex items-center gap-3">
-                    <Globe className="h-6 w-6 text-muted-foreground" />
-                    <div>
-                      <p className="font-bold">Explore Community Cloud</p>
-                      <p className="text-sm text-muted-foreground">
-                        See cluster stats, contribute GPU power, earn HBD
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              </Link>
-
-              {/* Tier badge */}
-              {tierData && (
-                <div className="flex items-center justify-center gap-2 pt-2">
-                  <Badge variant="outline">
-                    Community Tier {tierData.tier || 1}
-                  </Badge>
-                  <Badge variant="outline">
-                    {tierData.totalGpus || 0} GPUs online
-                  </Badge>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+        {/* Community stats footer */}
+        {tierData && (
+          <div className="text-center text-xs text-muted-foreground space-y-1">
+            <p>
+              Community: {tierData.totalGpus || 0} GPUs sharing
+              {" · "}Tier {tierData.tier || 1}
+              {" · "}Model: {tierData.baseModel || "Qwen3-14B"}
+            </p>
+          </div>
         )}
       </div>
     </div>

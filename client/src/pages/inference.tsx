@@ -4,18 +4,21 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import { Brain, Zap, Send, Loader2, Globe, Cpu, Server } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { Brain, Send, Loader2, Globe, Cpu, AlertCircle, Download, ExternalLink } from "lucide-react";
+import { Link } from "wouter";
 import { getApiBase } from "@/lib/api-mode";
 
 type InferenceMode = "medium" | "high_intel";
 
 interface ChatMessage {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: string;
   mode?: string;
   model?: string;
   latencyMs?: number;
   tokensGenerated?: number;
+  isError?: boolean;
 }
 
 export default function Inference() {
@@ -23,31 +26,37 @@ export default function Inference() {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const { toast } = useToast();
 
-  // Scroll to bottom when new messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Get community tier info
+  // Check which backends are available
+  const { data: modes } = useQuery({
+    queryKey: ["/api/compute/inference/modes"],
+    queryFn: async () => {
+      const res = await fetch(`${getApiBase()}/api/compute/inference/modes`);
+      if (!res.ok) return null;
+      return res.json();
+    },
+    refetchInterval: 15000,
+  });
+
+  // Get community tier
   const { data: tierData } = useQuery({
     queryKey: ["/api/community/tier"],
     queryFn: async () => {
       const res = await fetch(`${getApiBase()}/api/community/tier`);
+      if (!res.ok) return null;
       return res.json();
     },
     refetchInterval: 30000,
   });
 
-  // Get contribution stats
-  const { data: contribStats } = useQuery({
-    queryKey: ["/api/community/contributions/stats"],
-    queryFn: async () => {
-      const res = await fetch(`${getApiBase()}/api/community/contributions/stats`);
-      return res.json();
-    },
-    refetchInterval: 10000,
-  });
+  const ollamaReady = modes?.modes?.medium?.available ?? false;
+  const clusterReady = modes?.modes?.high_intel?.available ?? false;
+  const anyBackend = ollamaReady || clusterReady;
 
   // Send inference request
   const inferMutation = useMutation({
@@ -55,27 +64,40 @@ export default function Inference() {
       const res = await fetch(`${getApiBase()}/api/compute/inference`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt,
-          mode,
-          max_tokens: 2048,
-          temperature: 0.7,
-        }),
+        body: JSON.stringify({ prompt, mode, max_tokens: 2048, temperature: 0.7 }),
       });
-      return res.json();
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error?.message || data.error || "Request failed");
+      }
+      return data;
     },
     onSuccess: (data) => {
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
-          content: data.text || data.error?.message || "No response",
+          content: data.text || "No response received.",
           mode: data.strategy_used || mode,
-          model: data.model_used || "unknown",
+          model: data.model_used,
           latencyMs: data.latency_ms,
           tokensGenerated: data.tokens_generated,
         },
       ]);
+    },
+    onError: (error: Error) => {
+      // Show error as a system message AND a toast
+      setMessages((prev) => [
+        ...prev,
+        { role: "system", content: error.message, isError: true },
+      ]);
+      toast({
+        variant: "destructive",
+        title: "Inference failed",
+        description: error.message.includes("backend")
+          ? "No AI engine is running. See the setup guide below."
+          : error.message,
+      });
     },
   });
 
@@ -94,222 +116,152 @@ export default function Inference() {
     }
   };
 
-  const tier = tierData?.tier || 1;
-  const totalGpus = tierData?.totalGpus || 0;
-  const hasCluster = totalGpus >= 2;
-
   return (
     <div className="flex flex-col h-full max-h-[calc(100vh-4rem)]">
       {/* Header */}
-      <div className="flex items-center justify-between px-6 py-4 border-b">
+      <div className="flex items-center justify-between px-6 py-3 border-b">
         <div className="flex items-center gap-3">
-          <Brain className="h-6 w-6 text-primary" />
-          <div>
-            <h1 className="text-xl font-bold">AI Inference</h1>
-            <p className="text-sm text-muted-foreground">
-              Spirit Bomb Community Cloud — Tier {tier}
-            </p>
-          </div>
+          <Brain className="h-5 w-5 text-primary" />
+          <h1 className="text-lg font-bold">AI Chat</h1>
         </div>
         <div className="flex items-center gap-2">
-          <Badge variant={tier >= 2 ? "default" : "secondary"}>
-            {totalGpus} GPUs
-          </Badge>
-          <Badge variant={hasCluster ? "default" : "outline"}>
-            {hasCluster ? "Cluster Available" : "Local Only"}
-          </Badge>
+          {/* Mode toggle — visible on ALL screen sizes */}
+          <Button
+            variant={mode === "medium" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setMode("medium")}
+          >
+            <Cpu className="h-3 w-3 mr-1" /> Local
+          </Button>
+          <Button
+            variant={mode === "high_intel" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setMode("high_intel")}
+            disabled={!clusterReady}
+            title={!clusterReady ? "No community GPU cluster available yet" : "Use community GPU cluster"}
+          >
+            <Globe className="h-3 w-3 mr-1" /> Cluster
+            {!clusterReady && <span className="ml-1 text-xs opacity-60">offline</span>}
+          </Button>
         </div>
       </div>
 
-      <div className="flex flex-1 overflow-hidden">
-        {/* Chat area */}
-        <div className="flex-1 flex flex-col">
-          {/* Messages */}
-          <div className="flex-1 overflow-y-auto p-6 space-y-4">
-            {messages.length === 0 && (
-              <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground">
-                <Brain className="h-12 w-12 mb-4 opacity-50" />
-                <p className="text-lg font-medium">Spirit Bomb AI</p>
-                <p className="text-sm">
-                  {mode === "medium"
-                    ? "Local inference — private, free, offline-capable"
-                    : "Cluster inference — more powerful, community GPU pool"}
+      {/* Ollama not running banner */}
+      {!anyBackend && (
+        <div className="mx-6 mt-4 p-4 rounded-lg border border-amber-500/50 bg-amber-50 dark:bg-amber-950/20">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" />
+            <div className="space-y-2">
+              <p className="font-medium text-amber-800 dark:text-amber-200">
+                AI engine not detected
+              </p>
+              <p className="text-sm text-amber-700 dark:text-amber-300">
+                To use AI chat, you need <strong>Ollama</strong> — a free, private AI engine that runs on your computer.
+                No data leaves your machine.
+              </p>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <a href="https://ollama.ai" target="_blank" rel="noopener noreferrer">
+                  <Button size="sm" variant="outline" className="gap-1">
+                    <Download className="h-3 w-3" /> Install Ollama (free)
+                    <ExternalLink className="h-3 w-3" />
+                  </Button>
+                </a>
+                <p className="text-xs text-amber-600 dark:text-amber-400 self-center">
+                  After installing, Ollama starts automatically. Then refresh this page.
                 </p>
               </div>
-            )}
-
-            {messages.map((msg, i) => (
-              <div
-                key={i}
-                className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-              >
-                <div
-                  className={`max-w-[80%] rounded-lg px-4 py-3 ${
-                    msg.role === "user"
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-muted"
-                  }`}
-                >
-                  <p className="whitespace-pre-wrap">{msg.content}</p>
-                  {msg.role === "assistant" && (
-                    <div className="flex items-center gap-2 mt-2 text-xs opacity-70">
-                      {msg.mode && (
-                        <Badge variant="outline" className="text-xs">
-                          {msg.mode === "local" ? <Cpu className="h-3 w-3 mr-1" /> : <Globe className="h-3 w-3 mr-1" />}
-                          {msg.mode}
-                        </Badge>
-                      )}
-                      {msg.latencyMs != null && (
-                        <span>{Math.round(msg.latencyMs)}ms</span>
-                      )}
-                      {msg.tokensGenerated != null && (
-                        <span>{msg.tokensGenerated} tokens</span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-
-            {inferMutation.isPending && (
-              <div className="flex justify-start">
-                <div className="bg-muted rounded-lg px-4 py-3">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                </div>
-              </div>
-            )}
-
-            <div ref={messagesEndRef} />
-          </div>
-
-          {/* Input */}
-          <div className="border-t p-4">
-            <div className="flex gap-2">
-              <Textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Ask anything..."
-                className="resize-none min-h-[60px]"
-                rows={2}
-              />
-              <Button
-                onClick={handleSend}
-                disabled={!input.trim() || inferMutation.isPending}
-                size="icon"
-                className="h-auto"
-              >
-                <Send className="h-4 w-4" />
-              </Button>
             </div>
           </div>
         </div>
+      )}
 
-        {/* Sidebar — Mode selector + Stats */}
-        <div className="w-72 border-l p-4 space-y-4 overflow-y-auto hidden lg:block">
-          {/* Mode Selector */}
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Inference Mode</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              <button
-                onClick={() => setMode("medium")}
-                className={`w-full text-left p-3 rounded-lg border-2 transition-colors ${
-                  mode === "medium"
-                    ? "border-primary bg-primary/5"
-                    : "border-transparent hover:border-muted-foreground/20"
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <Cpu className="h-4 w-4" />
-                  <span className="font-medium text-sm">Medium</span>
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Local, free, private, offline
-                </p>
-              </button>
+      {/* Chat area */}
+      <div className="flex-1 overflow-y-auto p-6 space-y-4">
+        {messages.length === 0 && (
+          <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground max-w-md mx-auto">
+            <Brain className="h-12 w-12 mb-4 opacity-30" />
+            <p className="text-lg font-medium mb-2">Ask me anything</p>
+            <p className="text-sm">
+              {mode === "medium"
+                ? "Your messages are processed locally on your computer. Nothing is sent to the internet."
+                : "Your message will be processed by the community GPU cluster for faster, more powerful responses."}
+            </p>
+            {!anyBackend && (
+              <p className="text-sm mt-4 text-amber-600">
+                Install Ollama above to get started.
+              </p>
+            )}
+          </div>
+        )}
 
-              <button
-                onClick={() => setMode("high_intel")}
-                disabled={!hasCluster}
-                className={`w-full text-left p-3 rounded-lg border-2 transition-colors ${
-                  mode === "high_intel"
-                    ? "border-primary bg-primary/5"
-                    : "border-transparent hover:border-muted-foreground/20"
-                } ${!hasCluster ? "opacity-50 cursor-not-allowed" : ""}`}
-              >
-                <div className="flex items-center gap-2">
-                  <Globe className="h-4 w-4" />
-                  <span className="font-medium text-sm">High-Intel</span>
-                  {!hasCluster && (
-                    <Badge variant="outline" className="text-xs">
-                      No cluster
-                    </Badge>
-                  )}
+        {messages.map((msg, i) => (
+          <div
+            key={i}
+            className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+          >
+            <div
+              className={`max-w-[85%] rounded-lg px-4 py-3 ${
+                msg.role === "user"
+                  ? "bg-primary text-primary-foreground"
+                  : msg.isError
+                  ? "bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800"
+                  : "bg-muted"
+              }`}
+            >
+              {msg.isError && (
+                <div className="flex items-center gap-1 text-red-600 dark:text-red-400 text-xs font-medium mb-1">
+                  <AlertCircle className="h-3 w-3" /> Error
                 </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Cluster GPU pool, more powerful
-                </p>
-              </button>
-            </CardContent>
-          </Card>
+              )}
+              <p className="whitespace-pre-wrap text-sm">{msg.content}</p>
+              {msg.role === "assistant" && !msg.isError && (
+                <div className="flex flex-wrap items-center gap-2 mt-2 text-xs opacity-60">
+                  <Badge variant="outline" className="text-xs py-0">
+                    {msg.mode === "local" || msg.mode === "medium" ? (
+                      <><Cpu className="h-3 w-3 mr-1" />local</>
+                    ) : (
+                      <><Globe className="h-3 w-3 mr-1" />cluster</>
+                    )}
+                  </Badge>
+                  {msg.latencyMs != null && <span>{(msg.latencyMs / 1000).toFixed(1)}s</span>}
+                  {msg.tokensGenerated != null && <span>{msg.tokensGenerated} tokens</span>}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
 
-          {/* Tier Info */}
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Community Tier</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Tier</span>
-                  <Badge>{tier}</Badge>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">GPUs</span>
-                  <span>{totalGpus}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Model</span>
-                  <span className="text-xs">{tierData?.baseModel || "Qwen3-14B"}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Experts</span>
-                  <span>{tierData?.activeExperts || 2}</span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+        {inferMutation.isPending && (
+          <div className="flex justify-start">
+            <div className="bg-muted rounded-lg px-4 py-3 flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" /> Thinking...
+            </div>
+          </div>
+        )}
 
-          {/* Contribution Stats */}
-          {contribStats && (
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm">Contributions</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-2 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Tokens</span>
-                    <span>{(contribStats.totalTokens || 0).toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Requests</span>
-                    <span>{(contribStats.totalRequests || 0).toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Contributors</span>
-                    <span>{contribStats.activeContributors || 0}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">HBD Earned</span>
-                    <span>{(contribStats.totalHbdEarned || 0).toFixed(3)}</span>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Input */}
+      <div className="border-t p-4">
+        <div className="flex gap-2 max-w-3xl mx-auto">
+          <Textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={anyBackend ? "Type a message..." : "Install Ollama to start chatting"}
+            className="resize-none min-h-12 max-h-[200px]"
+            rows={1}
+            disabled={!anyBackend}
+          />
+          <Button
+            onClick={handleSend}
+            disabled={!input.trim() || inferMutation.isPending || !anyBackend}
+            size="icon"
+            className="h-12 w-12 shrink-0"
+          >
+            <Send className="h-4 w-4" />
+          </Button>
         </div>
       </div>
     </div>
