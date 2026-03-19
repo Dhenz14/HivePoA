@@ -5776,9 +5776,11 @@ export async function registerRoutes(
   // INFERENCE: Dual-Mode Inference API (the core user-facing endpoint)
   // ============================================================
 
-  // POST /api/compute/inference — Execute inference request (local or cluster)
-  // This is THE endpoint the /inference page calls. Routes to Ollama (local)
-  // or vLLM (cluster) based on mode. No auth required for local mode.
+  // POST /api/compute/inference — Execute inference request
+  // Routing priority:
+  //   1. Hive-AI /api/chat (smart routing, RAG, LoRA adapters) — the brain
+  //   2. vLLM cluster (community GPU pool) — for high-intel mode
+  //   3. Ollama direct (raw local fallback) — always works
   app.post("/api/compute/inference", async (req, res) => {
     try {
       const schema = z.object({
@@ -5791,13 +5793,43 @@ export async function registerRoutes(
       const data = schema.parse(req.body);
       const start = Date.now();
 
-      // Determine inference backend
+      const hiveAiUrl = process.env.HIVE_AI_URL || "http://localhost:5001";
       const ollamaUrl = process.env.OLLAMA_URL || "http://localhost:11434";
       const vllmUrl = process.env.VLLM_URL || "http://localhost:8100";
-      const useCluster = data.mode === "high_intel";
 
-      if (useCluster) {
-        // Cluster mode: route to vLLM (OpenAI-compatible API)
+      // Priority 1: Hive-AI's /api/chat (has smart routing, RAG, LoRA adapters)
+      if (data.mode !== "high_intel") {
+        try {
+          const hiveAiRes = await fetch(`${hiveAiUrl}/api/chat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              message: data.prompt,
+              history: [],
+            }),
+            signal: AbortSignal.timeout(120000),
+          });
+          if (hiveAiRes.ok) {
+            const hiveAiData = await hiveAiRes.json() as any;
+            const text = hiveAiData.response || hiveAiData.answer || "";
+            if (text) {
+              res.json({
+                text,
+                tokens_generated: text.split(/\s+/).length,
+                latency_ms: Date.now() - start,
+                strategy_used: "hive-ai",
+                model_used: hiveAiData.model || "hive-ai (smart routing)",
+              });
+              return;
+            }
+          }
+        } catch (hiveAiErr: any) {
+          logCompute.debug({ err: hiveAiErr.message }, "Hive-AI not available, trying next backend");
+        }
+      }
+
+      // Priority 2: vLLM cluster (for high-intel mode or if Hive-AI unavailable)
+      if (data.mode === "high_intel" || data.mode === "auto") {
         try {
           const vllmRes = await fetch(`${vllmUrl}/v1/chat/completions`, {
             method: "POST",
@@ -5809,6 +5841,7 @@ export async function registerRoutes(
               temperature: data.temperature,
               stream: false,
             }),
+            signal: AbortSignal.timeout(120000),
           });
           if (vllmRes.ok) {
             const vllmData = await vllmRes.json() as any;
@@ -5824,12 +5857,11 @@ export async function registerRoutes(
             return;
           }
         } catch (vllmErr: any) {
-          logCompute.warn({ err: vllmErr.message }, "vLLM cluster unavailable, falling back to local");
+          logCompute.debug({ err: vllmErr.message }, "vLLM cluster unavailable, trying Ollama fallback");
         }
-        // Fall through to local if cluster fails
       }
 
-      // Local mode: route to Ollama (uses chat API for Qwen3 thinking-mode compat)
+      // Priority 3: Raw Ollama fallback (always works if Ollama is running)
       try {
         const ollamaModel = data.model || process.env.OLLAMA_MODEL || "qwen3:14b";
         const ollamaRes = await fetch(`${ollamaUrl}/api/chat`, {
@@ -5840,10 +5872,11 @@ export async function registerRoutes(
             messages: [{ role: "user", content: data.prompt }],
             stream: false,
             options: {
-              num_predict: Math.max(data.max_tokens, 2048), // Qwen3 uses ~200 tokens for thinking before responding
+              num_predict: Math.max(data.max_tokens, 2048),
               temperature: data.temperature,
             },
           }),
+          signal: AbortSignal.timeout(120000),
         });
         if (ollamaRes.ok) {
           const ollamaData = await ollamaRes.json() as any;
@@ -5885,12 +5918,23 @@ export async function registerRoutes(
 
   // GET /api/compute/inference/modes — Available inference modes
   app.get("/api/compute/inference/modes", async (_req, res) => {
-    // Check which backends are available
+    const hiveAiUrl = process.env.HIVE_AI_URL || "http://localhost:5001";
     const ollamaUrl = process.env.OLLAMA_URL || "http://localhost:11434";
     const vllmUrl = process.env.VLLM_URL || "http://localhost:8100";
 
+    let hiveAiAvailable = false;
     let ollamaAvailable = false;
     let vllmAvailable = false;
+
+    try {
+      const r = await fetch(`${hiveAiUrl}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "ping" }),
+        signal: AbortSignal.timeout(3000),
+      });
+      hiveAiAvailable = r.ok;
+    } catch {}
 
     try {
       const r = await fetch(`${ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(2000) });
@@ -5905,9 +5949,11 @@ export async function registerRoutes(
     res.json({
       modes: {
         medium: {
-          available: ollamaAvailable,
-          backend: "ollama",
-          description: "Local inference — free, private, offline-capable",
+          available: hiveAiAvailable || ollamaAvailable,
+          backend: hiveAiAvailable ? "hive-ai" : "ollama",
+          description: hiveAiAvailable
+            ? "Hive-AI — smart routing, RAG, LoRA adapters"
+            : "Local inference — free, private, offline-capable",
         },
         high_intel: {
           available: vllmAvailable,
