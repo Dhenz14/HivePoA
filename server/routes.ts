@@ -5774,9 +5774,20 @@ export async function registerRoutes(
   // POST /api/community/clusters — Create a GPU cluster
   app.post("/api/community/clusters", requireAnyAuth, async (req, res) => {
     try {
-      const cluster = await storage.createGpuCluster(req.body);
+      const schema = z.object({
+        name: z.string().min(1).max(200),
+        region: z.string().min(1).max(50),
+        geoHash: z.string().max(20).optional(),
+        status: z.enum(["forming", "active", "degraded", "dissolved"]).optional(),
+      });
+      const data = schema.parse(req.body);
+      const cluster = await storage.createGpuCluster(data);
       res.status(201).json(cluster);
     } catch (err: any) {
+      if (err?.name === "ZodError") {
+        res.status(400).json({ error: { code: "VALIDATION_ERROR", message: err.message } });
+        return;
+      }
       logCompute.error({ err }, "Failed to create GPU cluster");
       res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
     }
@@ -5867,9 +5878,26 @@ export async function registerRoutes(
   // POST /api/community/tier — Publish a new tier manifest (coordinator only)
   app.post("/api/community/tier", requireAnyAuth, async (req, res) => {
     try {
-      const manifest = await storage.createTierManifest(req.body);
+      const schema = z.object({
+        tier: z.number().int().min(1).max(3),
+        totalGpus: z.number().int().min(0),
+        totalVramGb: z.number().int().min(0),
+        activeClusters: z.number().int().min(0).optional(),
+        baseModel: z.string().min(1),
+        activeExperts: z.number().int().min(1),
+        quantization: z.string().min(1),
+        maxContextLength: z.number().int().min(1024),
+        estimatedTps: z.number().optional(),
+        speculativeDecodingEnabled: z.boolean().optional(),
+      });
+      const data = schema.parse(req.body);
+      const manifest = await storage.createTierManifest(data);
       res.status(201).json(manifest);
     } catch (err: any) {
+      if (err?.name === "ZodError") {
+        res.status(400).json({ error: { code: "VALIDATION_ERROR", message: err.message } });
+        return;
+      }
       logCompute.error({ err }, "Failed to publish tier manifest");
       res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
     }
@@ -5969,9 +5997,23 @@ export async function registerRoutes(
   // POST /api/community/inference/routes — Create/update inference route
   app.post("/api/community/inference/routes", requireAnyAuth, async (req, res) => {
     try {
-      const route = await storage.upsertInferenceRoute(req.body);
+      const schema = z.object({
+        clusterId: z.string().optional(),
+        mode: z.enum(["local", "cluster", "hybrid"]),
+        modelName: z.string().min(1),
+        pipelineStages: z.number().int().min(1).optional(),
+        tensorParallelSize: z.number().int().min(1).optional(),
+        status: z.enum(["active", "draining", "inactive"]).optional(),
+        priority: z.number().int().optional(),
+      });
+      const data = schema.parse(req.body);
+      const route = await storage.upsertInferenceRoute(data);
       res.status(201).json(route);
     } catch (err: any) {
+      if (err?.name === "ZodError") {
+        res.status(400).json({ error: { code: "VALIDATION_ERROR", message: err.message } });
+        return;
+      }
       logCompute.error({ err }, "Failed to create inference route");
       res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
     }
@@ -6087,7 +6129,7 @@ export async function registerRoutes(
       `);
       const result = await rawDb.execute(rawSql`
         INSERT INTO training_proofs (node_id, task_id, step, loss, param_checksum, gradient_norm, learning_rate, batch_size, tokens_processed, checkpoint_cid, signature, status)
-        VALUES (${req.body.nodeId}, ${req.body.taskId}, ${req.body.step}, ${req.body.loss}, ${req.body.paramChecksum}, ${req.body.gradientNorm || null}, ${req.body.learningRate || null}, ${req.body.batchSize || null}, ${req.body.tokensProcessed || null}, ${req.body.checkpointCid || null}, ${req.body.signature || null}, ${req.body.status || 'pending'})
+        VALUES (${req.body.nodeId}, ${req.body.taskId}, ${req.body.step}, ${req.body.loss}, ${req.body.paramChecksum}, ${req.body.gradientNorm ?? null}, ${req.body.learningRate ?? null}, ${req.body.batchSize ?? null}, ${req.body.tokensProcessed ?? null}, ${req.body.checkpointCid ?? null}, ${req.body.signature ?? null}, ${req.body.status ?? 'pending'})
         RETURNING *
       `);
       const rows = result.rows ?? result;
@@ -6112,6 +6154,8 @@ export async function registerRoutes(
       const rows = result.rows ?? result;
       res.json({ proofs: rows, count: (rows as any[]).length });
     } catch (err: any) {
+      // Table may not exist yet — return empty instead of 500
+      logCompute.debug({ err, taskId: req.params.taskId }, "Training proofs query failed (table may not exist)");
       res.json({ proofs: [], count: 0 });
     }
   });

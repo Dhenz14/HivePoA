@@ -2512,6 +2512,7 @@ export class SQLiteStorage implements IStorage {
   async createTierManifest(_manifest: any): Promise<any> { throw new Error("Spirit Bomb: PG-only"); }
   async getLatestTierManifest(): Promise<any> { return undefined; }
   async getTierManifestHistory(_limit?: number): Promise<any[]> { return []; }
+  async updateTierManifest(_id: string, _updates: any): Promise<void> {}
   async upsertInferenceRoute(_route: any): Promise<any> { throw new Error("Spirit Bomb: PG-only"); }
   async listInferenceRoutes(_mode?: string): Promise<any[]> { return []; }
   async recordInferenceContribution(_contribution: any): Promise<any> { throw new Error("Spirit Bomb: PG-only"); }

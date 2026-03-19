@@ -678,6 +678,8 @@ export interface IStorage {
   getLatestTierManifest(): Promise<CommunityTierManifest | undefined>;
   /** Get manifest history. */
   getTierManifestHistory(limit?: number): Promise<CommunityTierManifest[]>;
+  /** Update a tier manifest (e.g., store Hive tx ID after publishing). */
+  updateTierManifest(id: string, updates: Partial<CommunityTierManifest>): Promise<void>;
 
   /** Create or update an inference route. */
   upsertInferenceRoute(route: InsertInferenceRoute): Promise<InferenceRoute>;
@@ -3988,6 +3990,12 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(communityTierManifests)
       .orderBy(desc(communityTierManifests.createdAt))
       .limit(limit);
+  }
+
+  async updateTierManifest(id: string, updates: Partial<CommunityTierManifest>): Promise<void> {
+    await db.update(communityTierManifests)
+      .set(updates)
+      .where(eq(communityTierManifests.id, id));
   }
 
   async upsertInferenceRoute(route: InsertInferenceRoute): Promise<InferenceRoute> {
