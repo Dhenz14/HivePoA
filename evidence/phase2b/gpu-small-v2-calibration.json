@@ -1,0 +1,197 @@
+{
+  "calibration_id": "gpu-small-v2-cal-001",
+  "calibration_date": null,
+  "calibrated_by": "dandandan123 + community",
+
+  "certification_status": "NOT CERTIFIED",
+  "certification_status_detail": "This is PARTIAL calibration evidence. Gate 4 (precompute budget) is closed. Gates 1-3 (pre-calibration, hardware qualification, full timing calibration) are OPEN. This record does NOT constitute class certification. Profile row insertion is BLOCKED until all 7 gates pass. Do not reference this record as evidence that gpu-small-v2 is calibrated.",
+
+  "gate_closure": {
+    "gate_1_pre_calibration": "OPEN — no positive control hardware available",
+    "gate_2_hardware_qualification": "OPEN — no positive or negative control hardware available",
+    "gate_3_full_timing_calibration": "OPEN — requires staging server + both devices",
+    "gate_4_precompute_budget": "CLOSED (2026-03-18) — measured on Intel Ultra 9 285K",
+    "gate_5_evidence_compilation": "OPEN — depends on Gates 1-3",
+    "gate_6_profile_row_insertion": "OPEN — depends on Gate 5",
+    "gate_7_post_insertion_validation": "OPEN — depends on Gate 6"
+  },
+
+  "errata_reference": "See ERRATUM-001-M-calculation.md for full correction. Frozen calibration plan not rewritten.",
+
+  "proposed_profile": {
+    "class_name": "gpu-small-v2",
+    "class_id": null,
+    "protocol_version": 2,
+    "kernel_id": "phase2a-kernel-v1",
+    "M": 262144,
+    "N": 4096,
+    "K": 8,
+    "mix_rounds": 1,
+    "stages_per_challenge": 5,
+    "target_working_set_bytes": 4294967296,
+    "target_working_set_description": "50% of 8 GB floor = 4 GB (A matrix: M×N×4)",
+    "proposed_deadline_ms": null
+  },
+
+  "pre_calibration": {
+    "hardware_description": "DEFERRED — requires 8 GB T2 positive control device (community hardware)",
+    "standalone_runs": null,
+    "compute_times_ms": [],
+    "compute_p50_ms": null,
+    "compute_p95_ms": null,
+    "network_rtt_samples": null,
+    "network_rtt_p99_ms": null,
+    "estimated_deadline_ms": null,
+    "dimension_selection_notes": "M=262,144 derived from: floor(4 GB / (4096 × 4)) = 262,144. Produces 4 GB A matrix (50% of 8 GB floor). K=8 per spec tractability constraint. mix_rounds=1 (gpu-small). N=4096 per Phase 2A consistency."
+  },
+
+  "positive_control": {
+    "device_model": null,
+    "device_vram_gb": null,
+    "driver_version": null,
+    "cuda_version": null,
+    "os": null,
+    "architecture_generation": null,
+    "tier": "T2",
+    "challenge_count": null,
+    "stage_count": null,
+    "timing_ms": {
+      "p50": null,
+      "p95": null,
+      "p99": null,
+      "sigma": null,
+      "min": null,
+      "max": null
+    },
+    "selection_notes": "Requires: single 8 GB GPU, T2 tier, floor-level. Candidates: RTX 3070 8GB (Ampere), RTX 4060 Ti 8GB (Ada). Must be single device, not multi-GPU. Community participant hardware."
+  },
+
+  "negative_control": {
+    "device_model": null,
+    "device_vram_gb": null,
+    "driver_version": null,
+    "cuda_version": null,
+    "os": null,
+    "architecture_generation": null,
+    "tier": "T1",
+    "is_one_tier_below_positive": true,
+    "compute_competitiveness": {
+      "same_architecture_generation": null,
+      "throughput_ratio_test_run": null,
+      "reduced_working_set_bytes": null,
+      "positive_throughput_stages_per_sec": null,
+      "negative_throughput_stages_per_sec": null,
+      "compute_slowdown": null,
+      "slowdown_admissible": null,
+      "justification_if_ratio_exceeded": null
+    },
+    "challenge_count": null,
+    "stage_count": null,
+    "failure_mode": null,
+    "timing_ms_if_applicable": {
+      "p01": null,
+      "p05": null,
+      "p50": null,
+      "min": null
+    },
+    "selection_notes": "Requires: single 6 GB GPU, T1 tier, boundary-close (highest VRAM in T1). Best candidate: RTX 2060 6GB (Turing). Must be compute-competitive with positive control (same or adjacent gen). Community participant hardware."
+  },
+
+  "separation_margin": {
+    "heavy_tail_ratio": null,
+    "heavy_tail_check_passed": null,
+    "positive_p99_ms": null,
+    "deadline_ms": null,
+    "false_negative_protection_ms": null,
+    "negative_p01_ms_if_applicable": null,
+    "false_positive_protection_ms_if_applicable": null,
+    "negative_always_ooms": null,
+    "final_target_bytes": null,
+    "final_target_fraction_of_positive_vram": null,
+    "class_definition_drift_flagged": null,
+    "drift_acknowledged_by": null,
+    "admissible": null,
+    "admissibility_notes": "Working set is 4 GB = 50% of 8 GB positive control. Below 65% drift threshold. If separation insufficient at 50%, increase M by 20% (to 314,573) per Section 5.4 Remedy 1."
+  },
+
+  "precompute_budget": {
+    "server_model": "Intel Core Ultra 9 285K",
+    "cpu_cores": 24,
+    "available_ram_gb": 58,
+    "T_stage_ms": 6774,
+    "T_stage_wall_ms_runs": [5347, 6953, 6774, 6867, 5231],
+    "T_stage_wall_ms_median": 6774,
+    "peak_rss_per_instance_mb": 4121,
+    "memory_limited_parallelism": 7,
+    "cpu_limited_parallelism": 12,
+    "effective_parallelism": 7,
+    "throughput_challenge_sets_per_minute": 8.68,
+    "target_issuance_rate_challenges_per_minute": "DEPLOYMENT DECISION — see SLA scenarios below",
+    "required_throughput_challenge_sets_per_minute": null,
+    "headroom_ratio": null,
+    "admissible": null,
+    "sla_scenarios": [
+      {
+        "label": "Early network (10-50 nodes)",
+        "I_target": 1,
+        "pool_target": 20,
+        "refill_SLA_minutes": 30,
+        "required_throughput": 1.5,
+        "headroom_ratio": 5.79,
+        "admissible": true
+      },
+      {
+        "label": "Growth phase (50-200 nodes)",
+        "I_target": 2,
+        "pool_target": 40,
+        "refill_SLA_minutes": 30,
+        "required_throughput": 3.0,
+        "headroom_ratio": 2.89,
+        "admissible": true
+      },
+      {
+        "label": "Scale phase (200+ nodes)",
+        "I_target": 5,
+        "pool_target": 100,
+        "refill_SLA_minutes": 30,
+        "required_throughput": 7.5,
+        "headroom_ratio": 1.16,
+        "admissible": true
+      }
+    ],
+    "notes": "Memory-limited (7 parallel instances), not CPU-limited (12 available). All realistic early-deployment SLA scenarios pass. Scale phase (I=5/min) is marginal at 1.16× headroom."
+  },
+
+  "admissibility_summary": {
+    "gate_1_pre_calibration": "OPEN — requires actual GPU execution on positive control hardware. The pre-staging screening tool (phase2b-calibrate.sh) does not close this gate. CPU reference-kernel timing is not a substitute for GPU timing.",
+    "gate_2_hardware_qualification": "OPEN — requires actual GPU execution of the reduced working set (reduced_M=196,608) on BOTH devices through the staging challenge protocol. nvidia-smi identity alone is not admissible. compute_slowdown must be derived from GPU medians, not CPU medians.",
+    "gate_3_full_timing_calibration": "OPEN — requires 20 full challenges per device through the staging challenge protocol. Server-measured checkpoint_received_at − stage_issued_at is the authoritative timing. No staging server exists yet.",
+    "gate_4_precompute_budget": "CLOSED (2026-03-18) — CPU reference-kernel precompute measured on Intel Ultra 9 285K. This gate is correctly CPU-based per calibration plan Section 6.",
+    "gate_5_evidence_compilation": "OPEN — depends on Gates 1-3",
+    "gate_6_profile_row_insertion": "OPEN — depends on Gate 5 + insertion governance",
+    "gate_7_post_insertion_validation": "OPEN — depends on Gate 6 + production deployment",
+    "overall": "NOT CERTIFIED — 1 of 7 gates closed. Gates 1-3 require both community hardware AND a staging challenge server with actual GPU execution. The pre-staging screening tool is preparatory only.",
+    "blockers": [
+      "Community hardware: one 8 GB T2 single-GPU device + one 6 GB T1 single-GPU device",
+      "Staging challenge server: must issue challenges and measure GPU-side timing through the actual protocol",
+      "Neither blocker is addressed by the pre-staging screening tool"
+    ]
+  },
+
+  "inserted_profile_row_id": null,
+  "insertion_timestamp": null,
+  "post_insertion_validation": {
+    "positive_control_passed": null,
+    "negative_control_failed": null,
+    "precompute_pool_filled_correctly": null
+  },
+
+  "measurement_metadata": {
+    "measured_at": "2026-03-18",
+    "os": "Ubuntu 24.04 (WSL2 on Windows 11)",
+    "gcc_version": "gcc 13.3.0",
+    "kernel_source": "evidence/phase2a/phase2a_kernel_ref_v1.c",
+    "compile_flags": "-std=c99 -O2",
+    "golden_vectors_verified": true
+  }
+}

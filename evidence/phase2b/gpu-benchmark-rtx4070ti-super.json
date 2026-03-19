@@ -1,0 +1,135 @@
+{
+  "benchmark_id": "gpu-bench-rtx4070ti-super-001",
+  "benchmark_date": "2026-03-18",
+  "benchmark_type": "GPU execution timing — calibration measurement artifact",
+
+  "device_identity": {
+    "model": "NVIDIA GeForce RTX 4070 Ti SUPER",
+    "uuid": "GPU-e57e219b-d0ad-19dd-f6fc-2242d596cf8b",
+    "architecture": "Ada Lovelace (AD103)",
+    "vram_mib": 16376,
+    "vram_gb": 16,
+    "memory_bus_bits": 256,
+    "memory_bandwidth_gbps": 672.1,
+    "cuda_cores": 8448,
+    "sm_count": 66,
+    "compute_capability": "8.9",
+    "boost_clock_mhz": 2610,
+    "max_clock_mhz": 3105,
+    "memory_clock_mhz": 10501,
+    "tdp_watts": 285,
+    "l2_cache_kb": 49152,
+    "pcie": "Gen 4 x16",
+    "multi_gpu": false,
+    "driver_version": "572.16",
+    "cuda_version": "12.8",
+    "vbios": "95.03.45.40.4b",
+    "vram_tier": "T3 (13-20 GB)"
+  },
+
+  "host_identity": {
+    "cpu": "Intel Core Ultra 9 285K",
+    "ram_gb": 64,
+    "os": "Ubuntu 24.04 (WSL2 on Windows 11)",
+    "nvcc_version": "12.0, V12.0.140",
+    "gcc_version": "13.3.0"
+  },
+
+  "kernel_identity": {
+    "source": "evidence/phase2b/phase2a_kernel_gpu.cu",
+    "reference": "evidence/phase2a/phase2a_kernel_ref_v1.c",
+    "compile_flags": "nvcc -O2 -arch=sm_89",
+    "golden_vectors_verified": true,
+    "golden_vector_count": 3,
+    "digest_match": "EXACT — GPU kernel produces identical digests to C99 reference"
+  },
+
+  "benchmark_conditions": {
+    "vram_free_gb": 15.82,
+    "vram_total_gb": 17.17,
+    "warmup_run": true,
+    "runs_per_profile": 5,
+    "timing_method": "CUDA events (GPU) + clock_gettime CLOCK_MONOTONIC (CPU SHA-256)"
+  },
+
+  "results": {
+    "gpu_small_v2": {
+      "dimensions": { "M": 262144, "N": 4096, "K": 8, "mix_rounds": 1 },
+      "working_set_gb": 4.29,
+      "gpu_mem_needed_gb": 4.32,
+      "fits_on_device": true,
+      "per_stage_ms": {
+        "fill_A": 7.43,
+        "fill_X": 0.01,
+        "gemm": 26.07,
+        "mix": 0.07,
+        "gpu_total": 33.57,
+        "d2h_copy": 1.19,
+        "sha256_cpu": 24.48,
+        "total": 59.24
+      },
+      "per_stage_range_ms": { "best": 58.18, "worst": 60.69 },
+      "per_challenge_ms": 296.18,
+      "cpu_reference_per_stage_ms": 6774,
+      "gpu_vs_cpu_speedup": "115x"
+    },
+
+    "gpu_medium_v2": {
+      "dimensions": { "M": 524288, "N": 4096, "K": 8, "mix_rounds": 2 },
+      "working_set_gb": 8.59,
+      "gpu_mem_needed_gb": 8.64,
+      "fits_on_device": true,
+      "per_stage_ms": {
+        "fill_A": 14.81,
+        "fill_X": 0.01,
+        "gemm": 52.38,
+        "mix": 0.22,
+        "gpu_total": 68.01,
+        "d2h_copy": 2.10,
+        "sha256_cpu": 48.20,
+        "total": 118.27
+      },
+      "per_stage_range_ms": { "best": 114.46, "worst": 123.89 },
+      "per_challenge_ms": 591.33,
+      "cpu_reference_per_stage_ms": 14730,
+      "gpu_vs_cpu_speedup": "125x",
+      "calibration_role": "POSITIVE CONTROL CANDIDATE for gpu-medium-v2 (T3 floor, 16 GB)"
+    },
+
+    "gpu_large_v2": {
+      "dimensions": { "M": 786432, "N": 4096, "K": 8, "mix_rounds": 2 },
+      "working_set_gb": 12.88,
+      "gpu_mem_needed_gb": 12.96,
+      "fits_on_device": true,
+      "per_stage_ms": {
+        "fill_A": 22.30,
+        "fill_X": 0.01,
+        "gemm": 80.23,
+        "mix": 0.44,
+        "gpu_total": 102.98,
+        "d2h_copy": 3.04,
+        "sha256_cpu": 73.29,
+        "total": 179.31
+      },
+      "per_stage_range_ms": { "best": 175.23, "worst": 184.31 },
+      "per_challenge_ms": 896.55,
+      "cpu_reference_per_stage_ms": 19030,
+      "gpu_vs_cpu_speedup": "106x"
+    }
+  },
+
+  "analysis": {
+    "gemm_dominance": "GEMM accounts for 75-80% of GPU computation time across all profiles",
+    "sha256_bottleneck": "CPU SHA-256 is 40-50% of total stage time; GPU-accelerated SHA-256 could halve total time",
+    "timing_stability": "< 3% variance across runs — extremely tight distribution",
+    "memory_scaling": "GPU total scales linearly with M (proportional to working set)",
+    "separation_signal": "GPU is 100-125x faster than CPU. A device that cannot fit the working set in VRAM falls back to CPU-speed, producing a timing gap of 100x+ — far exceeding any reasonable deadline band",
+    "calibration_implications": {
+      "this_card_for_gpu_small_v2": "T3 data point only. Not the positive control (wrong tier). Establishes T3 baseline timing.",
+      "this_card_for_gpu_medium_v2": "POSITIVE CONTROL CANDIDATE. 16 GB = T3 floor. Measured timing directly usable for deadline formula.",
+      "12gb_card_for_gpu_medium_v2": "User has a second machine with 12 GB GPU (T2 ceiling). This would be the NEGATIVE CONTROL for gpu-medium-v2. Testing pending."
+    }
+  },
+
+  "evidence_status": "BENCHMARK DATA — not a gate closure. This is standalone GPU timing without the challenge protocol. Protocol timing (checkpoint_received_at - stage_issued_at) will be higher by network RTT + serialization overhead."
+}
