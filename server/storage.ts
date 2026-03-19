@@ -185,6 +185,7 @@ import {
   communityTierManifests,
   inferenceRoutes,
   inferenceContributions,
+  expertWeightShards,
   type GpuCluster,
   type InsertGpuCluster,
   type GpuClusterMember,
@@ -195,6 +196,8 @@ import {
   type InsertInferenceRoute,
   type InferenceContribution,
   type InsertInferenceContribution,
+  type ExpertWeightShard,
+  type InsertExpertWeightShard,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, sql, ilike, or, notInArray, gte, lte, lt, isNull, isNotNull, inArray } from "drizzle-orm";
@@ -692,6 +695,11 @@ export interface IStorage {
     totalHbdEarned: number;
     activeContributors: number;
   }>;
+
+  // ── Expert Weight Shards ──────────────────────────────────────
+  createExpertShard(shard: InsertExpertWeightShard): Promise<ExpertWeightShard>;
+  getExpertShards(modelName: string, expertIndices?: number[]): Promise<ExpertWeightShard[]>;
+  getExpertShardByCid(cid: string): Promise<ExpertWeightShard | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -4029,6 +4037,33 @@ export class DatabaseStorage implements IStorage {
       totalHbdEarned: rows.reduce((sum: number, r: InferenceContribution) => sum + r.hbdEarned, 0),
       activeContributors: nodeSet.size,
     };
+  }
+
+  // ── Expert Weight Shards ──────────────────────────────────────
+
+  async createExpertShard(shard: InsertExpertWeightShard): Promise<ExpertWeightShard> {
+    const [created] = await db.insert(expertWeightShards).values(shard).returning();
+    return created;
+  }
+
+  async getExpertShards(modelName: string, expertIndices?: number[]): Promise<ExpertWeightShard[]> {
+    if (expertIndices && expertIndices.length > 0) {
+      return db.select().from(expertWeightShards)
+        .where(and(
+          eq(expertWeightShards.modelName, modelName),
+          inArray(expertWeightShards.expertIndex, expertIndices),
+        ))
+        .orderBy(expertWeightShards.expertIndex);
+    }
+    return db.select().from(expertWeightShards)
+      .where(eq(expertWeightShards.modelName, modelName))
+      .orderBy(expertWeightShards.expertIndex);
+  }
+
+  async getExpertShardByCid(cid: string): Promise<ExpertWeightShard | undefined> {
+    const [shard] = await db.select().from(expertWeightShards)
+      .where(eq(expertWeightShards.ipfsCid, cid));
+    return shard || undefined;
   }
 }
 

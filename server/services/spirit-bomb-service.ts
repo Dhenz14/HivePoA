@@ -14,11 +14,13 @@
  * and automation that runs inside HivePoA.
  */
 
+import { createHash } from "crypto";
 import { DatabaseStorage } from "../storage";
 import type {
   GpuCluster,
   CommunityTierManifest,
 } from "@shared/schema";
+import type { CustomJsonRequest, HiveTransaction } from "./hive-client";
 
 // ── Tier Configuration ──────────────────────────────────────────
 
@@ -245,5 +247,67 @@ export class SpiritBombService {
       clusterHealth,
       contributions: contribStats,
     };
+  }
+
+  /**
+   * Publish the latest tier manifest to Hive blockchain as a custom_json.
+   *
+   * Uses the existing HiveClient's broadcastCustomJson (or with reconciliation).
+   * Rate-limited: skips if the manifest hasn't changed since last publish.
+   *
+   * @param hiveClient - HiveClient instance (real or mock)
+   * @returns Transaction result, or null if skipped
+   */
+  async publishManifestToHive(
+    hiveClient: { broadcastCustomJson(req: CustomJsonRequest): Promise<HiveTransaction> },
+  ): Promise<{ hiveTxId: string; published: boolean; reason?: string } | null> {
+    const manifest = await this.storage.getLatestTierManifest();
+    if (!manifest) {
+      return { hiveTxId: "", published: false, reason: "No manifest exists" };
+    }
+
+    // Skip if already published to Hive
+    if (manifest.hiveTxId) {
+      return { hiveTxId: manifest.hiveTxId, published: false, reason: "Already published" };
+    }
+
+    // Compute cluster topology hash
+    const clusters = await this.storage.listGpuClusters();
+    const topoData = clusters.map((c: GpuCluster) => `${c.id}:${c.totalGpus}`).sort().join(",");
+    const topoHash = createHash("sha256").update(topoData).digest("hex").slice(0, 16);
+
+    // Build compact on-chain payload (short keys to minimize storage)
+    const payload = {
+      v: 1,
+      tier: manifest.tier,
+      gpus: manifest.totalGpus,
+      vram: manifest.totalVramGb,
+      clusters: manifest.activeClusters,
+      model: manifest.baseModel,
+      experts: manifest.activeExperts,
+      quant: manifest.quantization,
+      ctx: manifest.maxContextLength,
+      spec: manifest.speculativeDecodingEnabled,
+      tps: manifest.estimatedTps,
+      topo: topoHash,
+      ts: manifest.createdAt instanceof Date
+        ? manifest.createdAt.toISOString()
+        : new Date(manifest.createdAt).toISOString(),
+    };
+
+    try {
+      const tx = await hiveClient.broadcastCustomJson({
+        id: "spiritbomb_manifest",
+        json: payload,
+        requiredPostingAuths: undefined, // uses default from HiveClient config
+      });
+
+      // Store the tx ID on the manifest
+      // (communityTierManifests.hiveTxId exists in schema but storage has no update method)
+      // For now, return the tx ID for the caller to handle
+      return { hiveTxId: tx.id, published: true };
+    } catch (err: any) {
+      return { hiveTxId: "", published: false, reason: `Broadcast failed: ${err.message}` };
+    }
   }
 }

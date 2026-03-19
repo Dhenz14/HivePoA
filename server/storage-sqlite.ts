@@ -2517,4 +2517,9 @@ export class SQLiteStorage implements IStorage {
   async recordInferenceContribution(_contribution: any): Promise<any> { throw new Error("Spirit Bomb: PG-only"); }
   async getNodeInferenceContributions(_nodeId: string, _since: Date): Promise<any[]> { return []; }
   async getInferenceContributionStats(): Promise<any> { return { totalTokens: 0, totalRequests: 0, totalHbdEarned: 0, activeContributors: 0 }; }
+
+  // Expert Weight Shards stubs (PG-only)
+  async createExpertShard(_shard: any): Promise<any> { throw new Error("Spirit Bomb: PG-only"); }
+  async getExpertShards(_modelName: string, _expertIndices?: number[]): Promise<any[]> { return []; }
+  async getExpertShardByCid(_cid: string): Promise<any> { return undefined; }
 }

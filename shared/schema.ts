@@ -1367,6 +1367,28 @@ export const insertInferenceContributionSchema = createInsertSchema(inferenceCon
   id: true, createdAt: true,
 });
 
+// Expert Weight Shards — IPFS-distributed MoE expert weights
+export const expertWeightShards = pgTable("expert_weight_shards", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  modelName: text("model_name").notNull(), // e.g., "Qwen3-Coder-80B-MoE"
+  expertIndex: integer("expert_index").notNull(), // which expert (0-63)
+  layerRange: text("layer_range"), // e.g., "0-79" (all layers for this expert)
+  shardFilename: text("shard_filename").notNull(), // original filename
+  ipfsCid: text("ipfs_cid").notNull().unique(), // IPFS content ID
+  sha256Hash: text("sha256_hash").notNull(), // integrity hash
+  sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+  quantization: text("quantization").notNull().default("fp16"), // fp16, awq, gguf
+  uploadedAt: timestamp("uploaded_at").notNull().defaultNow(),
+  uploadedBy: text("uploaded_by").notNull(), // Hive username of uploader
+}, (table) => [
+  index("expert_shard_model_idx").on(table.modelName, table.expertIndex),
+  uniqueIndex("expert_shard_model_expert_idx").on(table.modelName, table.expertIndex, table.quantization),
+]);
+
+export const insertExpertWeightShardSchema = createInsertSchema(expertWeightShards).omit({
+  id: true, uploadedAt: true,
+});
+
 // ============================================================
 // PHASE 11: Generic Trusted-Role Registry
 // ============================================================
@@ -1797,3 +1819,6 @@ export type InsertInferenceRoute = z.infer<typeof insertInferenceRouteSchema>;
 
 export type InferenceContribution = typeof inferenceContributions.$inferSelect;
 export type InsertInferenceContribution = z.infer<typeof insertInferenceContributionSchema>;
+
+export type ExpertWeightShard = typeof expertWeightShards.$inferSelect;
+export type InsertExpertWeightShard = z.infer<typeof insertExpertWeightShardSchema>;

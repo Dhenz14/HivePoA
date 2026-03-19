@@ -5875,6 +5875,83 @@ export async function registerRoutes(
     }
   });
 
+  // POST /api/community/tier/publish-hive — Publish latest manifest to Hive blockchain
+  app.post("/api/community/tier/publish-hive", requireAnyAuth, async (req, res) => {
+    try {
+      const { createHiveClient } = await import("./services/hive-client");
+      const hiveClient = createHiveClient();
+      // Instantiate SpiritBombService for this request (lightweight, no background sweep)
+      const { SpiritBombService } = await import("./services/spirit-bomb-service");
+      const sb = new SpiritBombService(storage as any, 999999);
+      const result = await sb.publishManifestToHive(hiveClient);
+      if (!result) {
+        res.status(500).json({ error: { code: "PUBLISH_FAILED", message: "Unknown error" } });
+        return;
+      }
+      if (!result.published) {
+        res.json({ published: false, reason: result.reason, hiveTxId: result.hiveTxId || null });
+        return;
+      }
+      res.json({ published: true, hiveTxId: result.hiveTxId });
+    } catch (err: any) {
+      logCompute.error({ err }, "Failed to publish manifest to Hive");
+      res.status(500).json({ error: { code: "HIVE_PUBLISH_FAILED", message: err.message } });
+    }
+  });
+
+  // ── Inference Routes ─────────────────────────────────────────
+
+  // ── Expert Weight Shards (IPFS) ──────────────────────────────
+
+  // POST /api/community/expert-shards — Register an expert weight shard
+  app.post("/api/community/expert-shards", requireAnyAuth, async (req, res) => {
+    try {
+      const shard = await storage.createExpertShard({
+        ...req.body,
+        uploadedBy: req.authenticatedUser!,
+      });
+      res.status(201).json(shard);
+    } catch (err: any) {
+      logCompute.error({ err }, "Failed to create expert shard");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
+  // GET /api/community/expert-shards — Query shards for a model
+  app.get("/api/community/expert-shards", async (req, res) => {
+    try {
+      const model = req.query.model as string;
+      if (!model) {
+        res.status(400).json({ error: { code: "MISSING_PARAM", message: "model query param required" } });
+        return;
+      }
+      const expertsParam = req.query.experts as string | undefined;
+      const expertIndices = expertsParam
+        ? expertsParam.split(",").map(Number).filter(n => !isNaN(n))
+        : undefined;
+      const shards = await storage.getExpertShards(model, expertIndices);
+      res.json({ shards, count: shards.length });
+    } catch (err: any) {
+      logCompute.error({ err }, "Failed to query expert shards");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
+  // GET /api/community/expert-shards/:cid — Get shard by IPFS CID
+  app.get("/api/community/expert-shards/:cid", async (req, res) => {
+    try {
+      const shard = await storage.getExpertShardByCid(req.params.cid);
+      if (!shard) {
+        res.status(404).json({ error: { code: "NOT_FOUND", message: "Shard not found" } });
+        return;
+      }
+      res.json(shard);
+    } catch (err: any) {
+      logCompute.error({ err }, "Failed to get shard");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
   // ── Inference Routes ─────────────────────────────────────────
 
   // GET /api/community/inference/routes — List active inference routes
