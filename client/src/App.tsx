@@ -42,6 +42,7 @@ import Governance from "@/pages/governance";
 import Pricing from "@/pages/pricing";
 import Inference from "@/pages/inference";
 import CommunityCloud from "@/pages/community-cloud";
+import QuickStart from "@/pages/quick-start";
 import generatedImage from '@assets/generated_images/a_dark,_futuristic_abstract_mesh_background_with_red_accents..png';
 
 function ProtectedValidatorRoute({ component: Component }: { component: React.ComponentType }) {
@@ -86,6 +87,7 @@ function AppRoutes() {
         <Route path="/node">{() => <AgentRequired><NodeStatus /></AgentRequired>}</Route>
         <Route path="/settings">{() => <AgentRequired><ValidatorSettings /></AgentRequired>}</Route>
         <Route path="/earnings">{() => <AgentRequired><Earnings /></AgentRequired>}</Route>
+        <Route path="/quick-start" component={QuickStart} />
         <Route path="/inference">{() => <AgentRequired><Inference /></AgentRequired>}</Route>
         <Route path="/community-cloud">{() => <AgentRequired><CommunityCloud /></AgentRequired>}</Route>
         <Route path="/p2p-network">{() => <AgentRequired><P2PNetwork /></AgentRequired>}</Route>

@@ -923,6 +923,9 @@ export const computeNodes = pgTable("compute_nodes", {
   gpuModel: text("gpu_model").notNull(), // "RTX 4090", "A100-80GB"
   gpuVramGb: integer("gpu_vram_gb").notNull(),
   deviceUuid: text("device_uuid"), // NVIDIA GPU UUID (e.g., "GPU-e57e219b-..."), nullable for backward compat
+  clusterEligible: boolean("cluster_eligible").notNull().default(false), // Phase 2C: node passes NCCL benchmark + latency requirements
+  geoHashPrefix: text("geo_hash_prefix"), // Phase 2C: geohash for proximity-based clustering (e.g., "dr5ru7")
+  ncclBenchmarkScore: real("nccl_benchmark_score"), // Phase 2C: NCCL all-reduce bandwidth (GB/s)
   cudaVersion: text("cuda_version"),
   cpuCores: integer("cpu_cores"),
   ramGb: integer("ram_gb"),

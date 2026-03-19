@@ -90,6 +90,7 @@ export function Sidebar() {
   ];
 
   const spiritBombLinks: NavItem[] = [
+    { href: "/quick-start", label: "Quick Start", icon: Zap },
     { href: "/inference", label: "AI Inference", icon: Brain },
     { href: "/community-cloud", label: "Community Cloud", icon: Activity },
   ];

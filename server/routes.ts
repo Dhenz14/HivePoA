@@ -6058,6 +6058,80 @@ export async function registerRoutes(
     }
   });
 
+  // ── Training Proofs (TOPLOC) ────────────────────────────────
+
+  // POST /api/compute/training-proofs — Submit a training proof
+  app.post("/api/compute/training-proofs", requireAnyAuth, async (req, res) => {
+    try {
+      // Use raw SQL via storage's underlying db access (training_proofs table)
+      const { db: rawDb } = await import("./db");
+      const { sql: rawSql } = await import("drizzle-orm");
+      await rawDb.execute(rawSql`
+        CREATE TABLE IF NOT EXISTS training_proofs (
+          id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+          node_id VARCHAR NOT NULL,
+          task_id TEXT NOT NULL,
+          step INTEGER NOT NULL,
+          loss REAL NOT NULL,
+          param_checksum TEXT NOT NULL,
+          gradient_norm REAL,
+          learning_rate REAL,
+          batch_size INTEGER,
+          tokens_processed INTEGER,
+          checkpoint_cid TEXT,
+          signature TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          verified_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+      const result = await rawDb.execute(rawSql`
+        INSERT INTO training_proofs (node_id, task_id, step, loss, param_checksum, gradient_norm, learning_rate, batch_size, tokens_processed, checkpoint_cid, signature, status)
+        VALUES (${req.body.nodeId}, ${req.body.taskId}, ${req.body.step}, ${req.body.loss}, ${req.body.paramChecksum}, ${req.body.gradientNorm || null}, ${req.body.learningRate || null}, ${req.body.batchSize || null}, ${req.body.tokensProcessed || null}, ${req.body.checkpointCid || null}, ${req.body.signature || null}, ${req.body.status || 'pending'})
+        RETURNING *
+      `);
+      const rows = result.rows ?? result;
+      res.status(201).json((rows as any[])[0]);
+    } catch (err: any) {
+      logCompute.error({ err }, "Failed to submit training proof");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
+  // GET /api/compute/training-proofs/:taskId — List proofs for a task
+  app.get("/api/compute/training-proofs/:taskId", async (req, res) => {
+    try {
+      const { db: rawDb } = await import("./db");
+      const { sql: rawSql } = await import("drizzle-orm");
+      const result = await rawDb.execute(rawSql`
+        SELECT * FROM training_proofs
+        WHERE task_id = ${req.params.taskId}
+        ORDER BY step ASC
+        LIMIT 100
+      `);
+      const rows = result.rows ?? result;
+      res.json({ proofs: rows, count: (rows as any[]).length });
+    } catch (err: any) {
+      res.json({ proofs: [], count: 0 });
+    }
+  });
+
+  // POST /api/compute/training-proofs/:id/verify — Submit verification result
+  app.post("/api/compute/training-proofs/:id/verify", requireAnyAuth, async (req, res) => {
+    try {
+      const { db: rawDb } = await import("./db");
+      const { sql: rawSql } = await import("drizzle-orm");
+      const status = req.body.verified ? "verified" : "failed";
+      await rawDb.execute(rawSql`
+        UPDATE training_proofs SET status = ${status}, verified_at = NOW()
+        WHERE id = ${req.params.id}
+      `);
+      res.json({ id: req.params.id, status });
+    } catch (err: any) {
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
   // ============================================================
   // PHASE 11: Generic Trusted-Role Registry
   // ============================================================
