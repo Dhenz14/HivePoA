@@ -97,6 +97,7 @@ export interface NodeRegistration {
   nodeInstanceId: string;
   gpuModel: string;
   gpuVramGb: number;
+  deviceUuid?: string; // NVIDIA GPU UUID for per-device identity
   cudaVersion?: string;
   cpuCores?: number;
   ramGb?: number;
@@ -268,6 +269,7 @@ export class ComputeService {
         status: "online",
         gpuModel: reg.gpuModel,
         gpuVramGb: reg.gpuVramGb,
+        deviceUuid: reg.deviceUuid || existing.deviceUuid,
         cudaVersion: reg.cudaVersion || existing.cudaVersion,
         cpuCores: reg.cpuCores || existing.cpuCores,
         ramGb: reg.ramGb || existing.ramGb,
@@ -287,6 +289,7 @@ export class ComputeService {
       hiveUsername: reg.hiveUsername,
       gpuModel: reg.gpuModel,
       gpuVramGb: reg.gpuVramGb,
+      deviceUuid: reg.deviceUuid,
       cudaVersion: reg.cudaVersion,
       cpuCores: reg.cpuCores,
       ramGb: reg.ramGb,

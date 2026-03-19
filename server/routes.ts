@@ -71,6 +71,25 @@ async function requireAuth(req: Request, res: Response, next: NextFunction): Pro
 }
 
 /**
+ * Combined auth middleware: accepts either Bearer session token or ApiKey.
+ * Used by community routes where both human users and automated coordinators need access.
+ */
+async function requireAnyAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    res.status(401).json({ error: "Authentication required — provide Authorization: Bearer <token> or ApiKey <key>" });
+    return;
+  }
+  if (authHeader.startsWith("Bearer ")) {
+    return requireAuth(req, res, next);
+  }
+  if (authHeader.startsWith("ApiKey ")) {
+    return requireAgentAuth(req, res, next);
+  }
+  res.status(401).json({ error: "Unsupported auth scheme — use Bearer or ApiKey" });
+}
+
+/**
  * Agent API key auth middleware: validates ApiKey from Authorization header.
  * Used by encoding agents that can't use Hive Keychain.
  */
@@ -4888,6 +4907,7 @@ export async function registerRoutes(
         nodeInstanceId: z.string().min(8).max(128), // stable per-device identity
         gpuModel: z.string().min(1).max(100),
         gpuVramGb: z.number().int().min(4).max(1000),
+        deviceUuid: z.string().max(100).optional(), // NVIDIA GPU UUID (e.g., "GPU-xxxxx")
         cudaVersion: z.string().max(20).optional(),
         cpuCores: z.number().int().min(1).max(512).optional(),
         ramGb: z.number().int().min(1).max(10000).optional(),
@@ -5743,13 +5763,16 @@ export async function registerRoutes(
   // SPIRIT BOMB: Community Cloud Tier System
   // ============================================================
 
-  const spiritBomb = new SpiritBombService(storage as any);
-  spiritBomb.start(); // background sweep for stale clusters
+  // SpiritBombService: lazy start — only in production to avoid interfering with test setup
+  if (process.env.NODE_ENV === "production") {
+    const spiritBomb = new SpiritBombService(storage as any);
+    spiritBomb.start();
+  }
 
   // ── GPU Clusters ─────────────────────────────────────────────
 
   // POST /api/community/clusters — Create a GPU cluster
-  app.post("/api/community/clusters", requireAuth, async (req, res) => {
+  app.post("/api/community/clusters", requireAnyAuth, async (req, res) => {
     try {
       const cluster = await storage.createGpuCluster(req.body);
       res.status(201).json(cluster);
@@ -5788,7 +5811,7 @@ export async function registerRoutes(
   });
 
   // POST /api/community/clusters/:clusterId/members — Add node to cluster
-  app.post("/api/community/clusters/:clusterId/members", requireAuth, async (req, res) => {
+  app.post("/api/community/clusters/:clusterId/members", requireAnyAuth, async (req, res) => {
     try {
       const member = await storage.addClusterMember({
         clusterId: req.params.clusterId,
@@ -5802,7 +5825,7 @@ export async function registerRoutes(
   });
 
   // DELETE /api/community/clusters/:clusterId/members/:nodeId — Remove node from cluster
-  app.delete("/api/community/clusters/:clusterId/members/:nodeId", requireAuth, async (req, res) => {
+  app.delete("/api/community/clusters/:clusterId/members/:nodeId", requireAnyAuth, async (req, res) => {
     try {
       await storage.removeClusterMember(req.params.clusterId, req.params.nodeId);
       res.json({ success: true });
@@ -5842,7 +5865,7 @@ export async function registerRoutes(
   });
 
   // POST /api/community/tier — Publish a new tier manifest (coordinator only)
-  app.post("/api/community/tier", requireAuth, async (req, res) => {
+  app.post("/api/community/tier", requireAnyAuth, async (req, res) => {
     try {
       const manifest = await storage.createTierManifest(req.body);
       res.status(201).json(manifest);
@@ -5867,7 +5890,7 @@ export async function registerRoutes(
   });
 
   // POST /api/community/inference/routes — Create/update inference route
-  app.post("/api/community/inference/routes", requireAuth, async (req, res) => {
+  app.post("/api/community/inference/routes", requireAnyAuth, async (req, res) => {
     try {
       const route = await storage.upsertInferenceRoute(req.body);
       res.status(201).json(route);
@@ -5903,7 +5926,7 @@ export async function registerRoutes(
   });
 
   // POST /api/community/contributions — Record inference contribution
-  app.post("/api/community/contributions", requireAuth, async (req, res) => {
+  app.post("/api/community/contributions", requireAnyAuth, async (req, res) => {
     try {
       const contribution = await storage.recordInferenceContribution(req.body);
       res.status(201).json(contribution);

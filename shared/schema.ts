@@ -922,6 +922,7 @@ export const computeNodes = pgTable("compute_nodes", {
   // Hardware specs (queryable columns, not JSON)
   gpuModel: text("gpu_model").notNull(), // "RTX 4090", "A100-80GB"
   gpuVramGb: integer("gpu_vram_gb").notNull(),
+  deviceUuid: text("device_uuid"), // NVIDIA GPU UUID (e.g., "GPU-e57e219b-..."), nullable for backward compat
   cudaVersion: text("cuda_version"),
   cpuCores: integer("cpu_cores"),
   ramGb: integer("ram_gb"),
