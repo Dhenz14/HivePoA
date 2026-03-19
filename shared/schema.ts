@@ -1199,6 +1199,174 @@ export const computeChallengeCheckpoints = pgTable("compute_challenge_checkpoint
 ]);
 
 // ============================================================
+// PHASE 2B: VRAM Class Evidence (insert-only observation log)
+// ============================================================
+
+// Every challenge outcome for protocol_version >= 2 profiles produces an observation.
+// Rows are insert-only: never updated, never deleted (except by TTL-based retention).
+// Certification state is derived from the log, not stored.
+export const computeVramClassEvidence = pgTable("compute_vram_class_evidence", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  nodeId: varchar("node_id").notNull().references(() => computeNodes.id),
+  resourceClassProfileId: varchar("resource_class_profile_id").notNull()
+    .references(() => computeResourceClassProfiles.profileId),
+  status: text("status").notNull(), // 'pass' | 'fail' | 'inconclusive'
+  observedAt: timestamp("observed_at").notNull(),
+  expiresAt: timestamp("expires_at"), // null = no expiry (operational policy sets this)
+  challengeAttemptId: varchar("challenge_attempt_id")
+    .references(() => computeJobAttempts.id),
+  failureReason: text("failure_reason"), // VRAM_OOM, STAGE_DEADLINE_MISSED, STAGE_DIGEST_MISMATCH, FIRST_PROGRESS_MISSED, COMPLETION_DEADLINE_MISSED
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  // Fast lookup: certification derivation for (node, profile)
+  index("vram_evidence_node_profile_idx")
+    .on(table.nodeId, table.resourceClassProfileId, table.observedAt),
+  // Attempt linkage (unique: one observation per attempt)
+  uniqueIndex("vram_evidence_attempt_idx")
+    .on(table.challengeAttemptId),
+]);
+
+// ============================================================
+// SPIRIT BOMB: Community Cloud Tier System
+// ============================================================
+
+// GPU Cluster Groups — geo-aware affinity groups of compute nodes
+// Nodes within a cluster have <50ms latency to each other
+export const gpuClusters = pgTable("gpu_clusters", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  region: text("region").notNull(), // geo region identifier (e.g., "us-east", "eu-west")
+  geoHash: text("geo_hash"), // geohash prefix for proximity grouping
+  status: text("status").notNull().default("forming"), // forming, active, degraded, dissolved
+  totalGpus: integer("total_gpus").notNull().default(0),
+  totalVramGb: integer("total_vram_gb").notNull().default(0),
+  avgLatencyMs: real("avg_latency_ms"), // average intra-cluster latency
+  maxLatencyMs: real("max_latency_ms"), // worst-case intra-cluster latency
+  // Capabilities derived from member GPUs
+  canTensorParallel: boolean("can_tensor_parallel").notNull().default(false), // TP requires <10ms
+  canPipelineParallel: boolean("can_pipeline_parallel").notNull().default(true),
+  // Coordinator info
+  coordinatorNodeId: varchar("coordinator_node_id").references(() => computeNodes.id),
+  lastHealthCheck: timestamp("last_health_check"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  index("gpu_clusters_region_idx").on(table.region),
+  index("gpu_clusters_status_idx").on(table.status),
+]);
+
+// GPU Cluster Membership — which compute nodes belong to which clusters
+export const gpuClusterMembers = pgTable("gpu_cluster_members", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  clusterId: varchar("cluster_id").notNull().references(() => gpuClusters.id),
+  nodeId: varchar("node_id").notNull().references(() => computeNodes.id),
+  role: text("role").notNull().default("worker"), // coordinator, worker
+  joinedAt: timestamp("joined_at").notNull().defaultNow(),
+  lastPingMs: real("last_ping_ms"), // latency to coordinator
+  gpuModel: text("gpu_model"),
+  vramGb: integer("vram_gb"),
+  bandwidthGbps: real("bandwidth_gbps"), // measured network bandwidth
+  status: text("status").notNull().default("active"), // active, draining, disconnected
+}, (table) => [
+  uniqueIndex("gpu_cluster_member_unique_idx").on(table.clusterId, table.nodeId),
+  index("gpu_cluster_member_node_idx").on(table.nodeId),
+]);
+
+// Community Tier Manifests — published tier state snapshots
+// Tier determined by coordinator polling every 15 min
+export const communityTierManifests = pgTable("community_tier_manifests", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tier: integer("tier").notNull(), // 1, 2, or 3
+  totalGpus: integer("total_gpus").notNull(),
+  totalVramGb: integer("total_vram_gb").notNull(),
+  activeClusters: integer("active_clusters").notNull().default(0),
+  // Model configuration for this tier
+  baseModel: text("base_model").notNull(), // e.g., "Qwen3-32B", "Qwen3-Coder-80B-MoE"
+  activeExperts: integer("active_experts").notNull(), // MoE experts active at this tier
+  quantization: text("quantization").notNull(), // "awq", "gguf", "fp16"
+  // Inference capabilities
+  maxContextLength: integer("max_context_length").notNull(),
+  estimatedTps: real("estimated_tps"), // tokens per second estimate
+  speculativeDecodingEnabled: boolean("speculative_decoding_enabled").notNull().default(false),
+  // Publishing
+  ipfsCid: text("ipfs_cid"), // manifest published to IPFS
+  hiveTxId: text("hive_tx_id"), // custom_json tx on Hive blockchain
+  publishedAt: timestamp("published_at"),
+  expiresAt: timestamp("expires_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("tier_manifests_tier_idx").on(table.tier),
+  index("tier_manifests_published_idx").on(table.publishedAt),
+]);
+
+// Inference Route Table — tracks how inference requests are routed
+export const inferenceRoutes = pgTable("inference_routes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  clusterId: varchar("cluster_id").references(() => gpuClusters.id), // null = local inference
+  mode: text("mode").notNull(), // "local", "cluster", "hybrid"
+  modelName: text("model_name").notNull(),
+  // Pipeline parallel config
+  pipelineStages: integer("pipeline_stages").notNull().default(1),
+  tensorParallelSize: integer("tensor_parallel_size").notNull().default(1),
+  // Performance tracking
+  totalRequests: integer("total_requests").notNull().default(0),
+  avgLatencyMs: real("avg_latency_ms"),
+  avgTps: real("avg_tps"), // average tokens per second
+  p99LatencyMs: real("p99_latency_ms"),
+  // Status
+  status: text("status").notNull().default("active"), // active, draining, inactive
+  priority: integer("priority").notNull().default(0), // higher = preferred
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  index("inference_routes_cluster_idx").on(table.clusterId),
+  index("inference_routes_mode_idx").on(table.mode),
+]);
+
+// Inference Contributions — tracks GPU time donated for community inference
+export const inferenceContributions = pgTable("inference_contributions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  nodeId: varchar("node_id").notNull().references(() => computeNodes.id),
+  clusterId: varchar("cluster_id").references(() => gpuClusters.id),
+  // Contribution metrics
+  totalTokensGenerated: bigint("total_tokens_generated", { mode: "number" }).notNull().default(0),
+  totalInferenceMs: bigint("total_inference_ms", { mode: "number" }).notNull().default(0),
+  totalRequestsServed: integer("total_requests_served").notNull().default(0),
+  // Rewards
+  hbdEarned: real("hbd_earned").notNull().default(0),
+  reputationBonus: integer("reputation_bonus").notNull().default(0),
+  // Period tracking
+  periodStart: timestamp("period_start").notNull(),
+  periodEnd: timestamp("period_end").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("inference_contrib_node_idx").on(table.nodeId),
+  index("inference_contrib_period_idx").on(table.periodStart),
+]);
+
+// ── Spirit Bomb Insert Schemas ──────────────────────────────────
+
+export const insertGpuClusterSchema = createInsertSchema(gpuClusters).omit({
+  id: true, createdAt: true, updatedAt: true,
+});
+
+export const insertGpuClusterMemberSchema = createInsertSchema(gpuClusterMembers).omit({
+  id: true, joinedAt: true,
+});
+
+export const insertCommunityTierManifestSchema = createInsertSchema(communityTierManifests).omit({
+  id: true, createdAt: true,
+});
+
+export const insertInferenceRouteSchema = createInsertSchema(inferenceRoutes).omit({
+  id: true, createdAt: true, updatedAt: true,
+});
+
+export const insertInferenceContributionSchema = createInsertSchema(inferenceContributions).omit({
+  id: true, createdAt: true,
+});
+
+// ============================================================
 // PHASE 11: Generic Trusted-Role Registry
 // ============================================================
 
@@ -1345,6 +1513,12 @@ export const insertComputeChallengeStageBundle = createInsertSchema(computeChall
 });
 
 export const insertComputeChallengeCheckpointSchema = createInsertSchema(computeChallengeCheckpoints).omit({
+  id: true,
+  createdAt: true,
+});
+
+// Phase 2B: VRAM Class Evidence Insert Schema
+export const insertComputeVramClassEvidenceSchema = createInsertSchema(computeVramClassEvidence).omit({
   id: true,
   createdAt: true,
 });
@@ -1591,6 +1765,9 @@ export type InsertComputeChallengeStageBundle = z.infer<typeof insertComputeChal
 export type ComputeChallengeCheckpoint = typeof computeChallengeCheckpoints.$inferSelect;
 export type InsertComputeChallengeCheckpoint = z.infer<typeof insertComputeChallengeCheckpointSchema>;
 
+export type ComputeVramClassEvidence = typeof computeVramClassEvidence.$inferSelect;
+export type InsertComputeVramClassEvidence = z.infer<typeof insertComputeVramClassEvidenceSchema>;
+
 // Phase 11: Trusted-Role Registry Types
 export type TrustedRolePolicy = typeof trustedRolePolicies.$inferSelect;
 export type InsertTrustedRolePolicy = z.infer<typeof insertTrustedRolePolicySchema>;
@@ -1603,3 +1780,19 @@ export type InsertTrustedRoleVouch = z.infer<typeof insertTrustedRoleVouchSchema
 
 export type TrustedRoleAuditEntry = typeof trustedRoleAuditLog.$inferSelect;
 export type InsertTrustedRoleAuditEntry = z.infer<typeof insertTrustedRoleAuditLogSchema>;
+
+// Spirit Bomb: Community Cloud Types
+export type GpuCluster = typeof gpuClusters.$inferSelect;
+export type InsertGpuCluster = z.infer<typeof insertGpuClusterSchema>;
+
+export type GpuClusterMember = typeof gpuClusterMembers.$inferSelect;
+export type InsertGpuClusterMember = z.infer<typeof insertGpuClusterMemberSchema>;
+
+export type CommunityTierManifest = typeof communityTierManifests.$inferSelect;
+export type InsertCommunityTierManifest = z.infer<typeof insertCommunityTierManifestSchema>;
+
+export type InferenceRoute = typeof inferenceRoutes.$inferSelect;
+export type InsertInferenceRoute = z.infer<typeof insertInferenceRouteSchema>;
+
+export type InferenceContribution = typeof inferenceContributions.$inferSelect;
+export type InsertInferenceContribution = z.infer<typeof insertInferenceContributionSchema>;

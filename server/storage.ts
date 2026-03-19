@@ -175,6 +175,26 @@ import {
   type InsertComputeChallengeStageBundle,
   type ComputeChallengeCheckpoint,
   type InsertComputeChallengeCheckpoint,
+  // Phase 2B: VRAM Class Evidence
+  computeVramClassEvidence,
+  type ComputeVramClassEvidence,
+  type InsertComputeVramClassEvidence,
+  // Spirit Bomb: Community Cloud
+  gpuClusters,
+  gpuClusterMembers,
+  communityTierManifests,
+  inferenceRoutes,
+  inferenceContributions,
+  type GpuCluster,
+  type InsertGpuCluster,
+  type GpuClusterMember,
+  type InsertGpuClusterMember,
+  type CommunityTierManifest,
+  type InsertCommunityTierManifest,
+  type InferenceRoute,
+  type InsertInferenceRoute,
+  type InferenceContribution,
+  type InsertInferenceContribution,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, sql, ilike, or, notInArray, gte, lte, lt, isNull, isNotNull, inArray } from "drizzle-orm";
@@ -610,6 +630,68 @@ export interface IStorage {
 
   /** Get all bundles for an attempt, ordered by stage_index. */
   getChallengeBundles(attemptId: string): Promise<ComputeChallengeStageBundle[]>;
+
+  // Phase 2B: VRAM Class Evidence — Storage Primitives
+
+  /** Insert a VRAM class observation (pass/fail/inconclusive). Insert-only, never updated. */
+  insertVramClassEvidence(evidence: InsertComputeVramClassEvidence): Promise<ComputeVramClassEvidence>;
+
+  /**
+   * Derive certification state for (node, profile) from the observation log.
+   * Returns 'certified' | 'revoked' | 'uncertified' with the governing observation.
+   */
+  getVramClassCertification(nodeId: string, profileId: string, now?: Date): Promise<{
+    state: "certified" | "revoked" | "uncertified";
+    latestPass: ComputeVramClassEvidence | null;
+    revokingObservation: ComputeVramClassEvidence | null;
+  }>;
+
+  /** Get recent evidence history for (node, profile), newest first. */
+  getVramClassEvidenceHistory(nodeId: string, profileId: string, limit?: number): Promise<ComputeVramClassEvidence[]>;
+
+  // ── Spirit Bomb: Community Cloud ──────────────────────────────
+
+  /** Create a GPU cluster. */
+  createGpuCluster(cluster: InsertGpuCluster): Promise<GpuCluster>;
+  /** Get a GPU cluster by ID. */
+  getGpuCluster(id: string): Promise<GpuCluster | undefined>;
+  /** List active clusters, optionally filtered by region. */
+  listGpuClusters(region?: string): Promise<GpuCluster[]>;
+  /** Update cluster stats (GPU count, VRAM, latency, status). */
+  updateGpuCluster(id: string, updates: Partial<GpuCluster>): Promise<void>;
+
+  /** Add a node to a cluster. */
+  addClusterMember(member: InsertGpuClusterMember): Promise<GpuClusterMember>;
+  /** Remove a node from a cluster. */
+  removeClusterMember(clusterId: string, nodeId: string): Promise<void>;
+  /** Get all members of a cluster. */
+  getClusterMembers(clusterId: string): Promise<GpuClusterMember[]>;
+  /** Get clusters a node belongs to. */
+  getNodeClusters(nodeId: string): Promise<GpuClusterMember[]>;
+
+  /** Publish a tier manifest. */
+  createTierManifest(manifest: InsertCommunityTierManifest): Promise<CommunityTierManifest>;
+  /** Get the latest tier manifest. */
+  getLatestTierManifest(): Promise<CommunityTierManifest | undefined>;
+  /** Get manifest history. */
+  getTierManifestHistory(limit?: number): Promise<CommunityTierManifest[]>;
+
+  /** Create or update an inference route. */
+  upsertInferenceRoute(route: InsertInferenceRoute): Promise<InferenceRoute>;
+  /** Get active inference routes, optionally filtered by mode. */
+  listInferenceRoutes(mode?: string): Promise<InferenceRoute[]>;
+
+  /** Record an inference contribution period. */
+  recordInferenceContribution(contribution: InsertInferenceContribution): Promise<InferenceContribution>;
+  /** Get contributions for a node in a time range. */
+  getNodeInferenceContributions(nodeId: string, since: Date): Promise<InferenceContribution[]>;
+  /** Get aggregate contribution stats across all nodes. */
+  getInferenceContributionStats(): Promise<{
+    totalTokens: number;
+    totalRequests: number;
+    totalHbdEarned: number;
+    activeContributors: number;
+  }>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -3680,6 +3762,273 @@ export class DatabaseStorage implements IStorage {
       jobId: r.job_id,
       attemptId: r.attempt_id,
     }));
+  }
+
+  // ============================================================
+  // Phase 2B: VRAM Class Evidence — Storage Primitives
+  // ============================================================
+
+  async insertVramClassEvidence(evidence: InsertComputeVramClassEvidence): Promise<ComputeVramClassEvidence> {
+    const [row] = await db
+      .insert(computeVramClassEvidence)
+      .values(evidence)
+      .returning();
+    return row;
+  }
+
+  async getVramClassCertification(
+    nodeId: string,
+    profileId: string,
+    now: Date = new Date(),
+  ): Promise<{
+    state: "certified" | "revoked" | "uncertified";
+    latestPass: ComputeVramClassEvidence | null;
+    revokingObservation: ComputeVramClassEvidence | null;
+  }> {
+    // 1. Find most recent non-expired PASS
+    const [latestPass] = await db
+      .select()
+      .from(computeVramClassEvidence)
+      .where(
+        and(
+          eq(computeVramClassEvidence.nodeId, nodeId),
+          eq(computeVramClassEvidence.resourceClassProfileId, profileId),
+          eq(computeVramClassEvidence.status, "pass"),
+          // Non-expired: expiresAt is null OR expiresAt > now
+          or(
+            isNull(computeVramClassEvidence.expiresAt),
+            gte(computeVramClassEvidence.expiresAt, now),
+          ),
+        ),
+      )
+      .orderBy(desc(computeVramClassEvidence.observedAt))
+      .limit(1);
+
+    if (!latestPass) {
+      return { state: "uncertified", latestPass: null, revokingObservation: null };
+    }
+
+    // 2. Check for immediate revocation: any non-expired VRAM_OOM after the PASS
+    const [oomRevocation] = await db
+      .select()
+      .from(computeVramClassEvidence)
+      .where(
+        and(
+          eq(computeVramClassEvidence.nodeId, nodeId),
+          eq(computeVramClassEvidence.resourceClassProfileId, profileId),
+          eq(computeVramClassEvidence.status, "fail"),
+          eq(computeVramClassEvidence.failureReason, "VRAM_OOM"),
+          gte(computeVramClassEvidence.observedAt, latestPass.observedAt),
+          // TTL-scoped: only live OOM observations revoke (Choice A)
+          or(
+            isNull(computeVramClassEvidence.expiresAt),
+            gte(computeVramClassEvidence.expiresAt, now),
+          ),
+        ),
+      )
+      .orderBy(desc(computeVramClassEvidence.observedAt))
+      .limit(1);
+
+    if (oomRevocation) {
+      return { state: "revoked", latestPass, revokingObservation: oomRevocation };
+    }
+
+    // 3. Check for threshold revocation: N+ STAGE_DEADLINE_MISSED in rolling window W
+    // Policy constants (operational, not frozen in spec)
+    const DEADLINE_MISS_THRESHOLD = 3;
+    const DEADLINE_MISS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+    const windowStart = new Date(now.getTime() - DEADLINE_MISS_WINDOW_MS);
+
+    const deadlineMisses = await db
+      .select()
+      .from(computeVramClassEvidence)
+      .where(
+        and(
+          eq(computeVramClassEvidence.nodeId, nodeId),
+          eq(computeVramClassEvidence.resourceClassProfileId, profileId),
+          eq(computeVramClassEvidence.status, "fail"),
+          eq(computeVramClassEvidence.failureReason, "STAGE_DEADLINE_MISSED"),
+          gte(computeVramClassEvidence.observedAt, latestPass.observedAt),
+          gte(computeVramClassEvidence.observedAt, windowStart),
+        ),
+      );
+
+    if (deadlineMisses.length >= DEADLINE_MISS_THRESHOLD) {
+      // Return the most recent deadline miss as the revoking observation
+      const sorted = [...deadlineMisses].sort(
+        (a: ComputeVramClassEvidence, b: ComputeVramClassEvidence) =>
+          new Date(b.observedAt).getTime() - new Date(a.observedAt).getTime(),
+      );
+      return { state: "revoked", latestPass, revokingObservation: sorted[0] };
+    }
+
+    // 4. PASS is live, no revocation — certified
+    return { state: "certified", latestPass, revokingObservation: null };
+  }
+
+  async getVramClassEvidenceHistory(
+    nodeId: string,
+    profileId: string,
+    limit: number = 50,
+  ): Promise<ComputeVramClassEvidence[]> {
+    return db
+      .select()
+      .from(computeVramClassEvidence)
+      .where(
+        and(
+          eq(computeVramClassEvidence.nodeId, nodeId),
+          eq(computeVramClassEvidence.resourceClassProfileId, profileId),
+        ),
+      )
+      .orderBy(desc(computeVramClassEvidence.observedAt))
+      .limit(limit);
+  }
+
+  // ── Spirit Bomb: Community Cloud ──────────────────────────────
+
+  async createGpuCluster(cluster: InsertGpuCluster): Promise<GpuCluster> {
+    const [created] = await db.insert(gpuClusters).values(cluster).returning();
+    return created;
+  }
+
+  async getGpuCluster(id: string): Promise<GpuCluster | undefined> {
+    const [cluster] = await db.select().from(gpuClusters).where(eq(gpuClusters.id, id));
+    return cluster || undefined;
+  }
+
+  async listGpuClusters(region?: string): Promise<GpuCluster[]> {
+    if (region) {
+      return db.select().from(gpuClusters)
+        .where(and(eq(gpuClusters.region, region), eq(gpuClusters.status, "active")))
+        .orderBy(desc(gpuClusters.totalGpus));
+    }
+    return db.select().from(gpuClusters)
+      .where(eq(gpuClusters.status, "active"))
+      .orderBy(desc(gpuClusters.totalGpus));
+  }
+
+  async updateGpuCluster(id: string, updates: Partial<GpuCluster>): Promise<void> {
+    await db.update(gpuClusters)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(gpuClusters.id, id));
+  }
+
+  async addClusterMember(member: InsertGpuClusterMember): Promise<GpuClusterMember> {
+    const [created] = await db.insert(gpuClusterMembers).values(member).returning();
+    // Update cluster GPU totals
+    await this.recalculateClusterStats(member.clusterId);
+    return created;
+  }
+
+  async removeClusterMember(clusterId: string, nodeId: string): Promise<void> {
+    await db.delete(gpuClusterMembers)
+      .where(and(
+        eq(gpuClusterMembers.clusterId, clusterId),
+        eq(gpuClusterMembers.nodeId, nodeId),
+      ));
+    await this.recalculateClusterStats(clusterId);
+  }
+
+  async getClusterMembers(clusterId: string): Promise<GpuClusterMember[]> {
+    return db.select().from(gpuClusterMembers)
+      .where(and(
+        eq(gpuClusterMembers.clusterId, clusterId),
+        eq(gpuClusterMembers.status, "active"),
+      ));
+  }
+
+  async getNodeClusters(nodeId: string): Promise<GpuClusterMember[]> {
+    return db.select().from(gpuClusterMembers)
+      .where(eq(gpuClusterMembers.nodeId, nodeId));
+  }
+
+  /** Recalculate cluster aggregate stats from its members. */
+  private async recalculateClusterStats(clusterId: string): Promise<void> {
+    const members = await db.select().from(gpuClusterMembers)
+      .where(and(
+        eq(gpuClusterMembers.clusterId, clusterId),
+        eq(gpuClusterMembers.status, "active"),
+      ));
+
+    const totalGpus = members.length;
+    const totalVramGb = members.reduce((sum: number, m: GpuClusterMember) => sum + (m.vramGb || 0), 0);
+    const pings = members.filter((m: GpuClusterMember) => m.lastPingMs != null).map((m: GpuClusterMember) => m.lastPingMs!);
+    const avgLatencyMs = pings.length > 0 ? pings.reduce((a: number, b: number) => a + b, 0) / pings.length : null;
+    const maxLatencyMs = pings.length > 0 ? Math.max(...pings) : null;
+    const canTensorParallel = maxLatencyMs != null && maxLatencyMs < 10;
+
+    const status = totalGpus === 0 ? "dissolved" : totalGpus < 2 ? "forming" : "active";
+
+    await db.update(gpuClusters)
+      .set({ totalGpus, totalVramGb, avgLatencyMs, maxLatencyMs, canTensorParallel, status, updatedAt: new Date() })
+      .where(eq(gpuClusters.id, clusterId));
+  }
+
+  async createTierManifest(manifest: InsertCommunityTierManifest): Promise<CommunityTierManifest> {
+    const [created] = await db.insert(communityTierManifests).values(manifest).returning();
+    return created;
+  }
+
+  async getLatestTierManifest(): Promise<CommunityTierManifest | undefined> {
+    const [latest] = await db.select().from(communityTierManifests)
+      .orderBy(desc(communityTierManifests.createdAt))
+      .limit(1);
+    return latest || undefined;
+  }
+
+  async getTierManifestHistory(limit: number = 20): Promise<CommunityTierManifest[]> {
+    return db.select().from(communityTierManifests)
+      .orderBy(desc(communityTierManifests.createdAt))
+      .limit(limit);
+  }
+
+  async upsertInferenceRoute(route: InsertInferenceRoute): Promise<InferenceRoute> {
+    const [created] = await db.insert(inferenceRoutes).values(route).returning();
+    return created;
+  }
+
+  async listInferenceRoutes(mode?: string): Promise<InferenceRoute[]> {
+    if (mode) {
+      return db.select().from(inferenceRoutes)
+        .where(and(eq(inferenceRoutes.mode, mode), eq(inferenceRoutes.status, "active")))
+        .orderBy(desc(inferenceRoutes.priority));
+    }
+    return db.select().from(inferenceRoutes)
+      .where(eq(inferenceRoutes.status, "active"))
+      .orderBy(desc(inferenceRoutes.priority));
+  }
+
+  async recordInferenceContribution(contribution: InsertInferenceContribution): Promise<InferenceContribution> {
+    const [created] = await db.insert(inferenceContributions).values(contribution).returning();
+    return created;
+  }
+
+  async getNodeInferenceContributions(nodeId: string, since: Date): Promise<InferenceContribution[]> {
+    return db.select().from(inferenceContributions)
+      .where(and(
+        eq(inferenceContributions.nodeId, nodeId),
+        gte(inferenceContributions.periodStart, since),
+      ))
+      .orderBy(desc(inferenceContributions.periodStart));
+  }
+
+  async getInferenceContributionStats(): Promise<{
+    totalTokens: number;
+    totalRequests: number;
+    totalHbdEarned: number;
+    activeContributors: number;
+  }> {
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const rows = await db.select().from(inferenceContributions)
+      .where(gte(inferenceContributions.periodStart, thirtyDaysAgo));
+
+    const nodeSet = new Set(rows.map((r: InferenceContribution) => r.nodeId));
+    return {
+      totalTokens: rows.reduce((sum: number, r: InferenceContribution) => sum + r.totalTokensGenerated, 0),
+      totalRequests: rows.reduce((sum: number, r: InferenceContribution) => sum + r.totalRequestsServed, 0),
+      totalHbdEarned: rows.reduce((sum: number, r: InferenceContribution) => sum + r.hbdEarned, 0),
+      activeContributors: nodeSet.size,
+    };
   }
 }
 

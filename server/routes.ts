@@ -30,6 +30,7 @@ import type { Phase2AChallengeStorage } from "./services/phase2a-challenge-servi
 import { Phase2APrecomputeWorker } from "./services/phase2a-precompute-worker";
 import type { PrecomputeStorage } from "./services/phase2a-precompute-worker";
 import { TrustRegistryService } from "./services/trust-registry";
+import { SpiritBombService } from "./services/spirit-bomb-service";
 import { hiveSimulator as hiveClientForTrust } from "./services/hive-simulator";
 import { createProofHash } from "./services/poa-crypto";
 
@@ -5552,6 +5553,85 @@ export async function registerRoutes(
     }
   });
 
+  // POST /api/compute/challenges/:attemptId/report-oom — Worker reports VRAM OOM (Phase 2B)
+  // Terminal: immediately fails the attempt and records VRAM_OOM evidence.
+  app.post("/api/compute/challenges/:attemptId/report-oom", requireAgentAuth, async (req, res) => {
+    try {
+      const { attemptId } = req.params;
+      const schema = z.object({
+        stageIndex: z.number().int().min(0),
+        deviceVramMb: z.number().optional(),
+        requiredMb: z.number().optional(),
+        message: z.string().max(1024).optional(),
+      });
+      const body = schema.parse(req.body);
+
+      // Verify ownership
+      const attempt = await storage.getComputeJobAttempt(attemptId);
+      if (!attempt) {
+        res.status(404).json({ error: { code: "NOT_FOUND", retriable: false, terminal: false, message: "Attempt not found" } });
+        return;
+      }
+      const node = await storage.getComputeNode(attempt.nodeId);
+      if (!node || node.hiveUsername !== req.authenticatedUser!) {
+        res.status(403).json({ error: { code: "FORBIDDEN", retriable: false, terminal: false, message: "Not authorized for this attempt" } });
+        return;
+      }
+
+      // Must not be already terminal
+      if (["accepted", "rejected", "timed_out", "failed"].includes(attempt.state)) {
+        phase2aErrorResponse(res, "ATTEMPT_TERMINAL", { state: attempt.state });
+        return;
+      }
+
+      // Fail the attempt with VRAM_OOM reason
+      const now = new Date();
+      await storage.updateComputeJobAttempt(attemptId, {
+        state: "failed",
+        finishedAt: now,
+        failureReason: "VRAM_OOM",
+      });
+      await storage.updateComputeJobState(attempt.jobId, "rejected", { completedAt: now });
+
+      // Score as failure
+      await storage.scoreComplianceChallengeAtomic(attempt.jobId, attempt.nodeId, -10);
+
+      // Phase 2B: Record VRAM_OOM evidence (immediate revocation trigger)
+      if (attempt.challengeProtocolVersion && attempt.challengeProtocolVersion >= 2 && attempt.challengeProfileId) {
+        try {
+          const expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000); // 30 day TTL
+          await storage.insertVramClassEvidence({
+            nodeId: attempt.nodeId,
+            resourceClassProfileId: attempt.challengeProfileId,
+            status: "fail",
+            observedAt: now,
+            expiresAt,
+            challengeAttemptId: attemptId,
+            failureReason: "VRAM_OOM",
+          });
+        } catch (err: any) {
+          if (!err?.code?.includes?.("23505") && !err?.message?.includes?.("unique")) {
+            logCompute.error({ attemptId, err }, "Phase2B: failed to record VRAM_OOM evidence");
+          }
+        }
+      }
+
+      logCompute.warn(
+        { attemptId, nodeId: attempt.nodeId, stageIndex: body.stageIndex, deviceVramMb: body.deviceVramMb },
+        "Phase2B: VRAM_OOM reported by worker — attempt failed, certification revoked",
+      );
+
+      res.json({ status: "failed", reason: "VRAM_OOM", terminal: true });
+    } catch (err: any) {
+      if (err.name === "ZodError") {
+        res.status(400).json({ error: { code: "INVALID_PAYLOAD", retriable: false, terminal: false, message: "Invalid payload" }, details: err.issues });
+        return;
+      }
+      logCompute.error({ err, attemptId: req.params.attemptId }, "Phase 2B OOM report failed");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", retriable: true, terminal: false, message: "Internal error" } });
+    }
+  });
+
   // GET /api/compute/challenges/:attemptId/status — Authoritative attempt status (worker)
   // Always returns 200 with current state — including terminal states.
   // This is the canonical endpoint for workers to learn challenge outcomes.
@@ -5587,6 +5667,294 @@ export async function registerRoutes(
     } catch (err: any) {
       logCompute.error({ err, attemptId: req.params.attemptId }, "Phase 2A status fetch failed");
       res.status(500).json({ error: { code: "INTERNAL_ERROR", retriable: true, terminal: false, message: "Internal error" } });
+    }
+  });
+
+  // ============================================================
+  // PHASE 2B: VRAM Class Certification — Query Routes
+  // ============================================================
+
+  // GET /api/compute/nodes/:nodeId/vram-certification — Certification state for a node+profile
+  app.get("/api/compute/nodes/:nodeId/vram-certification", requireAuth, async (req, res) => {
+    try {
+      const { nodeId } = req.params;
+      const profileId = req.query.profileId as string;
+      if (!profileId) {
+        res.status(400).json({ error: { code: "MISSING_PARAM", message: "profileId query parameter required" } });
+        return;
+      }
+
+      const result = await storage.getVramClassCertification(nodeId, profileId);
+      res.json({
+        nodeId,
+        profileId,
+        state: result.state,
+        latestPass: result.latestPass ? {
+          id: result.latestPass.id,
+          observedAt: result.latestPass.observedAt,
+          expiresAt: result.latestPass.expiresAt,
+          challengeAttemptId: result.latestPass.challengeAttemptId,
+        } : null,
+        revokingObservation: result.revokingObservation ? {
+          id: result.revokingObservation.id,
+          status: result.revokingObservation.status,
+          failureReason: result.revokingObservation.failureReason,
+          observedAt: result.revokingObservation.observedAt,
+        } : null,
+      });
+    } catch (err: any) {
+      logCompute.error({ err, nodeId: req.params.nodeId }, "Phase 2B certification query failed");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
+  // GET /api/compute/nodes/:nodeId/vram-evidence — Evidence history for a node+profile
+  app.get("/api/compute/nodes/:nodeId/vram-evidence", requireAuth, async (req, res) => {
+    try {
+      const { nodeId } = req.params;
+      const profileId = req.query.profileId as string;
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+      if (!profileId) {
+        res.status(400).json({ error: { code: "MISSING_PARAM", message: "profileId query parameter required" } });
+        return;
+      }
+
+      const history = await storage.getVramClassEvidenceHistory(nodeId, profileId, limit);
+      res.json({
+        nodeId,
+        profileId,
+        count: history.length,
+        evidence: history.map(e => ({
+          id: e.id,
+          status: e.status,
+          observedAt: e.observedAt,
+          expiresAt: e.expiresAt,
+          failureReason: e.failureReason,
+          challengeAttemptId: e.challengeAttemptId,
+        })),
+      });
+    } catch (err: any) {
+      logCompute.error({ err, nodeId: req.params.nodeId }, "Phase 2B evidence history query failed");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
+  // ============================================================
+  // SPIRIT BOMB: Community Cloud Tier System
+  // ============================================================
+
+  const spiritBomb = new SpiritBombService(storage as any);
+  spiritBomb.start(); // background sweep for stale clusters
+
+  // ── GPU Clusters ─────────────────────────────────────────────
+
+  // POST /api/community/clusters — Create a GPU cluster
+  app.post("/api/community/clusters", requireAuth, async (req, res) => {
+    try {
+      const cluster = await storage.createGpuCluster(req.body);
+      res.status(201).json(cluster);
+    } catch (err: any) {
+      logCompute.error({ err }, "Failed to create GPU cluster");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
+  // GET /api/community/clusters — List active clusters
+  app.get("/api/community/clusters", async (req, res) => {
+    try {
+      const region = req.query.region as string | undefined;
+      const clusters = await storage.listGpuClusters(region);
+      res.json({ clusters, count: clusters.length });
+    } catch (err: any) {
+      logCompute.error({ err }, "Failed to list GPU clusters");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
+  // GET /api/community/clusters/:clusterId — Get cluster details
+  app.get("/api/community/clusters/:clusterId", async (req, res) => {
+    try {
+      const cluster = await storage.getGpuCluster(req.params.clusterId);
+      if (!cluster) {
+        res.status(404).json({ error: { code: "NOT_FOUND", message: "Cluster not found" } });
+        return;
+      }
+      const members = await storage.getClusterMembers(req.params.clusterId);
+      res.json({ ...cluster, members });
+    } catch (err: any) {
+      logCompute.error({ err, clusterId: req.params.clusterId }, "Failed to get cluster");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
+  // POST /api/community/clusters/:clusterId/members — Add node to cluster
+  app.post("/api/community/clusters/:clusterId/members", requireAuth, async (req, res) => {
+    try {
+      const member = await storage.addClusterMember({
+        clusterId: req.params.clusterId,
+        ...req.body,
+      });
+      res.status(201).json(member);
+    } catch (err: any) {
+      logCompute.error({ err, clusterId: req.params.clusterId }, "Failed to add cluster member");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
+  // DELETE /api/community/clusters/:clusterId/members/:nodeId — Remove node from cluster
+  app.delete("/api/community/clusters/:clusterId/members/:nodeId", requireAuth, async (req, res) => {
+    try {
+      await storage.removeClusterMember(req.params.clusterId, req.params.nodeId);
+      res.json({ success: true });
+    } catch (err: any) {
+      logCompute.error({ err }, "Failed to remove cluster member");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
+  // ── Tier Manifests ───────────────────────────────────────────
+
+  // GET /api/community/tier — Get current community tier
+  app.get("/api/community/tier", async (_req, res) => {
+    try {
+      const manifest = await storage.getLatestTierManifest();
+      if (!manifest) {
+        res.json({ tier: 1, totalGpus: 0, message: "No manifest published yet — defaulting to Tier 1" });
+        return;
+      }
+      res.json(manifest);
+    } catch (err: any) {
+      logCompute.error({ err }, "Failed to get tier manifest");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
+  // GET /api/community/tier/history — Manifest history
+  app.get("/api/community/tier/history", async (req, res) => {
+    try {
+      const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+      const history = await storage.getTierManifestHistory(limit);
+      res.json({ manifests: history, count: history.length });
+    } catch (err: any) {
+      logCompute.error({ err }, "Failed to get tier history");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
+  // POST /api/community/tier — Publish a new tier manifest (coordinator only)
+  app.post("/api/community/tier", requireAuth, async (req, res) => {
+    try {
+      const manifest = await storage.createTierManifest(req.body);
+      res.status(201).json(manifest);
+    } catch (err: any) {
+      logCompute.error({ err }, "Failed to publish tier manifest");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
+  // ── Inference Routes ─────────────────────────────────────────
+
+  // GET /api/community/inference/routes — List active inference routes
+  app.get("/api/community/inference/routes", async (req, res) => {
+    try {
+      const mode = req.query.mode as string | undefined;
+      const routes = await storage.listInferenceRoutes(mode);
+      res.json({ routes, count: routes.length });
+    } catch (err: any) {
+      logCompute.error({ err }, "Failed to list inference routes");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
+  // POST /api/community/inference/routes — Create/update inference route
+  app.post("/api/community/inference/routes", requireAuth, async (req, res) => {
+    try {
+      const route = await storage.upsertInferenceRoute(req.body);
+      res.status(201).json(route);
+    } catch (err: any) {
+      logCompute.error({ err }, "Failed to create inference route");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
+  // ── Inference Contributions ──────────────────────────────────
+
+  // GET /api/community/contributions/stats — Aggregate contribution stats
+  app.get("/api/community/contributions/stats", async (_req, res) => {
+    try {
+      const stats = await storage.getInferenceContributionStats();
+      res.json(stats);
+    } catch (err: any) {
+      logCompute.error({ err }, "Failed to get contribution stats");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
+  // GET /api/community/contributions/:nodeId — Node contribution history
+  app.get("/api/community/contributions/:nodeId", async (req, res) => {
+    try {
+      const since = new Date(req.query.since as string || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString());
+      const contributions = await storage.getNodeInferenceContributions(req.params.nodeId, since);
+      res.json({ contributions, count: contributions.length });
+    } catch (err: any) {
+      logCompute.error({ err, nodeId: req.params.nodeId }, "Failed to get contributions");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
+  // POST /api/community/contributions — Record inference contribution
+  app.post("/api/community/contributions", requireAuth, async (req, res) => {
+    try {
+      const contribution = await storage.recordInferenceContribution(req.body);
+      res.status(201).json(contribution);
+    } catch (err: any) {
+      logCompute.error({ err }, "Failed to record contribution");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
+  // GET /api/community/dashboard — Full Spirit Bomb dashboard data
+  app.get("/api/community/dashboard", async (_req, res) => {
+    try {
+      const [manifest, clusters, routes, contribStats] = await Promise.all([
+        storage.getLatestTierManifest(),
+        storage.listGpuClusters(),
+        storage.listInferenceRoutes(),
+        storage.getInferenceContributionStats(),
+      ]);
+
+      res.json({
+        tier: manifest || { tier: 1, totalGpus: 0, message: "No manifest yet" },
+        clusters: { count: clusters.length, clusters },
+        inference: {
+          routes: { count: routes.length, routes },
+          contributions: contribStats,
+        },
+        spiritBomb: {
+          vision: "World's first permissionless web3 coder brain swarm",
+          status: manifest ? "active" : "initializing",
+        },
+      });
+    } catch (err: any) {
+      logCompute.error({ err }, "Failed to build dashboard");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
+    }
+  });
+
+  // POST /api/community/ping — Latency probing endpoint for cluster formation
+  app.post("/api/community/ping", (req, res) => {
+    // Echo back immediately — the client measures RTT
+    res.status(200).json({ pong: true, ts: Date.now() });
+  });
+
+  // GET /api/community/nodes/:nodeId/clusters — Get clusters a node belongs to
+  app.get("/api/community/nodes/:nodeId/clusters", async (req, res) => {
+    try {
+      const memberships = await storage.getNodeClusters(req.params.nodeId);
+      res.json({ memberships, count: memberships.length });
+    } catch (err: any) {
+      logCompute.error({ err }, "Failed to get node clusters");
+      res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Internal error" } });
     }
   });
 

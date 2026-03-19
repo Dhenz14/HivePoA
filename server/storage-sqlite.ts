@@ -2494,4 +2494,27 @@ export class SQLiteStorage implements IStorage {
   async acceptChallengeCheckpoint(_attemptId: string, _stageIndex: number, _resultDigest: string, _stageNonce: string, _transcriptPrevHash: string, _transcriptEntryHash: string, _receivedAt: Date, _telemetryJson?: string | null): Promise<any> { return { error: "Phase 2A: PG-only" }; }
   async getChallengeCheckpoints(_attemptId: string): Promise<any[]> { return []; }
   async getChallengeBundles(_attemptId: string): Promise<any[]> { return []; }
+
+  // Phase 2B: VRAM evidence stubs (PG-only)
+  async insertVramClassEvidence(_evidence: any): Promise<any> { throw new Error("Phase 2B: PG-only"); }
+  async getVramClassCertification(_nodeId: string, _profileId: string, _now?: Date): Promise<any> { return { state: "uncertified", latestPass: null, revokingObservation: null }; }
+  async getVramClassEvidenceHistory(_nodeId: string, _profileId: string, _limit?: number): Promise<any[]> { return []; }
+
+  // Spirit Bomb: Community Cloud stubs (PG-only)
+  async createGpuCluster(_cluster: any): Promise<any> { throw new Error("Spirit Bomb: PG-only"); }
+  async getGpuCluster(_id: string): Promise<any> { return undefined; }
+  async listGpuClusters(_region?: string): Promise<any[]> { return []; }
+  async updateGpuCluster(_id: string, _updates: any): Promise<void> {}
+  async addClusterMember(_member: any): Promise<any> { throw new Error("Spirit Bomb: PG-only"); }
+  async removeClusterMember(_clusterId: string, _nodeId: string): Promise<void> {}
+  async getClusterMembers(_clusterId: string): Promise<any[]> { return []; }
+  async getNodeClusters(_nodeId: string): Promise<any[]> { return []; }
+  async createTierManifest(_manifest: any): Promise<any> { throw new Error("Spirit Bomb: PG-only"); }
+  async getLatestTierManifest(): Promise<any> { return undefined; }
+  async getTierManifestHistory(_limit?: number): Promise<any[]> { return []; }
+  async upsertInferenceRoute(_route: any): Promise<any> { throw new Error("Spirit Bomb: PG-only"); }
+  async listInferenceRoutes(_mode?: string): Promise<any[]> { return []; }
+  async recordInferenceContribution(_contribution: any): Promise<any> { throw new Error("Spirit Bomb: PG-only"); }
+  async getNodeInferenceContributions(_nodeId: string, _since: Date): Promise<any[]> { return []; }
+  async getInferenceContributionStats(): Promise<any> { return { totalTokens: 0, totalRequests: 0, totalHbdEarned: 0, activeContributors: 0 }; }
 }

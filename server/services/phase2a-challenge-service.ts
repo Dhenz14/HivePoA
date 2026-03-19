@@ -22,9 +22,14 @@ import type {
   ComputeChallengeCheckpoint,
   ComputeJob,
   ComputeJobAttempt,
+  ComputeVramClassEvidence,
+  InsertComputeVramClassEvidence,
 } from "@shared/schema";
 
 // ── Configuration ────────────────────────────────────────────────────────────
+
+// Phase 2B: TTL for VRAM class evidence (operational policy, not frozen in spec)
+const VRAM_EVIDENCE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 const COORDINATOR_USERNAME = process.env.POA_COORDINATOR_USERNAME ?? "validator-police";
 const CHALLENGE_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour between challenges per node
@@ -89,6 +94,9 @@ export interface Phase2AChallengeStorage {
   // Cross-instance coordination via PostgreSQL advisory locks
   tryAcquireAdvisoryLock(namespace: number, key: number): Promise<boolean>;
   releaseAdvisoryLock(namespace: number, key: number): Promise<void>;
+
+  // Phase 2B: VRAM class evidence (insert-only observation log)
+  insertVramClassEvidence(evidence: InsertComputeVramClassEvidence): Promise<ComputeVramClassEvidence>;
 }
 
 /** Info about an expired Phase 2A attempt, returned by sweep query. */
@@ -398,6 +406,10 @@ export class Phase2AChallengeService {
         if (scored) {
           logCompute.info({ jobId, attemptId, delta }, "Phase2A sweepScoring: scored missed challenge");
         }
+
+        // Phase 2B: record evidence for crash-recovered scoring (idempotent)
+        const failureReason = passed ? null : (attempt.failureReason ?? "UNKNOWN");
+        await this.recordVramEvidence(attempt, passed ? "pass" : "fail", failureReason);
       } catch (err) {
         logCompute.error({ jobId, attemptId, err }, "Phase2A sweepScoring: failed to score");
       }
@@ -433,6 +445,12 @@ export class Phase2AChallengeService {
         if (scored) {
           logCompute.info({ jobId: result.jobId, attemptId, nodeId: result.nodeId, reason },
             "Phase2A sweepTimeouts: expired and scored");
+        }
+
+        // Phase 2B: record failure evidence for timeouts
+        const attempt = await this.storage.getComputeJobAttempt(attemptId);
+        if (attempt) {
+          await this.recordVramEvidence(attempt, "fail", reason);
         }
       } catch (err) {
         logCompute.error({ attemptId, jobId, err }, "Phase2A sweepTimeouts: failed to expire");
@@ -473,6 +491,49 @@ export class Phase2AChallengeService {
       logCompute.info({ jobId, attemptId, nodeId, delta }, `Phase2A: scored ${passed ? "PASS" : "FAIL"}`);
     } else {
       logCompute.info({ jobId, attemptId }, "Phase2A: already scored — skipped");
+    }
+
+    // Phase 2B: Record VRAM class evidence for protocol_version >= 2 profiles.
+    // The observation is a side-effect of the existing scoring flow.
+    await this.recordVramEvidence(attempt, passed ? "pass" : "fail", passed ? null : "STAGE_DIGEST_MISMATCH");
+  }
+
+  /**
+   * Record a VRAM class evidence observation for protocol_version >= 2 challenges.
+   * No-ops for protocol_version < 2 or if the attempt lacks challenge metadata.
+   * Idempotent via unique constraint on challenge_attempt_id.
+   */
+  private async recordVramEvidence(
+    attempt: ComputeJobAttempt,
+    status: "pass" | "fail" | "inconclusive",
+    failureReason: string | null,
+  ): Promise<void> {
+    // Only record evidence for Phase 2B+ profiles (protocol_version >= 2)
+    if (!attempt.challengeProtocolVersion || attempt.challengeProtocolVersion < 2) return;
+    if (!attempt.challengeProfileId) return;
+
+    const now = new Date();
+    try {
+      await this.storage.insertVramClassEvidence({
+        nodeId: attempt.nodeId,
+        resourceClassProfileId: attempt.challengeProfileId,
+        status,
+        observedAt: now,
+        expiresAt: new Date(now.getTime() + VRAM_EVIDENCE_TTL_MS),
+        challengeAttemptId: attempt.id,
+        failureReason,
+      });
+      logCompute.info(
+        { attemptId: attempt.id, nodeId: attempt.nodeId, profileId: attempt.challengeProfileId, status, failureReason },
+        `Phase2B: recorded VRAM class evidence — ${status}`,
+      );
+    } catch (err: any) {
+      // Unique constraint violation on challenge_attempt_id = idempotent, skip
+      if (err?.code === "23505" || err?.message?.includes("unique")) {
+        logCompute.debug({ attemptId: attempt.id }, "Phase2B: VRAM evidence already recorded — idempotent skip");
+      } else {
+        logCompute.error({ attemptId: attempt.id, err }, "Phase2B: failed to record VRAM evidence");
+      }
     }
   }
 }
