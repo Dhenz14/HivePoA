@@ -5829,25 +5829,25 @@ export async function registerRoutes(
         // Fall through to local if cluster fails
       }
 
-      // Local mode: route to Ollama
+      // Local mode: route to Ollama (uses chat API for Qwen3 thinking-mode compat)
       try {
         const ollamaModel = data.model || process.env.OLLAMA_MODEL || "qwen3:14b";
-        const ollamaRes = await fetch(`${ollamaUrl}/api/generate`, {
+        const ollamaRes = await fetch(`${ollamaUrl}/api/chat`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             model: ollamaModel,
-            prompt: data.prompt,
+            messages: [{ role: "user", content: data.prompt }],
             stream: false,
             options: {
-              num_predict: data.max_tokens,
+              num_predict: Math.max(data.max_tokens, 2048), // Qwen3 uses ~200 tokens for thinking before responding
               temperature: data.temperature,
             },
           }),
         });
         if (ollamaRes.ok) {
           const ollamaData = await ollamaRes.json() as any;
-          const text = ollamaData.response || "";
+          const text = ollamaData.message?.content || ollamaData.response || "";
           const tokens = ollamaData.eval_count || text.split(/\s+/).length;
           res.json({
             text,
