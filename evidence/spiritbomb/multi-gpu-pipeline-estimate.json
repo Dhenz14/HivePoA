@@ -1,0 +1,104 @@
+{
+  "benchmark": "multi_gpu_pipeline_parallel_estimate",
+  "version": "1.0.0",
+  "generated_at": "2026-03-19T20:57:55Z",
+  "data_quality": {
+    "computer_a_gpu": "MEASURED (nvidia-smi, this session)",
+    "computer_b_gpu": "FROM CALIBRATION (Phase 2B, 2026-03-18)",
+    "model_specs": "FROM ARCHITECTURE DOCS (HuggingFace)",
+    "bandwidth": "CALCULATED (clock * bus * 2 / 8, 80% efficiency)",
+    "network": "ESTIMATED (1 Gbps ethernet assumed, RTT unmeasured)"
+  },
+  "computer_a": {
+    "hostname": "DESKTOP-PRIMARY",
+    "gpu": {
+      "name": "NVIDIA GeForce RTX 4070 Ti SUPER",
+      "vram_gb": 16.0,
+      "uuid": "GPU-e57e219b-d0ad-19dd-f6fc-2242d596cf8b",
+      "driver": "572.16",
+      "cuda_compute": 8.9,
+      "architecture": "Ada Lovelace",
+      "cuda_cores": 8448,
+      "memory_clock_mhz": 10501,
+      "memory_bus_bits": 256,
+      "theoretical_bandwidth_gbps": 672.1,
+      "effective_bandwidth_gbps": 537.7,
+      "fp16_tflops": 93.2,
+      "pcie_gen": 4,
+      "pcie_width": 16
+    },
+    "cpu": "Intel Core Ultra 9 285K (24 cores, 20 threads WSL)",
+    "ram_gb": 58.9,
+    "network": {
+      "interface": "Ethernet",
+      "ip": "192.168.0.101"
+    }
+  },
+  "computer_b": {
+    "hostname": "DESKTOP-634RFU2",
+    "gpu": {
+      "name": "NVIDIA GeForce RTX 4070 SUPER",
+      "vram_gb": 12.0,
+      "uuid": "GPU-421e7312-7564-496c-4082-637184ffa83b",
+      "driver": "560.94",
+      "cuda_compute": 8.9,
+      "architecture": "Ada Lovelace",
+      "cuda_cores": 7168,
+      "memory_bus_bits": 192,
+      "theoretical_bandwidth_gbps": 504.0,
+      "effective_bandwidth_gbps": 403.2,
+      "fp16_tflops": 75.0
+    },
+    "network": {
+      "type": "wired (user confirmed)"
+    }
+  },
+  "target_model": {
+    "name": "Qwen3-32B-AWQ",
+    "params_b": 32.0,
+    "layers": 64,
+    "hidden_size": 5120,
+    "awq_size_gb": 20.0,
+    "fits_single_16gb": false,
+    "fits_combined_28gb": true
+  },
+  "pipeline_split": {
+    "pp_size": 2,
+    "split": "helix_proportional",
+    "computer_a": "layers 0-34 (35 layers, 10.9 GB)",
+    "computer_b": "layers 35-63 (29 layers, 9.1 GB)",
+    "a_vram_used_gb": 10.9,
+    "b_vram_used_gb": 9.1,
+    "a_vram_free_gb": 5.1,
+    "b_vram_free_gb": 2.9,
+    "fits": true
+  },
+  "performance_estimate": {
+    "per_token": {
+      "a_compute_ms": 20.341,
+      "b_compute_ms": 22.476,
+      "network_transfer_ms": 0.0819,
+      "bottleneck_ms": 22.476,
+      "total_ms": 22.558
+    },
+    "throughput": {
+      "qwen3_32b_2gpu_tps": 44.3,
+      "qwen3_14b_1gpu_tps": 56.6
+    },
+    "network_overhead_pct": 0.36,
+    "verdict": "Network overhead is 0.4% \u2014 negligible. The bottleneck is GPU memory bandwidth, not the network.",
+    "practical_note": "With KV cache overhead (~2-4GB), effective throughput will be 10-20% lower. Real measurement needed."
+  },
+  "rtt_estimate": {
+    "estimated_rtt_ms": "0.3-1.0 (typical wired LAN, same switch)",
+    "rtt_impact": "Adds ~1ms latency to time-to-first-token, negligible for throughput",
+    "measurement_needed": "ping COMPUTER_B_IP from Computer A to get real number"
+  },
+  "what_you_need_to_measure": {
+    "1_ping_test": "From Computer A terminal: ping COMPUTER_B_IP \u2014 should be <1ms on same switch",
+    "2_ollama_install": "Install Ollama on both machines: https://ollama.ai",
+    "3_run_spiritbomb": "Computer A: python scripts/start_spiritbomb.py",
+    "4_run_worker_b": "Computer B: python scripts/start_spiritbomb.py --hivepoa-url http://192.168.0.101:5000",
+    "5_test_inference": "Open http://192.168.0.101:5000/inference \u2192 select Cluster mode \u2192 send message"
+  }
+}
