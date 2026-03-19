@@ -28,18 +28,23 @@ Decentralized storage validation protocol built on the Hive L1 blockchain. Valid
 | **Validator Dashboard** | Real-time challenge monitoring, reputation history, blacklist management |
 | **Treasury Dashboard** | Authority ring visualization, signer status, WoT vouching, signature progress, transaction history, audit log viewer |
 | **Governance** | Live validator rankings by reputation, network health stats, treasury status sidebar |
-| **GPU Compute Marketplace** | Typed workload execution (eval sweeps, benchmarks, LoRA training, data generation) with lease-based job assignment, three-stage payouts, warm-up reputation via directed protocol-conformance challenges, and content-addressed artifacts. Hardware-capability verification (resource-class proof, replay-resistant challenge semantics) is Phase 2. |
+| **GPU Compute Marketplace** | Typed workload execution (eval sweeps, benchmarks, LoRA training, data generation) with lease-based job assignment, three-stage payouts, warm-up reputation via directed protocol-conformance challenges, and content-addressed artifacts |
+| **Spirit Bomb Community Cloud** | Permissionless GPU pooling — community members share GPUs to create a collective AI brain. Elastic tiers (14B→32B→80B), geo-aware clustering, MoE expert distribution, EAGLE-3 speculative decoding, HBD rewards for contributors. See [How GPU Sharing Works](https://github.com/Dhenz14/Hive-AI/blob/main/docs/HOW_GPU_SHARING_WORKS.md) |
+| **Dual-Mode AI Inference** | Local mode (Ollama, free, private, offline) + Cluster mode (community GPUs via vLLM pipeline parallel). Automatic fallback. `/inference` chat UI with mode selector |
+| **VRAM Class Certification** | Phase 2B hardware verification — VRAM evidence table, CERTIFIED/REVOKED/UNCERTIFIED derivation, calibrated profiles for gpu-small-v2 and gpu-medium-v2 |
+| **Hive Blockchain Publishing** | Tier manifests published on-chain via `custom_json` (`spiritbomb_manifest`), IPFS expert weight sharding with SHA-256 verification |
 | **Validator Opt-In/Out** | Eligible users choose whether to activate as a validator — resign any time from the dashboard |
 | **Content Moderation** | Community flagging, uploader bans, auto-blocklist for confirmed threats |
 | **Dark / Light Theme** | Toggle in the sidebar footer, persisted to localStorage |
 
 ## Project Scale
 
-- 180+ API endpoints across 30 services
-- 47 database tables (Drizzle ORM, dual PostgreSQL + SQLite dialect)
-- 27 client pages (Treasury dashboard, governance, content moderation, video watch with P2P, pricing, and more)
-- 407 automated tests across 14 test suites (vitest)
-- Full Docker deployment stack
+- 210+ API endpoints across 30+ services
+- 60 database tables (Drizzle ORM, dual PostgreSQL + SQLite dialect)
+- 31 client pages including Spirit Bomb AI Inference, Community Cloud Dashboard, Quick Start wizard
+- 567+ automated tests across 26 test suites (vitest) + 51 Python Spirit Bomb tests
+- Full Docker deployment stack (vLLM multi-machine via Ray, coordinator, ping server)
+- Companion project: [Hive-AI](https://github.com/Dhenz14/Hive-AI) — 21 Python modules for distributed inference, training, and GPU cluster management
 - GitHub Pages static site with auto-deploy
 
 ## Multisig Treasury
