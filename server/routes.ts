@@ -5927,12 +5927,9 @@ export async function registerRoutes(
     let vllmAvailable = false;
 
     try {
-      const r = await fetch(`${hiveAiUrl}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: "ping" }),
-        signal: AbortSignal.timeout(3000),
-      });
+      // Use /ready endpoint — lightweight probe (< 100ms).
+      // /api/chat triggers full RAG pipeline (30-60s) and is NOT a health check.
+      const r = await fetch(`${hiveAiUrl}/ready`, { signal: AbortSignal.timeout(3000) });
       hiveAiAvailable = r.ok;
     } catch {}
 
@@ -5961,7 +5958,7 @@ export async function registerRoutes(
           description: "Cluster inference — community GPU pool",
         },
       },
-      anyAvailable: ollamaAvailable || vllmAvailable,
+      anyAvailable: hiveAiAvailable || ollamaAvailable || vllmAvailable,
     });
   });
 
