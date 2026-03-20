@@ -47,6 +47,42 @@ Decentralized storage validation protocol built on the Hive L1 blockchain. Valid
 - Companion project: [Hive-AI](https://github.com/Dhenz14/Hive-AI) — 21 Python modules for distributed inference, training, and GPU cluster management
 - GitHub Pages static site with auto-deploy
 
+## Spirit Bomb: GPU Sharing Quick Start
+
+Double-click **"Start Spirit Bomb.bat"** on your desktop and choose a mode:
+
+| Mode | What It Does | GPU Usage |
+|------|-------------|-----------|
+| **1 - Local** | Ollama serves AI locally (private, free) | ~12GB VRAM |
+| **2 - Cluster** | vLLM Docker container (can pool GPUs across machines) | ~10GB VRAM |
+| **3 - Both** | Ollama + vLLM (needs 2+ GPUs or lots of VRAM) | ~16GB+ VRAM |
+
+### Adding a Second Computer (GPU Clustering)
+
+On Computer B, clone Hive-AI and run:
+```
+scripts\setup_computer_b.bat
+```
+It auto-detects your GPU, sets up Docker, opens firewall ports, and connects to Computer A.
+
+### Verified Hardware Configuration
+
+Tested on RTX 4070 Ti SUPER (16GB) + RTX 4070 SUPER (12GB):
+
+- **vLLM settings**: `--quantization awq_marlin --gpu-memory-utilization 0.70 --max-model-len 1024 --enforce-eager --ipc=host`
+- **Windows VRAM overhead**: ~6.5GB consumed by OS/display — must account for this
+- **Ollama and vLLM cannot share one GPU** — kill one before starting the other
+- **First vLLM startup downloads ~8GB** model weights from HuggingFace (cached after)
+
+### How It Works
+
+HivePoA is the **GPU marketplace backend** — nodes register, get challenged, earn HBD.
+Hive-AI is the **consumer frontend** — users request AI, the system routes to available GPUs.
+
+```
+User → Hive-AI (chat/rent) → HivePoA (find GPU cluster) → vLLM (inference across GPUs)
+```
+
 ## Multisig Treasury
 
 The treasury system eliminates single points of failure for HBD reward distribution. Instead of each validator paying storage nodes from their own wallet, rewards flow through a shared multisig account controlled by multiple Hive witnesses.
