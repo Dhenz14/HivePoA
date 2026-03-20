@@ -1280,7 +1280,8 @@ export const gpuClusterMembers = pgTable("gpu_cluster_members", {
 // Tier determined by coordinator polling every 15 min
 export const communityTierManifests = pgTable("community_tier_manifests", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  tier: integer("tier").notNull(), // 1, 2, or 3
+  tier: integer("tier").notNull(), // 1 = Solo, 2 = Pool, 3 = Cluster
+  mode: text("mode").notNull().default("solo"), // "solo", "pool", "cluster"
   totalGpus: integer("total_gpus").notNull(),
   totalVramGb: integer("total_vram_gb").notNull(),
   activeClusters: integer("active_clusters").notNull().default(0),

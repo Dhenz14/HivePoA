@@ -6155,11 +6155,12 @@ export async function registerRoutes(
     try {
       const schema = z.object({
         tier: z.number().int().min(1).max(3),
+        mode: z.enum(["solo", "pool", "cluster"]).optional(),
         totalGpus: z.number().int().min(0),
         totalVramGb: z.number().int().min(0),
         activeClusters: z.number().int().min(0).optional(),
         baseModel: z.string().min(1),
-        activeExperts: z.number().int().min(1),
+        activeExperts: z.number().int().min(0), // 0 for solo/pool tiers
         quantization: z.string().min(1),
         maxContextLength: z.number().int().min(1024),
         estimatedTps: z.number().optional(),

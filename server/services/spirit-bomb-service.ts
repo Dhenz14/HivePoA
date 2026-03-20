@@ -23,33 +23,39 @@ import type {
 import type { CustomJsonRequest, HiveTransaction } from "./hive-client";
 
 // ── Tier Configuration ──────────────────────────────────────────
-
-const TIER_THRESHOLDS = {
-  1: { minGpus: 0, maxGpus: 14 },
-  2: { minGpus: 15, maxGpus: 39 },
-  3: { minGpus: 40, maxGpus: Infinity },
-} as const;
+// Tiers are ADDITIVE: more GPUs = more options, never removes what works.
+// Tier 1 (Solo): Hive-AI's own stack (v5-think on llama-server) unchanged.
+// Tier 2 (Pool): Multiple GPUs serve independent requests — throughput scaling.
+// Tier 3 (Cluster): GPUs combine via vLLM PP for larger model — capability scaling.
+//
+// IMPORTANT: These configs must stay in sync with community_coordinator.py in Hive-AI.
 
 const TIER_MODEL_CONFIG = {
   1: {
-    baseModel: "Qwen3-14B",
-    activeExperts: 2,
-    quantization: "awq",
+    mode: "solo" as const,
+    baseModel: "hiveai-v5-think",
+    description: "Local Hive-AI stack (llama-server + smart routing + MoLoRA)",
+    activeExperts: 0,
+    quantization: "gguf",
     maxContextLength: 32768,
     speculativeDecodingEnabled: false,
   },
   2: {
+    mode: "pool" as const,
+    baseModel: "hiveai-v5-think",
+    description: "Independent GPUs serving parallel requests — throughput scaling",
+    activeExperts: 0,
+    quantization: "gguf",
+    maxContextLength: 32768,
+    speculativeDecodingEnabled: false,
+  },
+  3: {
+    mode: "cluster" as const,
     baseModel: "Qwen3-32B",
+    description: "Pipeline-parallel larger model via vLLM + local smart routing",
     activeExperts: 4,
     quantization: "awq",
     maxContextLength: 65536,
-    speculativeDecodingEnabled: true,
-  },
-  3: {
-    baseModel: "Qwen3-Coder-80B-MoE",
-    activeExperts: 8,
-    quantization: "fp16",
-    maxContextLength: 131072,
     speculativeDecodingEnabled: true,
   },
 } as const;
@@ -68,6 +74,8 @@ interface PoolSnapshot {
 
 interface TierConfig {
   tier: number;
+  mode: "solo" | "pool" | "cluster";
+  description: string;
   baseModel: string;
   activeExperts: number;
   quantization: string;
@@ -106,15 +114,22 @@ export class SpiritBombService {
   }
 
   /**
-   * Derive the current community tier from online node count.
+   * Derive the current community tier from pool state.
+   *
+   * Solo (1): 0-1 GPUs — Hive-AI's own stack unchanged
+   * Pool (2): 2+ GPUs — each serves independent requests (throughput scaling)
+   * Cluster (3): 2+ GPUs with low latency + enough VRAM — combine via vLLM PP
+   *
+   * @param hasQualifiedCluster - true if any cluster has <50ms latency + 24GB+ VRAM
    */
-  deriveTier(totalGpus: number): TierConfig {
+  deriveTier(totalGpus: number, hasQualifiedCluster: boolean = false): TierConfig {
     let tier = 1;
-    for (const [t, thresholds] of Object.entries(TIER_THRESHOLDS)) {
-      const tierNum = parseInt(t);
-      if (totalGpus >= thresholds.minGpus) {
-        tier = tierNum;
-      }
+
+    if (totalGpus >= 2) {
+      tier = 2; // Pool: multiple independent GPUs
+    }
+    if (totalGpus >= 2 && hasQualifiedCluster) {
+      tier = 3; // Cluster: GPUs can combine (latency + VRAM qualified)
     }
 
     const config = TIER_MODEL_CONFIG[tier as 1 | 2 | 3];
@@ -136,12 +151,18 @@ export class SpiritBombService {
     const totalGpus = clusters.reduce((sum: number, c: GpuCluster) => sum + c.totalGpus, 0);
     const totalVramGb = clusters.reduce((sum: number, c: GpuCluster) => sum + c.totalVramGb, 0);
 
+    // Check if any cluster qualifies for pipeline parallel (low latency + enough VRAM)
+    const hasQualifiedCluster = clusters.some(
+      (c: GpuCluster) => c.totalGpus >= 2 && c.totalVramGb >= 24
+        && (c.canPipelineParallel === true || (c.avgLatencyMs != null && c.avgLatencyMs < 50)),
+    );
+
     return {
       totalGpus,
       totalVramGb,
       onlineNodes: totalGpus, // 1 GPU per node for now
       activeClusters: clusters.length,
-      currentTier: manifest?.tier ?? this.deriveTier(totalGpus).tier,
+      currentTier: manifest?.tier ?? this.deriveTier(totalGpus, hasQualifiedCluster).tier,
     };
   }
 
@@ -153,17 +174,16 @@ export class SpiritBombService {
     if (!manifest.tier || manifest.tier < 1 || manifest.tier > 3) {
       return "Invalid tier: must be 1, 2, or 3";
     }
-    if (!manifest.totalGpus || manifest.totalGpus < 0) {
+    if (manifest.totalGpus === undefined || manifest.totalGpus < 0) {
       return "Invalid totalGpus: must be non-negative";
     }
     if (!manifest.baseModel) {
       return "Missing baseModel";
     }
 
-    // Verify tier matches GPU count
-    const expectedTier = this.deriveTier(manifest.totalGpus);
-    if (manifest.tier !== expectedTier.tier) {
-      return `Tier mismatch: ${manifest.totalGpus} GPUs should be tier ${expectedTier.tier}, not ${manifest.tier}`;
+    // Tier 2+ (Pool/Cluster) requires at least 2 GPUs
+    if (manifest.tier >= 2 && manifest.totalGpus < 2) {
+      return `Tier ${manifest.tier} requires at least 2 GPUs, got ${manifest.totalGpus}`;
     }
 
     return null;
@@ -278,8 +298,9 @@ export class SpiritBombService {
 
     // Build compact on-chain payload (short keys to minimize storage)
     const payload = {
-      v: 1,
+      v: 2,
       tier: manifest.tier,
+      mode: (manifest as any).mode || "solo",
       gpus: manifest.totalGpus,
       vram: manifest.totalVramGb,
       clusters: manifest.activeClusters,

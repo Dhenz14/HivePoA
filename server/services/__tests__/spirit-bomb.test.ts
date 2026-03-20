@@ -187,22 +187,22 @@ describe("Spirit Bomb Community Cloud", () => {
 
   it("SB3 — Publish tier manifest and query latest", async () => {
     const manifest = await storage.createTierManifest({
-      tier: 1,
+      tier: 2,
       totalGpus: 2,
       totalVramGb: 40,
       activeClusters: 1,
-      baseModel: "Qwen3-14B",
-      activeExperts: 2,
-      quantization: "awq",
+      baseModel: "hiveai-v5-think",
+      activeExperts: 0,
+      quantization: "gguf",
       maxContextLength: 32768,
       speculativeDecodingEnabled: false,
     });
-    expect(manifest.tier).toBe(1);
-    expect(manifest.baseModel).toBe("Qwen3-14B");
+    expect(manifest.tier).toBe(2);
+    expect(manifest.baseModel).toBe("hiveai-v5-think");
 
     const latest = await storage.getLatestTierManifest();
     expect(latest).toBeTruthy();
-    expect(latest!.tier).toBe(1);
+    expect(latest!.tier).toBe(2);
   });
 
   it("SB4 — Create inference route and list active", async () => {
@@ -266,34 +266,65 @@ describe("Spirit Bomb Community Cloud", () => {
     expect(usCluster!.totalGpus).toBe(2);
   });
 
-  it("SB7 — Tier derivation from GPU count", () => {
+  it("SB7 — Tier derivation: Solo / Pool / Cluster", () => {
+    // Solo: 0-1 GPUs
     expect(spiritBomb.deriveTier(0).tier).toBe(1);
-    expect(spiritBomb.deriveTier(5).tier).toBe(1);
-    expect(spiritBomb.deriveTier(14).tier).toBe(1);
-    expect(spiritBomb.deriveTier(15).tier).toBe(2);
-    expect(spiritBomb.deriveTier(30).tier).toBe(2);
-    expect(spiritBomb.deriveTier(39).tier).toBe(2);
-    expect(spiritBomb.deriveTier(40).tier).toBe(3);
-    expect(spiritBomb.deriveTier(100).tier).toBe(3);
+    expect(spiritBomb.deriveTier(0).mode).toBe("solo");
+    expect(spiritBomb.deriveTier(1).tier).toBe(1);
+
+    // Pool: 2+ GPUs (no qualified cluster)
+    expect(spiritBomb.deriveTier(2).tier).toBe(2);
+    expect(spiritBomb.deriveTier(2).mode).toBe("pool");
+    expect(spiritBomb.deriveTier(5).tier).toBe(2);
+    expect(spiritBomb.deriveTier(100).tier).toBe(2); // Pool even with 100 GPUs if no cluster qualifies
+
+    // Cluster: 2+ GPUs with qualified cluster
+    expect(spiritBomb.deriveTier(2, true).tier).toBe(3);
+    expect(spiritBomb.deriveTier(2, true).mode).toBe("cluster");
+    expect(spiritBomb.deriveTier(50, true).tier).toBe(3);
+
+    // Can't cluster with 1 GPU even if "qualified"
+    expect(spiritBomb.deriveTier(1, true).tier).toBe(1);
+
+    // Base model check: Solo/Pool = v5-think, Cluster = Qwen3-32B
+    expect(spiritBomb.deriveTier(1).baseModel).toBe("hiveai-v5-think");
+    expect(spiritBomb.deriveTier(5).baseModel).toBe("hiveai-v5-think");
+    expect(spiritBomb.deriveTier(5, true).baseModel).toBe("Qwen3-32B");
   });
 
-  it("SB8 — Manifest validation rejects tier/GPU mismatch", () => {
-    // 5 GPUs should be tier 1, not tier 2
+  it("SB8 — Manifest validation: Pool/Cluster requires 2+ GPUs", () => {
+    // Tier 2 (Pool) with only 1 GPU — rejected
     const error = spiritBomb.validateManifest({
       tier: 2,
-      totalGpus: 5,
-      baseModel: "Qwen3-32B",
+      totalGpus: 1,
+      baseModel: "hiveai-v5-think",
     } as any);
     expect(error).toBeTruthy();
-    expect(error).toContain("mismatch");
+    expect(error).toContain("requires at least 2 GPUs");
 
-    // Valid manifest
-    const valid = spiritBomb.validateManifest({
-      tier: 1,
-      totalGpus: 5,
-      baseModel: "Qwen3-14B",
+    // Tier 2 (Pool) with 2 GPUs — valid
+    const validPool = spiritBomb.validateManifest({
+      tier: 2,
+      totalGpus: 2,
+      baseModel: "hiveai-v5-think",
     } as any);
-    expect(valid).toBeNull();
+    expect(validPool).toBeNull();
+
+    // Solo with 0 GPUs — valid
+    const validSolo = spiritBomb.validateManifest({
+      tier: 1,
+      totalGpus: 0,
+      baseModel: "hiveai-v5-think",
+    } as any);
+    expect(validSolo).toBeNull();
+
+    // Tier 3 (Cluster) with 1 GPU — rejected
+    const errorCluster = spiritBomb.validateManifest({
+      tier: 3,
+      totalGpus: 1,
+      baseModel: "Qwen3-32B",
+    } as any);
+    expect(errorCluster).toBeTruthy();
   });
 
   it("SB9 — Member removal updates cluster stats", async () => {
@@ -311,9 +342,9 @@ describe("Spirit Bomb Community Cloud", () => {
   });
 
   it("SB11 — Manifest history ordering", async () => {
-    // Publish a second manifest
+    // Publish a second manifest (Cluster tier)
     await storage.createTierManifest({
-      tier: 2,
+      tier: 3,
       totalGpus: 20,
       totalVramGb: 320,
       activeClusters: 3,
