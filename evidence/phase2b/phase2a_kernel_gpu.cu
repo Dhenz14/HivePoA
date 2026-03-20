@@ -26,7 +26,26 @@
 #include <cstring>
 #include <cinttypes>
 #include <ctime>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <time.h>
+#endif
 #include <cuda_runtime.h>
+
+/* Cross-platform monotonic timer */
+static double get_monotonic_ms() {
+#ifdef _WIN32
+    LARGE_INTEGER freq, cnt;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&cnt);
+    return (double)cnt.QuadPart / (double)freq.QuadPart * 1000.0;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
+#endif
+}
 
 /* ======================== Error handling ======================== */
 
@@ -557,12 +576,11 @@ static int compute_stage_gpu_core(const uint8_t stage_nonce[32],
     CUDA_CHECK(cudaEventSynchronize(ev_d2h));
 
     /* Compute SHA-256 digest on CPU */
-    struct timespec ts_start, ts_end;
-    clock_gettime(CLOCK_MONOTONIC, &ts_start);
+    double t_digest_start = get_monotonic_ms();
     compute_final_digest(resource_class_id, stage_index,
                          M, N, K, mix_rounds,
                          stage_nonce, h_Z, out_digest);
-    clock_gettime(CLOCK_MONOTONIC, &ts_end);
+    double t_digest_end = get_monotonic_ms();
 
     /* Collect timing */
     if (timing) {
@@ -571,8 +589,7 @@ static int compute_stage_gpu_core(const uint8_t stage_nonce[32],
         CUDA_CHECK(cudaEventElapsedTime(&timing->gemm_ms, ev_fill_X, ev_gemm));
         CUDA_CHECK(cudaEventElapsedTime(&timing->mix_ms, ev_gemm, ev_mix));
         CUDA_CHECK(cudaEventElapsedTime(&timing->d2h_ms, ev_mix, ev_d2h));
-        timing->digest_ms = (float)((ts_end.tv_sec - ts_start.tv_sec) * 1000.0 +
-                                     (ts_end.tv_nsec - ts_start.tv_nsec) / 1e6);
+        timing->digest_ms = (float)(t_digest_end - t_digest_start);
         CUDA_CHECK(cudaEventElapsedTime(&timing->total_gpu_ms, ev_start, ev_mix));
         timing->total_ms = timing->total_gpu_ms + timing->d2h_ms + timing->digest_ms;
     }
@@ -875,15 +892,18 @@ static void cmd_info(void) {
            total_mem / 1e9, total_mem / (1024*1024));
     printf("  VRAM free:         %.2f GB (%zu MiB)\n",
            free_mem / 1e9, free_mem / (1024*1024));
-    printf("  Clock rate:        %d MHz\n", prop.clockRate / 1000);
-    printf("  Memory clock:      %d MHz\n", prop.memoryClockRate / 1000);
+    int clockRateKHz = 0, memClockRateKHz = 0;
+    cudaDeviceGetAttribute(&clockRateKHz, cudaDevAttrClockRate, 0);
+    cudaDeviceGetAttribute(&memClockRateKHz, cudaDevAttrMemoryClockRate, 0);
+    printf("  Clock rate:        %d MHz\n", clockRateKHz / 1000);
+    printf("  Memory clock:      %d MHz\n", memClockRateKHz / 1000);
     printf("  Memory bus:        %d bit\n", prop.memoryBusWidth);
     printf("  L2 cache:          %d KB\n", prop.l2CacheSize / 1024);
     printf("  Warp size:         %d\n", prop.warpSize);
     printf("  Can map host mem:  %s\n", prop.canMapHostMemory ? "yes" : "no");
 
     /* Theoretical memory bandwidth */
-    double bw_gbps = 2.0 * prop.memoryClockRate * 1e3 * (prop.memoryBusWidth / 8) / 1e9;
+    double bw_gbps = 2.0 * memClockRateKHz * 1e3 * (prop.memoryBusWidth / 8) / 1e9;
     printf("  Theo. mem BW:      %.1f GB/s\n", bw_gbps);
 
     printf("\n=== Phase 2B Working Set Feasibility ===\n");
@@ -1104,16 +1124,14 @@ static int cmd_serve(uint32_t max_M, uint32_t max_N, uint32_t max_K) {
         CUDA_CHECK(cudaEventSynchronize(ev_d2h));
 
         uint8_t digest[32];
-        struct timespec ts_start, ts_end;
-        clock_gettime(CLOCK_MONOTONIC, &ts_start);
+        double t_dig_start = get_monotonic_ms();
         compute_final_digest(cid, si, M, N, K, mr, stage_nonce, h_Z, digest);
-        clock_gettime(CLOCK_MONOTONIC, &ts_end);
+        double t_dig_end = get_monotonic_ms();
 
         float total_gpu_ms, d2h_ms, digest_ms;
         CUDA_CHECK(cudaEventElapsedTime(&total_gpu_ms, ev_start, ev_mix));
         CUDA_CHECK(cudaEventElapsedTime(&d2h_ms, ev_mix, ev_d2h));
-        digest_ms = (float)((ts_end.tv_sec - ts_start.tv_sec) * 1000.0 +
-                             (ts_end.tv_nsec - ts_start.tv_nsec) / 1e6);
+        digest_ms = (float)(t_dig_end - t_dig_start);
         float total_ms = total_gpu_ms + d2h_ms + digest_ms;
 
         char digest_hex[65];

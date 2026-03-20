@@ -1,0 +1,209 @@
+================================================================
+HivePoA Phase 2B GPU Benchmark
+Date: 2026-03-20T13:52:01-07:00
+Host: DESKTOP-634RFU2
+================================================================
+
+=== nvidia-smi full output ===
+Fri Mar 20 13:52:01 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 560.94                 Driver Version: 560.94         CUDA Version: 12.6     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                  Driver-Model | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 4070 ...  WDDM  |   00000000:0D:00.0  On |                  N/A |
+|  0%   58C    P0             30W /  220W |    1503MiB /  12282MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+                                                                                         
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI        PID   Type   Process name                              GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A      1772    C+G   ....Search_cw5n1h2txyewy\SearchApp.exe      N/A      |
+|    0   N/A  N/A      2244    C+G   ...on\146.0.3856.62\msedgewebview2.exe      N/A      |
+|    0   N/A  N/A      6728    C+G   ...\Docker\frontend\Docker Desktop.exe      N/A      |
+|    0   N/A  N/A      8132    C+G   C:\Windows\explorer.exe                     N/A      |
+|    0   N/A  N/A      8492    C+G   ...2txyewy\StartMenuExperienceHost.exe      N/A      |
+|    0   N/A  N/A      9964    C+G   ....Search_cw5n1h2txyewy\SearchApp.exe      N/A      |
+|    0   N/A  N/A     11516    C+G   ...CBS_cw5n1h2txyewy\TextInputHost.exe      N/A      |
+|    0   N/A  N/A     12048    C+G   ...ekyb3d8bbwe\PhoneExperienceHost.exe      N/A      |
+|    0   N/A  N/A     12132    C+G   ...GeForce Experience\NVIDIA Share.exe      N/A      |
+|    0   N/A  N/A     13136    C+G   ...\Docker\frontend\Docker Desktop.exe      N/A      |
+|    0   N/A  N/A     15168    C+G   E:\cursor\Cursor.exe                        N/A      |
++-----------------------------------------------------------------------------------------+
+
+=== nvidia-smi -L (GPU list) ===
+GPU 0: NVIDIA GeForce RTX 4070 SUPER (UUID: GPU-421e7312-7564-496c-4082-637184ffa83b)
+
+=== GPU Info ===
+=== GPU Information ===
+  Device:            NVIDIA GeForce RTX 4070 SUPER
+  Compute cap:       8.9
+  SMs:               56
+  Max threads/block: 1024
+  Max grid dim x:    2147483647
+  VRAM total:        12.88 GB (12281 MiB)
+  VRAM free:         11.59 GB (11053 MiB)
+  Clock rate:        2505 MHz
+  Memory clock:      10501 MHz
+  Memory bus:        192 bit
+  L2 cache:          49152 KB
+  Warp size:         32
+  Can map host mem:  yes
+  Theo. mem BW:      504.0 GB/s
+
+=== Phase 2B Working Set Feasibility ===
+  gpu-small-v2  (4 GB): need 4.32 GB, FITS
+  gpu-medium-v2 (8 GB): need 8.64 GB, FITS
+  gpu-large-v2  (12 GB): need 12.96 GB, WON'T FIT (free VRAM first)
+
+=== Self-Test (golden vector verification) ===
+=== GPU Kernel Self-Test ===
+
+  SHA-256 NIST "abc":  PASS
+
+=== Golden Vector Verification (GPU pipeline) ===
+
+  [0] class=1 stage=0 M=8 N=8 K=2 r=1  PASS
+  [1] class=2 stage=1 M=16 N=8 K=2 r=2  PASS
+  [2] class=3 stage=2 M=16 N=16 K=4 r=2  PASS
+
+RESULT: ALL PASS (3 vectors)
+GPU kernel produces identical digests to C99 reference.
+
+=== Benchmark: gpu-small-v2 (M=262144 N=4096 K=8 r=1, 5 runs) ===
+=== GPU Benchmark: M=262144 N=4096 K=8 mix_rounds=1 ===
+Working set (A matrix): 4.29 GB
+Total GPU memory needed: 4.32 GB
+GPU memory: 11.59 GB free / 12.88 GB total
+
+  Run 0:  M=262144 N=4096 K=8 r=1  working_set=4.29 GB
+    fill_A:      9.01 ms
+    fill_X:      0.01 ms
+    gemm:       35.94 ms
+    mix:         0.08 ms
+    GPU tot:    45.03 ms
+    D->H:        1.86 ms
+    SHA-256:    51.40 ms
+    TOTAL:      98.29 ms
+  Run 1:  M=262144 N=4096 K=8 r=1  working_set=4.29 GB
+    fill_A:      9.42 ms
+    fill_X:      0.00 ms
+    gemm:       35.68 ms
+    mix:         0.07 ms
+    GPU tot:    45.18 ms
+    D->H:        1.89 ms
+    SHA-256:    52.50 ms
+    TOTAL:      99.57 ms
+  Run 2:  M=262144 N=4096 K=8 r=1  working_set=4.29 GB
+    fill_A:      9.01 ms
+    fill_X:      0.01 ms
+    gemm:       35.73 ms
+    mix:         0.07 ms
+    GPU tot:    44.82 ms
+    D->H:        1.92 ms
+    SHA-256:    51.88 ms
+    TOTAL:      98.61 ms
+  Run 3:  M=262144 N=4096 K=8 r=1  working_set=4.29 GB
+    fill_A:      9.41 ms
+    fill_X:      0.00 ms
+    gemm:       35.66 ms
+    mix:         0.07 ms
+    GPU tot:    45.14 ms
+    D->H:        1.83 ms
+    SHA-256:    51.61 ms
+    TOTAL:      98.59 ms
+  Run 4:  M=262144 N=4096 K=8 r=1  working_set=4.29 GB
+    fill_A:      9.55 ms
+    fill_X:      0.00 ms
+    gemm:       35.65 ms
+    mix:         0.07 ms
+    GPU tot:    45.28 ms
+    D->H:        1.67 ms
+    SHA-256:    51.65 ms
+    TOTAL:      98.60 ms
+
+=== Summary (5 runs) ===
+  Avg total:        98.73 ms
+  Avg GPU-only:     45.09 ms
+  Best total:       98.29 ms
+  Worst total:      99.57 ms
+  Per-challenge (5 stages): 493.67 ms
+
+=== Benchmark: gpu-medium-v2 (M=524288 N=4096 K=8 r=2, 5 runs) ===
+=== GPU Benchmark: M=524288 N=4096 K=8 mix_rounds=2 ===
+Working set (A matrix): 8.59 GB
+Total GPU memory needed: 8.64 GB
+GPU memory: 11.59 GB free / 12.88 GB total
+
+  Run 0:  M=524288 N=4096 K=8 r=2  working_set=8.59 GB
+    fill_A:     18.39 ms
+    fill_X:      0.00 ms
+    gemm:       72.27 ms
+    mix:         0.23 ms
+    GPU tot:    90.90 ms
+    D->H:        3.19 ms
+    SHA-256:   102.82 ms
+    TOTAL:     196.92 ms
+  Run 1:  M=524288 N=4096 K=8 r=2  working_set=8.59 GB
+    fill_A:     18.50 ms
+    fill_X:      0.01 ms
+    gemm:       72.56 ms
+    mix:         0.23 ms
+    GPU tot:    91.30 ms
+    D->H:        3.74 ms
+    SHA-256:   102.53 ms
+    TOTAL:     197.57 ms
+  Run 2:  M=524288 N=4096 K=8 r=2  working_set=8.59 GB
+    fill_A:     18.71 ms
+    fill_X:      0.00 ms
+    gemm:       71.06 ms
+    mix:         0.23 ms
+    GPU tot:    90.00 ms
+    D->H:        3.18 ms
+    SHA-256:   102.89 ms
+    TOTAL:     196.06 ms
+  Run 3:  M=524288 N=4096 K=8 r=2  working_set=8.59 GB
+    fill_A:     18.38 ms
+    fill_X:      0.00 ms
+    gemm:       71.79 ms
+    mix:         0.23 ms
+    GPU tot:    90.41 ms
+    D->H:        3.19 ms
+    SHA-256:   102.61 ms
+    TOTAL:     196.21 ms
+  Run 4:  M=524288 N=4096 K=8 r=2  working_set=8.59 GB
+    fill_A:     18.38 ms
+    fill_X:      0.00 ms
+    gemm:       71.56 ms
+    mix:         0.23 ms
+    GPU tot:    90.17 ms
+    D->H:        3.83 ms
+    SHA-256:   102.75 ms
+    TOTAL:     196.75 ms
+
+=== Summary (5 runs) ===
+  Avg total:       196.70 ms
+  Avg GPU-only:     90.56 ms
+  Best total:      196.06 ms
+  Worst total:     197.57 ms
+  Per-challenge (5 stages): 983.51 ms
+
+=== Benchmark: gpu-large-v2 (M=786432 N=4096 K=8 r=2, 5 runs) ===
+=== GPU Benchmark: M=786432 N=4096 K=8 mix_rounds=2 ===
+Working set (A matrix): 12.88 GB
+Total GPU memory needed: 12.96 GB
+GPU memory: 11.59 GB free / 12.88 GB total
+
+ERROR: Not enough GPU memory. Need 12.96 GB, have 11.59 GB free.
+Kill GPU processes (ollama, etc.) to free VRAM.
+
+================================================================
+Benchmark complete.
+GPU: NVIDIA GeForce RTX 4070 SUPER (12282 MiB)
+UUID: GPU-421e7312-7564-496c-4082-637184ffa83b
+================================================================
