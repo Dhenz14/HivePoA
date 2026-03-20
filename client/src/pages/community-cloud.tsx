@@ -1,3 +1,4 @@
+import React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -25,14 +26,28 @@ export default function CommunityCloud() {
   const contribs = dashboard?.inference?.contributions || {};
 
   const tierNames: Record<number, string> = {
-    1: "Base (local AI only)",
-    2: "Enhanced (cluster available)",
-    3: "Full Power (community brain)",
+    1: "Solo (your AI, your GPU)",
+    2: "Pool (community throughput)",
+    3: "Cluster (combined brain power)",
   };
 
-  const copyCommand = () => {
-    navigator.clipboard.writeText("python scripts/start_spiritbomb.py");
-    toast({ title: "Copied!", description: "Paste this in your terminal to start sharing." });
+  const [agentDetected, setAgentDetected] = React.useState<boolean | null>(null);
+
+  // Check if Desktop Agent is running
+  React.useEffect(() => {
+    fetch("http://127.0.0.1:5111/api/status", { signal: AbortSignal.timeout(2000) })
+      .then(r => { if (r.ok) setAgentDetected(true); else setAgentDetected(false); })
+      .catch(() => setAgentDetected(false));
+  }, []);
+
+  const contributeGpu = () => {
+    if (agentDetected) {
+      // Agent running — open GPU setup wizard
+      window.open("http://127.0.0.1:5111/gpu-setup", "_blank");
+    } else {
+      // No agent — go to download page
+      window.location.href = "/download?next=gpu-setup";
+    }
   };
 
   return (
@@ -127,6 +142,7 @@ export default function CommunityCloud() {
           <CardTitle>Share Your GPU</CardTitle>
           <CardDescription>
             Got a gaming PC? Your graphics card can earn you money while you're not using it.
+            One click sets everything up automatically.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -136,8 +152,8 @@ export default function CommunityCloud() {
                 <span className="text-primary font-bold text-sm">1</span>
               </div>
               <div>
-                <p className="font-medium">Get a Hive account</p>
-                <p className="text-muted-foreground">Free blockchain account where rewards are sent (like a crypto wallet).</p>
+                <p className="font-medium">Click the button</p>
+                <p className="text-muted-foreground">We detect your GPU, install everything needed, and configure it automatically.</p>
               </div>
             </div>
             <div className="flex items-start gap-3">
@@ -145,8 +161,8 @@ export default function CommunityCloud() {
                 <span className="text-primary font-bold text-sm">2</span>
               </div>
               <div>
-                <p className="font-medium">Run one command</p>
-                <p className="text-muted-foreground">The script auto-detects your GPU and starts sharing.</p>
+                <p className="font-medium">Choose your mode</p>
+                <p className="text-muted-foreground">Pool (earn by serving requests) or Cluster (team up for a bigger AI brain).</p>
               </div>
             </div>
             <div className="flex items-start gap-3">
@@ -155,27 +171,31 @@ export default function CommunityCloud() {
               </div>
               <div>
                 <p className="font-medium">Earn HBD ($1 each)</p>
-                <p className="text-muted-foreground">Get paid based on how much AI work your GPU handles.</p>
+                <p className="text-muted-foreground">Get paid based on how much AI work your GPU handles. Auto-pauses when you game.</p>
               </div>
             </div>
           </div>
 
-          {/* The command */}
-          <div className="flex items-center gap-2 p-3 rounded-lg bg-background border">
-            <code className="flex-1 font-mono text-sm">python scripts/start_spiritbomb.py</code>
-            <Button variant="ghost" size="sm" onClick={copyCommand}>
-              <Copy className="h-4 w-4" />
-            </Button>
-          </div>
+          {/* One-click contribute button */}
+          <Button size="lg" className="w-full gap-2 text-lg py-6" onClick={contributeGpu}>
+            <Zap className="h-5 w-5" />
+            Contribute My GPU
+          </Button>
 
-          <div className="flex flex-wrap gap-2">
+          {agentDetected === false && (
+            <p className="text-xs text-muted-foreground text-center">
+              You'll need to download the Desktop Agent first (2 min install).
+            </p>
+          )}
+
+          <div className="flex flex-wrap gap-2 justify-center">
             <a href="https://signup.hive.io" target="_blank" rel="noopener noreferrer">
               <Button variant="outline" size="sm" className="gap-1">
                 Create Hive Account <ExternalLink className="h-3 w-3" />
               </Button>
             </a>
             <p className="text-xs text-muted-foreground self-center">
-              Requirements: NVIDIA GPU (8+ GB), Python 3.10+
+              Requirements: NVIDIA GPU (8+ GB)
             </p>
           </div>
         </CardContent>
