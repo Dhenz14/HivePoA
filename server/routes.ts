@@ -5811,7 +5811,7 @@ export async function registerRoutes(
           });
           if (hiveAiRes.ok) {
             const hiveAiData = await hiveAiRes.json() as any;
-            const text = hiveAiData.response || hiveAiData.answer || "";
+            const text = hiveAiData.reply || hiveAiData.response || hiveAiData.answer || "";
             if (text) {
               res.json({
                 text,
