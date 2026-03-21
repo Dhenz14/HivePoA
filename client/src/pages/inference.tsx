@@ -5,11 +5,11 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { Brain, Send, Loader2, Globe, Cpu, AlertCircle, Download, ExternalLink } from "lucide-react";
+import { Brain, Send, Loader2, Globe, Cpu, Users, AlertCircle, Download, ExternalLink } from "lucide-react";
 import { Link } from "wouter";
 import { getApiBase } from "@/lib/api-mode";
 
-type InferenceMode = "medium" | "high_intel";
+type InferenceMode = "medium" | "pool" | "high_intel";
 
 interface ChatMessage {
   role: "user" | "assistant" | "system";
@@ -18,6 +18,7 @@ interface ChatMessage {
   model?: string;
   latencyMs?: number;
   tokensGenerated?: number;
+  routedTo?: string;
   isError?: boolean;
 }
 
@@ -55,8 +56,10 @@ export default function Inference() {
   });
 
   const ollamaReady = modes?.modes?.medium?.available ?? false;
+  const poolReady = modes?.modes?.pool?.available ?? false;
+  const poolNodes = modes?.modes?.pool?.healthyNodes ?? 0;
   const clusterReady = modes?.modes?.high_intel?.available ?? false;
-  const anyBackend = ollamaReady || clusterReady;
+  const anyBackend = ollamaReady || poolReady || clusterReady;
 
   // Send inference request
   const inferMutation = useMutation({
@@ -82,6 +85,7 @@ export default function Inference() {
           model: data.model_used,
           latencyMs: data.latency_ms,
           tokensGenerated: data.tokens_generated,
+          routedTo: data.routed_to,
         },
       ]);
     },
@@ -132,6 +136,16 @@ export default function Inference() {
             onClick={() => setMode("medium")}
           >
             <Cpu className="h-3 w-3 mr-1" /> Local
+          </Button>
+          <Button
+            variant={mode === "pool" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setMode("pool")}
+            disabled={!poolReady}
+            title={poolReady ? `${poolNodes} GPUs in pool` : "No pool available"}
+          >
+            <Users className="h-3 w-3 mr-1" /> Pool{poolReady && ` (${poolNodes})`}
+            {!poolReady && <span className="ml-1 text-xs opacity-60">offline</span>}
           </Button>
           <Button
             variant={mode === "high_intel" ? "default" : "outline"}
@@ -217,12 +231,15 @@ export default function Inference() {
               {msg.role === "assistant" && !msg.isError && (
                 <div className="flex flex-wrap items-center gap-2 mt-2 text-xs opacity-60">
                   <Badge variant="outline" className="text-xs py-0">
-                    {msg.mode === "local" || msg.mode === "medium" ? (
+                    {msg.mode === "pool" || msg.mode === "failover" ? (
+                      <><Users className="h-3 w-3 mr-1" />pool</>
+                    ) : msg.mode === "local" || msg.mode === "medium" || msg.mode === "hive-ai" ? (
                       <><Cpu className="h-3 w-3 mr-1" />local</>
                     ) : (
                       <><Globe className="h-3 w-3 mr-1" />cluster</>
                     )}
                   </Badge>
+                  {msg.routedTo && <span className="opacity-80">→ {msg.routedTo.replace("gpu-", "").replace(/-/g, " ")}</span>}
                   {msg.latencyMs != null && <span>{(msg.latencyMs / 1000).toFixed(1)}s</span>}
                   {msg.tokensGenerated != null && <span>{msg.tokensGenerated} tokens</span>}
                 </div>

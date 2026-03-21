@@ -20,8 +20,26 @@ export default function CommunityCloud() {
     refetchInterval: 15000,
   });
 
-  const tier = dashboard?.tier?.tier || 1;
-  const totalGpus = dashboard?.tier?.totalGpus || 0;
+  // Live pool stats — updated every 10s (matches health check cycle)
+  const { data: poolStats } = useQuery({
+    queryKey: ["/api/gpu/pool"],
+    queryFn: async () => {
+      const res = await fetch(`${getApiBase()}/api/gpu/pool`);
+      if (!res.ok) return null;
+      return res.json();
+    },
+    refetchInterval: 10000,
+  });
+
+  const poolNodes = poolStats?.pool?.nodes || [];
+  const healthyCount = poolStats?.pool?.healthyCount || 0;
+  const totalVramGb = poolStats?.pool?.totalVramGb || 0;
+  const totalRequests = poolStats?.routing24h?.totalRequests || 0;
+  const avgLatency = poolStats?.routing24h?.avgLatencyMs || 0;
+  const failoverRate = poolStats?.routing24h?.failoverRate || 0;
+
+  const tier = healthyCount >= 40 ? 3 : healthyCount >= 2 ? 2 : 1;
+  const totalGpus = healthyCount || dashboard?.tier?.totalGpus || 0;
   const clusters = dashboard?.clusters?.clusters || [];
   const contribs = dashboard?.inference?.contributions || {};
 
@@ -61,33 +79,90 @@ export default function CommunityCloud() {
         </p>
       </div>
 
+      {/* Pool Status Banner */}
+      {healthyCount > 0 && (
+        <Card className="border-green-500/30 bg-green-500/5">
+          <CardContent className="pt-6 pb-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <span className="relative flex h-3 w-3">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
+                </span>
+                <span className="text-lg font-semibold">Pool is Live</span>
+              </div>
+              <span className="text-sm text-muted-foreground">
+                {healthyCount} {healthyCount === 1 ? "GPU" : "GPUs"} online — {totalVramGb} GB combined
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Stats Grid */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Card>
           <CardContent className="pt-6">
             <div className="text-3xl font-bold">{totalGpus}</div>
-            <p className="text-sm text-muted-foreground mt-1">GPUs sharing</p>
+            <p className="text-sm text-muted-foreground mt-1">GPUs online</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-6">
-            <div className="text-3xl font-bold">{contribs.activeContributors || 0}</div>
-            <p className="text-sm text-muted-foreground mt-1">Contributors</p>
+            <div className="text-3xl font-bold">{totalVramGb}</div>
+            <p className="text-sm text-muted-foreground mt-1">GB VRAM total</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-6">
-            <div className="text-3xl font-bold">{((contribs.totalTokens || 0) / 1000).toFixed(0)}K</div>
-            <p className="text-sm text-muted-foreground mt-1">AI words generated</p>
+            <div className="text-3xl font-bold">{totalRequests.toLocaleString()}</div>
+            <p className="text-sm text-muted-foreground mt-1">Requests served</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-6">
-            <div className="text-3xl font-bold">${(contribs.totalHbdEarned || 0).toFixed(2)}</div>
-            <p className="text-sm text-muted-foreground mt-1">Rewards paid out</p>
+            <div className="text-3xl font-bold">{avgLatency > 0 ? `${(avgLatency / 1000).toFixed(1)}s` : "—"}</div>
+            <p className="text-sm text-muted-foreground mt-1">Avg response time</p>
           </CardContent>
         </Card>
       </div>
+
+      {/* Live GPU Nodes */}
+      {poolNodes.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Server className="h-5 w-5" />
+              GPU Nodes
+            </CardTitle>
+            <CardDescription>
+              {healthyCount} of {poolNodes.length} nodes online and serving AI requests.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {poolNodes.map((node: any) => (
+                <div
+                  key={node.id}
+                  className={`p-4 rounded-lg border ${node.healthy ? "border-green-500/20 bg-green-500/5" : "border-red-500/20 bg-red-500/5"}`}
+                >
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className={`h-2 w-2 rounded-full ${node.healthy ? "bg-green-500" : "bg-red-500"}`} />
+                    <span className="font-medium text-sm">{node.instanceId?.replace("gpu-", "").replace(/-/g, " ") || "GPU Node"}</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">{node.gpu}</p>
+                  <div className="flex items-center justify-between mt-2">
+                    <span className="text-sm font-medium">{node.vramGb} GB</span>
+                    <Badge variant={node.healthy ? "default" : "destructive"} className="text-xs">
+                      {node.healthy ? "Online" : "Offline"}
+                    </Badge>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Current tier explained simply */}
       <Card>
@@ -195,7 +270,7 @@ export default function CommunityCloud() {
               </Button>
             </a>
             <p className="text-xs text-muted-foreground self-center">
-              Requirements: NVIDIA GPU (8+ GB)
+              Any GPU with 6+ GB: NVIDIA, AMD, Apple Silicon, Intel Arc
             </p>
           </div>
         </CardContent>

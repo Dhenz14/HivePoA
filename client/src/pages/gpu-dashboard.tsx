@@ -14,6 +14,7 @@ import {
   pauseGpuContribution, resumeGpuContribution, enterGamingMode,
   type GpuContributionStatus, type GpuMetrics, type GpuEarnings,
 } from "@/lib/gpu-agent";
+import { getApiBase } from "@/lib/api-mode";
 
 function formatUptime(ms: number): string {
   const hours = Math.floor(ms / 3600000);
@@ -66,6 +67,22 @@ export default function GpuDashboard() {
     queryFn: getGpuEarnings,
     refetchInterval: 15000,
   });
+
+  // Pool stats — live network view
+  const { data: poolStats } = useQuery({
+    queryKey: ["pool-stats"],
+    queryFn: async () => {
+      const res = await fetch(`${getApiBase()}/api/gpu/pool`);
+      if (!res.ok) return null;
+      return res.json();
+    },
+    refetchInterval: 10000,
+  });
+
+  const poolNodes = poolStats?.pool?.nodes || [];
+  const poolHealthy = poolStats?.pool?.healthyCount || 0;
+  const poolRequests = poolStats?.routing24h?.totalRequests || 0;
+  const poolAvgLatency = poolStats?.routing24h?.avgLatencyMs || 0;
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["gpu-status"] });
@@ -306,6 +323,44 @@ export default function GpuDashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Pool Network */}
+      {poolNodes.length > 0 && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center gap-2">
+                <Activity className="h-5 w-5" />
+                Pool Network
+              </CardTitle>
+              <Badge variant={poolHealthy > 0 ? "default" : "secondary"}>
+                {poolHealthy}/{poolNodes.length} Healthy
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {poolNodes.map((node: any) => (
+              <div key={node.id} className="flex items-center justify-between p-3 rounded-lg border">
+                <div className="flex items-center gap-3">
+                  <span className={`h-2.5 w-2.5 rounded-full ${node.healthy ? "bg-green-500" : "bg-red-500"}`} />
+                  <div>
+                    <p className="text-sm font-medium">{node.instanceId?.replace("gpu-", "").replace(/-/g, " ")}</p>
+                    <p className="text-xs text-muted-foreground">{node.gpu} — {node.vramGb}GB</p>
+                  </div>
+                </div>
+                <div className="text-right text-xs text-muted-foreground">
+                  <p>Score: {(node.emaScore * 100).toFixed(0)}%</p>
+                  <p>{node.utilization}% load</p>
+                </div>
+              </div>
+            ))}
+            <div className="flex justify-between text-sm text-muted-foreground pt-2 border-t">
+              <span>{poolRequests.toLocaleString()} requests routed</span>
+              <span>{poolAvgLatency > 0 ? `avg ${(poolAvgLatency / 1000).toFixed(1)}s` : ""}</span>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* How it works (when stopped) */}
       {canStart && (
