@@ -5788,8 +5788,10 @@ export async function registerRoutes(
   // INFERENCE: Dual-Mode Inference API (the core user-facing endpoint)
   // ============================================================
 
-  // POST /api/compute/inference — Execute inference request
+  // POST /api/compute/inference + /api/gpu/inference — Execute inference request
+  // Aliased at /api/gpu/* for Hive-AI compatibility
   // Routing priority:
+  //   0. Pool mode — route to best GPU node in pool
   //   1. Hive-AI /api/chat (smart routing, RAG, LoRA adapters) — the brain
   //   2. vLLM cluster (community GPU pool) — for high-intel mode
   //   3. Ollama direct (raw local fallback) — always works
@@ -5996,8 +5998,9 @@ export async function registerRoutes(
     }
   });
 
-  // GET /api/compute/pool/stats — Pool routing statistics for dashboard
-  app.get("/api/compute/pool/stats", async (_req, res) => {
+  // GET /api/compute/pool/stats + /api/gpu/pool — Pool routing statistics
+  // Aliased at /api/gpu/pool for Hive-AI compatibility
+  const poolStatsHandler = async (_req: any, res: any) => {
     const stats = poolRouter?.getStats() ?? { nodes: [], healthyCount: 0, totalVramGb: 0 };
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
     let routingStats: any[] = [];
@@ -6014,10 +6017,12 @@ export async function registerRoutes(
         perNode: routingStats,
       },
     });
-  });
+  };
+  app.get("/api/compute/pool/stats", poolStatsHandler);
+  app.get("/api/gpu/pool", poolStatsHandler);
 
-  // GET /api/compute/inference/modes — Available inference modes
-  app.get("/api/compute/inference/modes", async (_req, res) => {
+  // GET /api/compute/inference/modes + /api/gpu/modes — Available inference modes
+  const modesHandler = async (_req: any, res: any) => {
     const hiveAiUrl = process.env.HIVE_AI_URL || "http://localhost:5001";
     const ollamaUrl = process.env.OLLAMA_URL || "http://localhost:11434";
     const vllmUrl = process.env.VLLM_URL || "http://localhost:8100";
@@ -6070,6 +6075,25 @@ export async function registerRoutes(
       },
       anyAvailable: hiveAiAvailable || ollamaAvailable || vllmAvailable || poolAvailable,
     });
+  };
+  app.get("/api/compute/inference/modes", modesHandler);
+  app.get("/api/gpu/modes", modesHandler);
+
+  // Alias: Hive-AI calls /api/gpu/inference — proxy to our /api/compute/inference
+  app.post("/api/gpu/inference", async (req, res) => {
+    try {
+      const selfUrl = `http://localhost:${process.env.PORT || 5000}`;
+      const proxyRes = await fetch(`${selfUrl}/api/compute/inference`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(req.body),
+        signal: AbortSignal.timeout(120000),
+      });
+      const data = await proxyRes.json();
+      res.status(proxyRes.status).json(data);
+    } catch (err: any) {
+      res.status(502).json({ error: "Proxy to /api/compute/inference failed: " + err.message });
+    }
   });
 
   // ============================================================
