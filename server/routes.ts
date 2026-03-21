@@ -5807,7 +5807,7 @@ export async function registerRoutes(
               message: data.prompt,
               history: [],
             }),
-            signal: AbortSignal.timeout(120000),
+            signal: AbortSignal.timeout(30000), // 30s — Hive-AI runs full RAG pipeline
           });
           if (hiveAiRes.ok) {
             const hiveAiData = await hiveAiRes.json() as any;
@@ -5841,7 +5841,7 @@ export async function registerRoutes(
               temperature: data.temperature,
               stream: false,
             }),
-            signal: AbortSignal.timeout(120000),
+            signal: AbortSignal.timeout(20000), // 20s — vLLM is fast, no RAG
           });
           if (vllmRes.ok) {
             const vllmData = await vllmRes.json() as any;
@@ -5876,7 +5876,7 @@ export async function registerRoutes(
               temperature: data.temperature,
             },
           }),
-          signal: AbortSignal.timeout(120000),
+          signal: AbortSignal.timeout(20000), // 20s — Ollama is local, should be fast
         });
         if (ollamaRes.ok) {
           const ollamaData = await ollamaRes.json() as any;

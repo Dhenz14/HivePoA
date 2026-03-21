@@ -54,7 +54,7 @@ const MIN_VRAM_GB = 6;
 const MIN_DRIVER_VERSION = 535;
 
 // Cache duration for nvidia-smi results
-const METRICS_CACHE_MS = 3000;
+const METRICS_CACHE_MS = 10000; // 10s — GPU metrics don't need sub-second precision
 const INFO_CACHE_MS = 30000;
 const DEPS_CACHE_MS = 30000;
 
