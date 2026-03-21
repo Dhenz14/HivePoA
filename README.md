@@ -39,49 +39,76 @@ Decentralized storage validation protocol built on the Hive L1 blockchain. Valid
 
 ## Project Scale
 
-- 210+ API endpoints across 30+ services
-- 60 database tables (Drizzle ORM, dual PostgreSQL + SQLite dialect)
-- 31 client pages including Spirit Bomb AI Inference, Community Cloud Dashboard, Quick Start wizard
+- 249 API endpoints across 30+ services
+- 61 database tables (Drizzle ORM, dual PostgreSQL + SQLite dialect)
+- 31 client pages including GPU Dashboard, Community Cloud, AI Inference, Quick Start
 - 567+ automated tests across 26 test suites (vitest) + 51 Python Spirit Bomb tests
-- Full Docker deployment stack (vLLM multi-machine via Ray, coordinator, ping server)
+- Desktop Agent (Electron) with GPU contribution modules, system tray, one-click installer
+- Full Docker deployment stack (vLLM with FP8 KV cache, AWQ Marlin, prefix caching)
 - Companion project: [Hive-AI](https://github.com/Dhenz14/Hive-AI) — 21 Python modules for distributed inference, training, and GPU cluster management
 - GitHub Pages static site with auto-deploy
 
-## Spirit Bomb: GPU Sharing Quick Start
+## Spirit Bomb: GPU Sharing
 
-Double-click **"Start Spirit Bomb.bat"** on your desktop and choose a mode:
+### Tier System (Additive — More GPUs = More Options)
 
-| Mode | What It Does | GPU Usage |
-|------|-------------|-----------|
-| **1 - Local** | Ollama serves AI locally (private, free) | ~12GB VRAM |
-| **2 - Cluster** | vLLM Docker container (can pool GPUs across machines) | ~10GB VRAM |
-| **3 - Both** | Ollama + vLLM (needs 2+ GPUs or lots of VRAM) | ~16GB+ VRAM |
+| Tier | Name | Trigger | What Happens |
+|------|------|---------|-------------|
+| **1** | Solo | 0-1 GPUs | Hive-AI runs v5-think locally. Nothing changes. |
+| **2** | Pool | 2+ GPUs | Each GPU serves requests independently. Nx throughput. |
+| **3** | Cluster | 2+ GPUs, <50ms latency | GPUs combine for 32B model via vLLM pipeline parallel. |
 
-### Adding a Second Computer (GPU Clustering)
+### 4 GPU Modes
 
-On Computer B, clone Hive-AI and run:
-```
+| Mode | Description | Best For |
+|------|-------------|----------|
+| **Local** | Ollama, private, no sharing | Personal use |
+| **Pool** | GPU serves community requests independently | Earning HBD |
+| **Cluster** | GPUs combine for bigger model | Maximum intelligence |
+| **Lend** | 100% GPU donated to a specific computer | "Make my PC a beast" |
+
+### Quick Start
+
+**Option A — Desktop (one-click):**
+Click **"Contribute My GPU"** on the Community Cloud dashboard. The Desktop Agent handles everything.
+
+**Option B — Command line:**
+```bash
+# Computer A (server):
+start-hivepoa.bat
+
+# Computer B (join the pool):
 scripts\setup_computer_b.bat
 ```
-It auto-detects your GPU, sets up Docker, opens firewall ports, and connects to Computer A.
 
-### Verified Hardware Configuration
+### Adding a Second Computer
 
-Tested on RTX 4070 Ti SUPER (16GB) + RTX 4070 SUPER (12GB):
+On Computer B, clone Hive-AI and run `scripts\setup_computer_b.bat`. It auto-detects GPU, sets up Docker, opens firewall, and connects.
 
-- **vLLM settings**: `--quantization awq_marlin --gpu-memory-utilization 0.70 --max-model-len 1024 --enforce-eager --ipc=host`
-- **Windows VRAM overhead**: ~6.5GB consumed by OS/display — must account for this
-- **Ollama and vLLM cannot share one GPU** — kill one before starting the other
-- **First vLLM startup downloads ~8GB** model weights from HuggingFace (cached after)
+### Verified Hardware & Optimized Settings
 
-### How It Works
-
-HivePoA is the **GPU marketplace backend** — nodes register, get challenged, earn HBD.
-Hive-AI is the **consumer frontend** — users request AI, the system routes to available GPUs.
+Tested on RTX 4070 Ti SUPER (16GB) + RTX 4070 SUPER (12GB), Windows 11, driver 576.40:
 
 ```
-User → Hive-AI (chat/rent) → HivePoA (find GPU cluster) → vLLM (inference across GPUs)
+--quantization awq_marlin    # 10.9x faster than plain AWQ (Marlin kernel)
+--gpu-memory-utilization 0.90 # Push to 90% (Windows overhead accounted)
+--max-model-len 4096          # FP8 KV cache makes this fit on 16GB
+--kv-cache-dtype fp8          # Doubles effective context length on Ada GPUs
+--enable-prefix-caching       # 70-90% cache hit on repeated system prompts
+--max-num-seqs 64             # Concurrent request handling
+--enforce-eager               # Required on WSL2 (CUDA graphs hang)
+--ipc=host                    # Required on WSL2 (prevents IPC deadlock)
 ```
+
+### Architecture
+
+```
+User → Hive-AI (smart routing + RAG) → HivePoA (GPU pool coordinator) → vLLM (inference)
+```
+
+- **HivePoA** = GPU marketplace backend (nodes register, get challenged, earn HBD)
+- **Hive-AI** = AI product (users query AI, system routes to available GPUs)
+- **Tier system is additive**: Tier 1→2 adds throughput, 2→3 adds capability. Neither removes what works.
 
 ## Multisig Treasury
 
