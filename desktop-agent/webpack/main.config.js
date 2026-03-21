@@ -24,8 +24,6 @@ module.exports = {
           options: {
             // Use the desktop agent's tsconfig
             configFile: path.resolve(__dirname, '../tsconfig.json'),
-            // Allow ts-loader to process files outside rootDir (server/, shared/)
-            allowTsNodeCompilation: true,
             transpileOnly: true,
           },
         },

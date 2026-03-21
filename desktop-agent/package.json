@@ -1,7 +1,7 @@
 {
-  "name": "spk-desktop-agent",
-  "version": "1.2.0",
-  "description": "SPK Network Desktop Agent - Earn HBD by providing IPFS storage",
+  "name": "spirit-bomb-gpu-agent",
+  "version": "2.0.0",
+  "description": "Spirit Bomb — Contribute your GPU to the community AI pool and earn HBD",
   "homepage": "https://github.com/Dhenz14/HivePoA",
   "main": "./dist/main/index.js",
   "scripts": {
@@ -63,8 +63,8 @@
     "zod": "^3.25.76"
   },
   "build": {
-    "productName": "SPK Desktop Agent",
-    "appId": "network.spk.desktop-agent",
+    "productName": "Spirit Bomb",
+    "appId": "network.spk.spirit-bomb",
     "asar": true,
     "directories": {
       "output": "build"
@@ -104,10 +104,10 @@
       "oneClick": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "SPK Desktop Agent"
+      "shortcutName": "Spirit Bomb"
     },
     "portable": {
-      "artifactName": "SPK-Desktop-Agent-Portable-${version}.${ext}"
+      "artifactName": "SpiritBomb-Portable-${version}.${ext}"
     },
     "linux": {
       "target": [
