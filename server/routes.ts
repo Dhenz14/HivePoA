@@ -4983,7 +4983,7 @@ export async function registerRoutes(
   }
 
   // POST /api/compute/nodes/register — Register a GPU worker node
-  app.post("/api/compute/nodes/register", requireAuth, async (req, res) => {
+  app.post("/api/compute/nodes/register", requireAnyAuth, async (req, res) => {
     try {
       const schema = z.object({
         nodeInstanceId: z.string().min(8).max(128), // stable per-device identity

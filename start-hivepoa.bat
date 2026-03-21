@@ -4,7 +4,7 @@ cd /d "C:\Users\theyc\Hive AI\HivePoA"
 set "DATABASE_URL=postgresql://postgres@localhost:5432/hivepoa"
 set "HIVE_AI_URL=http://localhost:5001"
 set "NODE_ENV=production"
-set "PORT=5050"
+set "PORT=5000"
 echo.
 echo  === HivePoA Server (Spirit Bomb) ===
 echo  Port: %PORT%
