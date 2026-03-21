@@ -5081,7 +5081,7 @@ export async function registerRoutes(
   // --- Job Lifecycle ---
 
   // POST /api/compute/jobs — Create a compute job
-  app.post("/api/compute/jobs", requireAuth, async (req, res) => {
+  app.post("/api/compute/jobs", requireAnyAuth, async (req, res) => {
     try {
       const schema = z.object({
         workloadType: z.string().min(1),
@@ -5117,7 +5117,7 @@ export async function registerRoutes(
   });
 
   // GET /api/compute/jobs — List jobs for authenticated user
-  app.get("/api/compute/jobs", requireAuth, async (req, res) => {
+  app.get("/api/compute/jobs", requireAnyAuth, async (req, res) => {
     try {
       const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
       const jobs = await storage.getComputeJobsByCreator(req.authenticatedUser!, limit);
@@ -5128,7 +5128,7 @@ export async function registerRoutes(
   });
 
   // GET /api/compute/jobs/:id — Get job details
-  app.get("/api/compute/jobs/:id", requireAuth, async (req, res) => {
+  app.get("/api/compute/jobs/:id", requireAnyAuth, async (req, res) => {
     try {
       const job = await storage.getComputeJob(req.params.id);
       if (!job) { res.status(404).json({ error: "Job not found" }); return; }
@@ -5142,7 +5142,7 @@ export async function registerRoutes(
   });
 
   // POST /api/compute/jobs/:id/cancel — Cancel a job (creator only)
-  app.post("/api/compute/jobs/:id/cancel", requireAuth, async (req, res) => {
+  app.post("/api/compute/jobs/:id/cancel", requireAnyAuth, async (req, res) => {
     try {
       await computeService.cancelJob(req.params.id, req.authenticatedUser!);
       res.json({ ok: true });
@@ -5334,7 +5334,7 @@ export async function registerRoutes(
   });
 
   // POST /api/compute/jobs/:id/settle — Trigger payout settlement
-  app.post("/api/compute/jobs/:id/settle", requireAuth, async (req, res) => {
+  app.post("/api/compute/jobs/:id/settle", requireAnyAuth, async (req, res) => {
     try {
       const job = await storage.getComputeJob(req.params.id);
       if (!job) { res.status(404).json({ error: "Job not found" }); return; }
