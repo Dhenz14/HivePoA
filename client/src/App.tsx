@@ -42,6 +42,7 @@ import Governance from "@/pages/governance";
 import Pricing from "@/pages/pricing";
 import Inference from "@/pages/inference";
 import CommunityCloud from "@/pages/community-cloud";
+import GpuDashboard from "@/pages/gpu-dashboard";
 import QuickStart from "@/pages/quick-start";
 import generatedImage from '@assets/generated_images/a_dark,_futuristic_abstract_mesh_background_with_red_accents..png';
 
@@ -90,6 +91,7 @@ function AppRoutes() {
         <Route path="/quick-start" component={QuickStart} />
         <Route path="/inference">{() => <AgentRequired><Inference /></AgentRequired>}</Route>
         <Route path="/community-cloud">{() => <AgentRequired><CommunityCloud /></AgentRequired>}</Route>
+        <Route path="/gpu-dashboard">{() => <AgentRequired><GpuDashboard /></AgentRequired>}</Route>
         <Route path="/p2p-network">{() => <AgentRequired><P2PNetwork /></AgentRequired>}</Route>
         <Route path="/watch/:author/:permlink">{() => <AgentRequired><Watch /></AgentRequired>}</Route>
 
