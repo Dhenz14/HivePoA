@@ -26,7 +26,9 @@ export default function Inference() {
   const [mode, setMode] = useState<InferenceMode>("medium");
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [isStreaming, setIsStreaming] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -105,12 +107,109 @@ export default function Inference() {
     },
   });
 
+  const handleStreamingInference = async (prompt: string) => {
+    setIsStreaming(true);
+    const streamMsgIdx = messages.length + 1; // after user message
+
+    // Add empty assistant message that we'll fill with streamed tokens
+    setMessages((prev) => [
+      ...prev,
+      { role: "assistant", content: "", mode: "pool" },
+    ]);
+
+    try {
+      abortRef.current = new AbortController();
+      const res = await fetch(`${getApiBase()}/api/compute/inference/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, max_tokens: 2048 }),
+        signal: abortRef.current.signal,
+      });
+
+      if (!res.ok || !res.body) {
+        throw new Error("Stream request failed");
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let fullText = "";
+      let metadata: any = {};
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split("\n");
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const payload = line.slice(6).trim();
+          if (!payload) continue;
+
+          try {
+            const event = JSON.parse(payload);
+            if (event.done) {
+              metadata = event;
+            } else if (event.token) {
+              fullText += event.token;
+              // Update the streaming message in-place
+              setMessages((prev) => {
+                const updated = [...prev];
+                const lastMsg = updated[updated.length - 1];
+                if (lastMsg?.role === "assistant") {
+                  lastMsg.content = fullText;
+                }
+                return updated;
+              });
+            }
+          } catch {}
+        }
+      }
+
+      // Finalize with metadata
+      setMessages((prev) => {
+        const updated = [...prev];
+        const lastMsg = updated[updated.length - 1];
+        if (lastMsg?.role === "assistant") {
+          lastMsg.content = fullText || "No response received.";
+          lastMsg.latencyMs = metadata.latency_ms;
+          lastMsg.routedTo = metadata.routed_to;
+          lastMsg.model = metadata.model;
+          lastMsg.mode = "pool";
+        }
+        return updated;
+      });
+    } catch (err: any) {
+      if (err.name !== "AbortError") {
+        setMessages((prev) => {
+          const updated = [...prev];
+          const lastMsg = updated[updated.length - 1];
+          if (lastMsg?.role === "assistant" && !lastMsg.content) {
+            lastMsg.content = err.message;
+            lastMsg.isError = true;
+          }
+          return updated;
+        });
+      }
+    } finally {
+      setIsStreaming(false);
+      abortRef.current = null;
+    }
+  };
+
   const handleSend = () => {
-    if (!input.trim() || inferMutation.isPending) return;
+    if (!input.trim() || inferMutation.isPending || isStreaming) return;
     const prompt = input.trim();
     setInput("");
     setMessages((prev) => [...prev, { role: "user", content: prompt }]);
-    inferMutation.mutate(prompt);
+
+    // Use streaming for pool mode, regular mutation for other modes
+    if (mode === "pool" && poolReady) {
+      handleStreamingInference(prompt);
+    } else {
+      inferMutation.mutate(prompt);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -248,10 +347,10 @@ export default function Inference() {
           </div>
         ))}
 
-        {inferMutation.isPending && (
+        {(inferMutation.isPending || (isStreaming && messages[messages.length - 1]?.content === "")) && (
           <div className="flex justify-start">
             <div className="bg-muted rounded-lg px-4 py-3 flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" /> Thinking...
+              <Loader2 className="h-4 w-4 animate-spin" /> {isStreaming ? "Streaming..." : "Thinking..."}
             </div>
           </div>
         )}
@@ -273,7 +372,7 @@ export default function Inference() {
           />
           <Button
             onClick={handleSend}
-            disabled={!input.trim() || inferMutation.isPending || !anyBackend}
+            disabled={!input.trim() || inferMutation.isPending || isStreaming || !anyBackend}
             size="icon"
             className="h-12 w-12 shrink-0"
           >
