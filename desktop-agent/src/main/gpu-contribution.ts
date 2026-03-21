@@ -32,8 +32,13 @@ export type GpuContributionState =
 
 export interface GpuContributionConfig {
   enabled: boolean;
-  mode: 'local' | 'pool' | 'cluster';
-  vramUtilization: number;        // 0.50-0.85
+  mode: 'local' | 'pool' | 'cluster' | 'lend';
+  // Modes:
+  //   local   — Ollama only, no sharing, no earnings
+  //   pool    — GPU serves requests independently (throughput scaling)
+  //   cluster — GPU combines with neighbors for bigger model (capability scaling)
+  //   lend    — 100% GPU donated to a specific computer (becomes their remote GPU)
+  vramUtilization: number;        // 0.50-0.95
   model: string;                  // e.g., "Qwen/Qwen3-14B-AWQ"
   maxModelLen: number;            // 512-8192
   autoGamingMode: boolean;        // detect VRAM contention
@@ -42,6 +47,7 @@ export interface GpuContributionConfig {
   scheduleEnd: string;            // "08:00"
   hivePoaUrl: string;             // HivePoA server URL
   hiveUsername: string | null;
+  lendTargetIp: string | null;    // IP of the computer to lend GPU to (lend mode only)
 }
 
 export interface GpuContributionStatus {
@@ -60,15 +66,16 @@ export interface GpuContributionStatus {
 const DEFAULT_GPU_CONFIG: GpuContributionConfig = {
   enabled: false,
   mode: 'pool',
-  vramUtilization: 0.70,
+  vramUtilization: 0.90,
   model: 'Qwen/Qwen3-14B-AWQ',
-  maxModelLen: 1024,
+  maxModelLen: 4096,
   autoGamingMode: true,
   scheduleEnabled: false,
   scheduleStart: '22:00',
   scheduleEnd: '08:00',
   hivePoaUrl: 'http://localhost:5000',
   hiveUsername: null,
+  lendTargetIp: null,
 };
 
 const GAMING_CHECK_INTERVAL_MS = 10000;      // check VRAM every 10s

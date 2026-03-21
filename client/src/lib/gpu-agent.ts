@@ -43,10 +43,11 @@ export interface GpuContributionStatus {
   container: { state: string; containerId?: string; uptime?: string } | null;
   config: {
     enabled: boolean;
-    mode: "local" | "pool" | "cluster";
+    mode: "local" | "pool" | "cluster" | "lend";
     vramUtilization: number;
     model: string;
     autoGamingMode: boolean;
+    lendTargetIp: string | null;
   };
   uptimeMs: number;
   totalTokens: number;
@@ -117,10 +118,11 @@ export async function getGpuEarnings(): Promise<GpuEarnings | null> {
 
 /** Start GPU contribution. */
 export async function startGpuContribution(config?: {
-  mode?: "local" | "pool" | "cluster";
+  mode?: "local" | "pool" | "cluster" | "lend";
   vramUtilization?: number;
   model?: string;
   hiveUsername?: string;
+  lendTargetIp?: string;
 }): Promise<{ success: boolean; error?: string }> {
   const result = await gpuPost<{ success: boolean; error?: string }>("/start", config);
   return result || { success: false, error: "Agent not reachable" };

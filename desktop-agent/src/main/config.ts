@@ -34,7 +34,7 @@ export interface AgentConfig {
   treasurySignerEnabled: boolean; // Whether this agent auto-signs treasury transactions
   // GPU Contribution (Spirit Bomb)
   gpuContributionEnabled: boolean;
-  gpuContributionMode: 'local' | 'pool' | 'cluster';
+  gpuContributionMode: 'local' | 'pool' | 'cluster' | 'lend';
   gpuVramUtilization: number;       // 0.50-0.85, default 0.70
   gpuModel: string;                 // e.g., "Qwen/Qwen3-14B-AWQ"
   gpuMaxModelLen: number;           // 512-8192, default 1024
@@ -44,6 +44,7 @@ export interface AgentConfig {
   gpuAutoGamingMode: boolean;       // detect VRAM contention and auto-pause
   gpuContainerName: string;         // default "spiritbomb-vllm"
   gpuContainerPort: number;         // default 8100
+  gpuLendTargetIp: string | null;   // IP of computer to lend GPU to (lend mode)
 }
 
 export interface EarningsData {
