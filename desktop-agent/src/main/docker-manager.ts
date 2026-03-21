@@ -48,8 +48,8 @@ export interface ContainerStatus {
 const DEFAULT_CONFIG: ContainerConfig = {
   name: 'spiritbomb-vllm',
   image: 'vllm/vllm-openai:latest',
-  gpuMemoryUtilization: 0.70,
-  maxModelLen: 1024,
+  gpuMemoryUtilization: 0.90,  // Push to 90% — Windows overhead already factored out
+  maxModelLen: 4096,            // FP8 KV cache makes 4096 fit on 16GB
   model: 'Qwen/Qwen3-14B-AWQ',
   quantization: 'awq_marlin',
   port: 8100,
@@ -181,7 +181,10 @@ export class DockerManager extends EventEmitter {
       '--quantization', this.config.quantization,
       '--gpu-memory-utilization', this.config.gpuMemoryUtilization.toString(),
       '--max-model-len', this.config.maxModelLen.toString(),
-      '--enforce-eager',
+      '--kv-cache-dtype', 'fp8',         // FP8 KV cache — doubles effective context on Ada GPUs
+      '--enable-prefix-caching',          // Reuse KV cache for shared system prompts (70-90% hit rate)
+      '--max-num-seqs', '64',             // Concurrent request handling
+      '--enforce-eager',                  // Skip CUDA graph compilation (WSL2 compatibility)
       '--host', '0.0.0.0',
       '--port', '8000',
     ];
