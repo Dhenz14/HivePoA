@@ -64,6 +64,47 @@ Merging would couple a general platform to a specific application. Don't do it.
 
 ---
 
+## Iron Wall: Separation of Concerns
+
+**This is non-negotiable. Each side owns its lane completely.**
+
+### HivePoA Owns (DO NOT touch from Hive-AI side):
+- GPU registration, discovery, heartbeat
+- Pool routing and load balancing
+- Challenge verification and fraud detection
+- HBD reward settlement and treasury
+- Web of Trust and reputation
+- Node health monitoring (uses `/ready`, never `/api/chat`)
+
+### Hive-AI Owns (DO NOT touch from HivePoA side):
+- **Model selection** — Hive-AI decides which model to use, always
+- **Inference** — requests come in, responses go out, HivePoA doesn't care how
+- **RAG pipeline** — retrieval, reranking, knowledge base, solved examples
+- **Training** — when to train, what data, what defenses, evaluation
+- **Verification** — code compilation, execution, quality scoring
+
+### The Rules:
+1. **HivePoA NEVER decides models.** When routing a pool request to a Hive-AI node, that node uses its own model stack. HivePoA just forwards the request and returns the response.
+2. **Hive-AI NEVER manages GPUs.** GPU registration, discovery, and routing are HivePoA's job.
+3. **Pool mode = each node runs its own Hive-AI instance.** HivePoA load-balances between them. No model splitting, no shared state.
+4. **Cluster mode = vLLM splits a model across GPUs.** Only relevant when nodes have <50ms latency. HivePoA coordinates, Hive-AI provides the model config.
+5. **PRs are the communication channel.** If HivePoA needs something from Hive-AI (new endpoint, config change), send a PR. If Hive-AI needs something from HivePoA (new API, routing change), send a PR. No assumptions, no silent changes.
+6. **Health checks use `/ready` (< 100ms).** NEVER `/api/chat` (30-60s). This was a day-1 bug.
+
+### Model Stack (Hive-AI decides, HivePoA does NOT override):
+```
+Solo/Pool mode:
+  Primary:            hiveai-v5-think (fine-tuned GGUF via llama-server, port 11435)
+  Reasoning fallback: qwen3:14b (Ollama, if llama-server down)
+  Fast fallback:      qwen3.5:9b (Ollama, for simple queries)
+
+Cluster mode (future):
+  vLLM with larger model (32B+) split across qualified GPUs
+  Hive-AI provides model config, HivePoA coordinates GPU allocation
+```
+
+---
+
 ## The Bridge: `compute_client.py`
 
 **Location:** `hiveai/dbc/compute_client.py` (in Hive-AI repo)
