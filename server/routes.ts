@@ -224,6 +224,11 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
 
+  // Pool Router — load-balanced inference routing across GPU nodes
+  const { PoolRouterService } = await import("./services/pool-router-service");
+  const poolRouter = new PoolRouterService(storage);
+  poolRouter.start().catch(err => logRoutes.error({ err }, "Pool router failed to start"));
+
   // WebSocket for real-time updates (using noServer mode for proper multi-path support)
   const wss = new WebSocketServer({ noServer: true });
   const WS_MAX_CONNECTIONS = 100;
@@ -4998,12 +5003,19 @@ export async function registerRoutes(
         workerVersion: z.string().max(50).optional(),
         pricePerHourHbd: z.string().optional(),
         maxConcurrentJobs: z.number().int().min(1).max(16).optional(),
+        inferenceEndpoint: z.string().url().optional(), // e.g., "http://192.168.1.50:5001"
       });
       const data = schema.parse(req.body);
       const node = await computeService.registerNode({
         hiveUsername: req.authenticatedUser!,
         ...data,
       });
+      // Set immunity for first-time registrations (24h grace period)
+      if (node.immunityExpiresAt === null) {
+        const immunityExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        await storage.updateComputeNode(node.id, { immunityExpiresAt: immunityExpiry } as any);
+        node.immunityExpiresAt = immunityExpiry;
+      }
       res.json(node);
     } catch (err: any) {
       logCompute.error({ err }, "Node registration failed");
@@ -5785,7 +5797,7 @@ export async function registerRoutes(
     try {
       const schema = z.object({
         prompt: z.string().min(1).max(100000),
-        mode: z.enum(["medium", "high_intel", "auto"]).default("medium"),
+        mode: z.enum(["medium", "high_intel", "auto", "pool"]).default("medium"),
         max_tokens: z.number().int().min(1).max(16384).default(2048),
         temperature: z.number().min(0).max(2).default(0.7),
         model: z.string().optional(),
@@ -5796,6 +5808,29 @@ export async function registerRoutes(
       const hiveAiUrl = process.env.HIVE_AI_URL || "http://localhost:5001";
       const ollamaUrl = process.env.OLLAMA_URL || "http://localhost:11434";
       const vllmUrl = process.env.VLLM_URL || "http://localhost:8100";
+
+      // Priority 0: Pool mode — route to best available GPU node in the pool
+      if (data.mode === "pool" || (data.mode === "auto" && poolRouter?.isAvailable())) {
+        try {
+          const result = await poolRouter!.routeInference({
+            prompt: data.prompt,
+            max_tokens: data.max_tokens,
+            mode: "pool",
+          });
+          res.json({
+            text: result.response.text || result.response.reply || "",
+            tokens_generated: result.response.tokens || result.response.tokens_generated || 0,
+            latency_ms: result.latencyMs,
+            strategy_used: result.routedVia,
+            model_used: result.response.model || "pool",
+            routed_to: result.nodeInstanceId,
+            attempts: result.attemptsUsed,
+          });
+          return;
+        } catch (poolErr: any) {
+          logCompute.debug({ err: poolErr.message }, "Pool routing failed, falling through to local");
+        }
+      }
 
       // Priority 1: Hive-AI's /api/chat (has smart routing, RAG, LoRA adapters)
       if (data.mode !== "high_intel") {
@@ -5916,6 +5951,71 @@ export async function registerRoutes(
     }
   });
 
+  // POST /api/compute/inference/stream — SSE streaming inference via pool
+  app.post("/api/compute/inference/stream", async (req, res) => {
+    try {
+      const schema = z.object({
+        prompt: z.string().min(1).max(100000),
+        max_tokens: z.number().int().min(1).max(16384).default(2048),
+      });
+      const data = schema.parse(req.body);
+
+      // Set SSE headers
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.flushHeaders();
+
+      try {
+        const result = await poolRouter!.routeInference({
+          prompt: data.prompt,
+          max_tokens: data.max_tokens,
+          mode: "pool",
+        });
+
+        // Phase 1: Simulate streaming by chunking the complete response
+        const text = result.response.text || result.response.reply || "";
+        const words = text.split(/(\s+)/); // keep whitespace
+        const chunkSize = 3; // 3 words per SSE event
+
+        for (let i = 0; i < words.length; i += chunkSize) {
+          const chunk = words.slice(i, i + chunkSize).join("");
+          res.write(`data: ${JSON.stringify({ token: chunk, index: Math.floor(i / chunkSize) })}\n\n`);
+        }
+
+        res.write(`data: ${JSON.stringify({ done: true, latency_ms: result.latencyMs, model: result.response.model || "pool", routed_to: result.nodeInstanceId })}\n\n`);
+      } catch (poolErr: any) {
+        res.write(`data: ${JSON.stringify({ error: "pool_failed", message: poolErr.message })}\n\n`);
+      }
+
+      res.end();
+    } catch (err: any) {
+      if (!res.headersSent) {
+        res.status(400).json({ error: err.message });
+      }
+    }
+  });
+
+  // GET /api/compute/pool/stats — Pool routing statistics for dashboard
+  app.get("/api/compute/pool/stats", async (_req, res) => {
+    const stats = poolRouter?.getStats() ?? { nodes: [], healthyCount: 0, totalVramGb: 0 };
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    let routingStats: any[] = [];
+    try {
+      routingStats = await storage.getInferenceRoutingStats(since);
+    } catch { /* table may not exist yet */ }
+
+    res.json({
+      pool: stats,
+      routing24h: {
+        totalRequests: routingStats.reduce((sum, r) => sum + r.requestCount, 0),
+        avgLatencyMs: routingStats.length > 0 ? Math.round(routingStats.reduce((sum, r) => sum + r.avgLatencyMs * r.requestCount, 0) / Math.max(1, routingStats.reduce((sum, r) => sum + r.requestCount, 0))) : 0,
+        failoverRate: routingStats.length > 0 ? 1 - routingStats.reduce((sum, r) => sum + r.successRate * r.requestCount, 0) / Math.max(1, routingStats.reduce((sum, r) => sum + r.requestCount, 0)) : 0,
+        perNode: routingStats,
+      },
+    });
+  });
+
   // GET /api/compute/inference/modes — Available inference modes
   app.get("/api/compute/inference/modes", async (_req, res) => {
     const hiveAiUrl = process.env.HIVE_AI_URL || "http://localhost:5001";
@@ -5943,6 +6043,9 @@ export async function registerRoutes(
       vllmAvailable = r.ok;
     } catch {}
 
+    const poolAvailable = poolRouter?.isAvailable() ?? false;
+    const poolStats = poolRouter?.getStats();
+
     res.json({
       modes: {
         medium: {
@@ -5952,13 +6055,20 @@ export async function registerRoutes(
             ? "Hive-AI — smart routing, RAG, LoRA adapters"
             : "Local inference — free, private, offline-capable",
         },
+        pool: {
+          available: poolAvailable,
+          backend: "pool",
+          description: "Pool inference — load-balanced across community GPUs",
+          healthyNodes: poolStats?.healthyCount ?? 0,
+          totalVramGb: poolStats?.totalVramGb ?? 0,
+        },
         high_intel: {
           available: vllmAvailable,
           backend: "vllm",
-          description: "Cluster inference — community GPU pool",
+          description: "Cluster inference — combined GPU brain",
         },
       },
-      anyAvailable: hiveAiAvailable || ollamaAvailable || vllmAvailable,
+      anyAvailable: hiveAiAvailable || ollamaAvailable || vllmAvailable || poolAvailable,
     });
   });
 

@@ -2523,4 +2523,11 @@ export class SQLiteStorage implements IStorage {
   async createExpertShard(_shard: any): Promise<any> { throw new Error("Spirit Bomb: PG-only"); }
   async getExpertShards(_modelName: string, _expertIndices?: number[]): Promise<any[]> { return []; }
   async getExpertShardByCid(_cid: string): Promise<any> { return undefined; }
+
+  // Pool Routing (SQLite stubs — full impl in PG storage)
+  async getPoolReadyNodes(): Promise<any[]> { return []; }
+  async updateNodeEmaScore(_nodeId: string, _emaScore: number): Promise<void> {}
+  async updateNodeInferenceEndpoint(_nodeId: string, _endpoint: string): Promise<void> {}
+  async createInferenceRoutingLog(_entry: any): Promise<any> { return _entry; }
+  async getInferenceRoutingStats(_since: Date): Promise<any[]> { return []; }
 }

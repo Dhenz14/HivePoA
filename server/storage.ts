@@ -186,6 +186,7 @@ import {
   inferenceRoutes,
   inferenceContributions,
   expertWeightShards,
+  inferenceRoutingLog,
   type GpuCluster,
   type InsertGpuCluster,
   type GpuClusterMember,
@@ -198,6 +199,8 @@ import {
   type InsertInferenceContribution,
   type ExpertWeightShard,
   type InsertExpertWeightShard,
+  type InferenceRoutingLog,
+  type InsertInferenceRoutingLog,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, sql, ilike, or, notInArray, gte, lte, lt, isNull, isNotNull, inArray } from "drizzle-orm";
@@ -702,6 +705,18 @@ export interface IStorage {
   createExpertShard(shard: InsertExpertWeightShard): Promise<ExpertWeightShard>;
   getExpertShards(modelName: string, expertIndices?: number[]): Promise<ExpertWeightShard[]>;
   getExpertShardByCid(cid: string): Promise<ExpertWeightShard | undefined>;
+
+  // ── Pool Routing ──────────────────────────────────────────────
+  /** Get nodes with inference endpoints set and status online, ordered by EMA score. */
+  getPoolReadyNodes(): Promise<ComputeNode[]>;
+  /** Update a node's EMA score. */
+  updateNodeEmaScore(nodeId: string, emaScore: number): Promise<void>;
+  /** Update a node's inference endpoint URL. */
+  updateNodeInferenceEndpoint(nodeId: string, endpoint: string): Promise<void>;
+  /** Log a pool routing decision for observability. */
+  createInferenceRoutingLog(entry: InsertInferenceRoutingLog): Promise<InferenceRoutingLog>;
+  /** Get routing stats per node since a given date. */
+  getInferenceRoutingStats(since: Date): Promise<{ nodeId: string; requestCount: number; avgLatencyMs: number; successRate: number }[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -4072,6 +4087,52 @@ export class DatabaseStorage implements IStorage {
     const [shard] = await db.select().from(expertWeightShards)
       .where(eq(expertWeightShards.ipfsCid, cid));
     return shard || undefined;
+  }
+
+  // ── Pool Routing ──────────────────────────────────────────────
+
+  async getPoolReadyNodes(): Promise<ComputeNode[]> {
+    return db.select().from(computeNodes)
+      .where(and(
+        eq(computeNodes.status, "online"),
+        isNotNull(computeNodes.inferenceEndpoint),
+      ))
+      .orderBy(desc(computeNodes.emaScore));
+  }
+
+  async updateNodeEmaScore(nodeId: string, emaScore: number): Promise<void> {
+    await db.update(computeNodes)
+      .set({ emaScore })
+      .where(eq(computeNodes.id, nodeId));
+  }
+
+  async updateNodeInferenceEndpoint(nodeId: string, endpoint: string): Promise<void> {
+    await db.update(computeNodes)
+      .set({ inferenceEndpoint: endpoint })
+      .where(eq(computeNodes.id, nodeId));
+  }
+
+  async createInferenceRoutingLog(entry: InsertInferenceRoutingLog): Promise<InferenceRoutingLog> {
+    const [created] = await db.insert(inferenceRoutingLog).values(entry).returning();
+    return created;
+  }
+
+  async getInferenceRoutingStats(since: Date): Promise<{ nodeId: string; requestCount: number; avgLatencyMs: number; successRate: number }[]> {
+    const rows = await db.select({
+      nodeId: inferenceRoutingLog.selectedNodeId,
+      requestCount: sql<number>`COUNT(*)::INTEGER`,
+      avgLatencyMs: sql<number>`COALESCE(AVG(${inferenceRoutingLog.latencyMs}), 0)::INTEGER`,
+      successRate: sql<number>`(COUNT(*) FILTER (WHERE ${inferenceRoutingLog.success} = true)::REAL / NULLIF(COUNT(*), 0))`,
+    })
+      .from(inferenceRoutingLog)
+      .where(gte(inferenceRoutingLog.createdAt, since))
+      .groupBy(inferenceRoutingLog.selectedNodeId);
+    return rows.map((r: { nodeId: string; requestCount: number; avgLatencyMs: number; successRate: number | null }) => ({
+      nodeId: r.nodeId,
+      requestCount: r.requestCount,
+      avgLatencyMs: r.avgLatencyMs,
+      successRate: r.successRate ?? 0,
+    }));
   }
 }
 

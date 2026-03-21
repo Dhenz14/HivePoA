@@ -106,6 +106,7 @@ export interface NodeRegistration {
   workerVersion?: string;
   pricePerHourHbd?: string;
   maxConcurrentJobs?: number;
+  inferenceEndpoint?: string; // e.g., "http://192.168.1.50:5001"
 }
 
 export interface JobCreation {
@@ -278,6 +279,7 @@ export class ComputeService {
         workerVersion: reg.workerVersion || existing.workerVersion,
         pricePerHourHbd: reg.pricePerHourHbd || existing.pricePerHourHbd,
         maxConcurrentJobs: reg.maxConcurrentJobs || existing.maxConcurrentJobs,
+        inferenceEndpoint: reg.inferenceEndpoint || existing.inferenceEndpoint,
         lastHeartbeatAt: new Date(),
       });
       logCompute.info({ nodeId: existing.id, instanceId: reg.nodeInstanceId, username: reg.hiveUsername }, "Compute node re-registered");
@@ -298,6 +300,7 @@ export class ComputeService {
       workerVersion: reg.workerVersion,
       pricePerHourHbd: reg.pricePerHourHbd || "0.50",
       maxConcurrentJobs: reg.maxConcurrentJobs || 1,
+      inferenceEndpoint: reg.inferenceEndpoint,
       status: "online",
       reputationScore: 0,
       jobsInProgress: 0,

@@ -940,6 +940,10 @@ export const computeNodes = pgTable("compute_nodes", {
   totalJobsCompleted: integer("total_jobs_completed").notNull().default(0),
   totalJobsFailed: integer("total_jobs_failed").notNull().default(0),
   totalHbdEarned: text("total_hbd_earned").notNull().default("0"),
+  // Pool routing
+  inferenceEndpoint: text("inference_endpoint"), // reachable HTTP base URL (e.g., "http://192.168.1.50:5001")
+  emaScore: real("ema_score").notNull().default(0.5), // EMA-smoothed quality score 0.0-1.0 for routing
+  immunityExpiresAt: timestamp("immunity_expires_at"), // 24h grace period for new nodes
   // State
   jobsInProgress: integer("jobs_in_progress").notNull().default(0),
   lastHeartbeatAt: timestamp("last_heartbeat_at"),
@@ -947,6 +951,25 @@ export const computeNodes = pgTable("compute_nodes", {
   metadataJson: text("metadata_json"), // overflow for non-queryable fields
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+// Inference Routing Log — observability for pool request routing
+export const inferenceRoutingLog = pgTable("inference_routing_log", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  selectedNodeId: varchar("selected_node_id").notNull(),
+  fallbackNodeIds: text("fallback_node_ids"), // JSON array of fallback node IDs tried
+  prompt: text("prompt"), // first 100 chars for debugging
+  latencyMs: integer("latency_ms"),
+  success: boolean("success").notNull(),
+  errorCode: text("error_code"),
+  routedVia: text("routed_via").notNull().default("pool"), // pool, local, failover
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertInferenceRoutingLogSchema = createInsertSchema(inferenceRoutingLog).omit({
+  id: true, createdAt: true,
+});
+export type InferenceRoutingLog = typeof inferenceRoutingLog.$inferSelect;
+export type InsertInferenceRoutingLog = z.infer<typeof insertInferenceRoutingLogSchema>;
 
 // Compute Jobs - Typed workload execution requests
 export const computeJobs = pgTable("compute_jobs", {
