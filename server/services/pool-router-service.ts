@@ -145,30 +145,38 @@ export class PoolRouterService {
     }
   }
 
-  /** Health-check all nodes via GET /ready. */
+  /** Health-check all nodes — tries /ready, /health, then base URL. */
   private async healthCheckAll(): Promise<void> {
     await this.refreshNodes(); // Pick up new registrations
 
     const checks = Array.from(this.nodes.values()).map(async (node) => {
-      try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
+      // Try multiple health endpoints (Hive-AI uses /ready, llama-server uses /health)
+      const endpoints = [
+        `${node.inferenceEndpoint}/ready`,
+        `${node.inferenceEndpoint}/health`,
+        node.inferenceEndpoint,
+      ];
 
-        const res = await fetch(`${node.inferenceEndpoint}/ready`, {
-          signal: controller.signal,
-        });
-        clearTimeout(timeout);
+      for (const url of endpoints) {
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
+          const res = await fetch(url, { signal: controller.signal });
+          clearTimeout(timeout);
 
-        if (res.ok) {
-          node.healthy = true;
-          node.consecutiveFailures = 0;
-          node.lastHealthCheck = Date.now();
-        } else {
-          this.markUnhealthy(node);
+          if (res.ok) {
+            node.healthy = true;
+            node.consecutiveFailures = 0;
+            node.lastHealthCheck = Date.now();
+            return; // success — stop trying other endpoints
+          }
+        } catch {
+          // try next endpoint
         }
-      } catch {
-        this.markUnhealthy(node);
       }
+
+      // All endpoints failed
+      this.markUnhealthy(node);
     });
 
     await Promise.allSettled(checks);
@@ -242,8 +250,22 @@ export class PoolRouterService {
       }
     }
 
-    // Sort by weight descending
-    weighted.sort((a, b) => b.weight - a.weight);
+    // Weighted random selection — probabilistic, not deterministic
+    // This ensures all healthy nodes get SOME traffic proportional to their weight
+    const totalW = weighted.reduce((sum, w) => sum + w.weight, 0);
+    if (totalW > 0) {
+      const rand = Math.random() * totalW;
+      let cumulative = 0;
+      let selectedIdx = 0;
+      for (let i = 0; i < weighted.length; i++) {
+        cumulative += weighted[i].weight;
+        if (rand <= cumulative) { selectedIdx = i; break; }
+      }
+      // Put selected first, rest as fallbacks sorted by weight
+      const selected = weighted.splice(selectedIdx, 1)[0];
+      weighted.sort((a, b) => b.weight - a.weight);
+      weighted.unshift(selected);
+    }
 
     return weighted.map(w => w.node);
   }
@@ -266,18 +288,55 @@ export class PoolRouterService {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), INFERENCE_TIMEOUT_MS);
 
-        const res = await fetch(`${node.inferenceEndpoint}/api/compute/inference`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-          signal: controller.signal,
-        });
-        clearTimeout(timeout);
+        // Try Hive-AI format first, then OpenAI-compatible (llama-server/vLLM)
+        let res: Response | null = null;
+        let data: any = null;
 
+        // Attempt 1: Hive-AI /api/compute/inference
+        try {
+          res = await fetch(`${node.inferenceEndpoint}/api/compute/inference`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+          });
+          if (res.ok) {
+            data = await res.json();
+          }
+        } catch { /* try next format */ }
+
+        // Attempt 2: OpenAI-compatible /v1/chat/completions (llama-server, vLLM)
+        if (!data) {
+          try {
+            const controller2 = new AbortController();
+            const timeout2 = setTimeout(() => controller2.abort(), INFERENCE_TIMEOUT_MS);
+            res = await fetch(`${node.inferenceEndpoint}/v1/chat/completions`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                messages: [{ role: "user", content: body.prompt }],
+                max_tokens: body.max_tokens || 2048,
+                stream: false,
+              }),
+              signal: controller2.signal,
+            });
+            clearTimeout(timeout2);
+            if (res.ok) {
+              const oaiData = await res.json();
+              // Normalize OpenAI format to our format
+              data = {
+                text: oaiData.choices?.[0]?.message?.content || "",
+                tokens: oaiData.usage?.completion_tokens || 0,
+                model: oaiData.model || "llama-server",
+              };
+            }
+          } catch { /* both formats failed */ }
+        }
+
+        clearTimeout(timeout);
         node.inFlightRequests = Math.max(0, node.inFlightRequests - 1);
 
-        if (res.ok) {
-          const data = await res.json();
+        if (data) {
           const latencyMs = Date.now() - startTime;
 
           // Update EMA score (success)
@@ -296,7 +355,7 @@ export class PoolRouterService {
             attemptsUsed: attempt + 1,
           };
         } else {
-          const errText = await res.text().catch(() => `HTTP ${res.status}`);
+          const errText = res ? await res.text().catch(() => `HTTP ${res!.status}`) : "No response";
           errors.push(`${node.nodeInstanceId}: ${errText}`);
           this.updateEma(node, 0); // failure
         }
