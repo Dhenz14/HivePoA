@@ -283,12 +283,17 @@ export class PoolRouterService {
       throw new Error("No healthy pool nodes available");
     }
 
+    // Eagerly increment inFlight on the primary candidate so concurrent
+    // requests see the updated count and spread across nodes (Best-of-N fix)
+    candidates[0].inFlightRequests++;
+
     const startTime = Date.now();
     const errors: string[] = [];
 
     for (let attempt = 0; attempt < Math.min(candidates.length, MAX_FAILOVER_ATTEMPTS); attempt++) {
       const node = candidates[attempt];
-      node.inFlightRequests++;
+      // Primary node already incremented above; failover nodes increment here
+      if (attempt > 0) node.inFlightRequests++;
 
       try {
         const controller = new AbortController();
