@@ -57,6 +57,8 @@ interface PoolNodeState {
   // E2EE blind relay
   encryptionPublicKey: string | null;
   encryptionKeyVersion: number;
+  // CPU endpoint (separate from GPU inferenceEndpoint)
+  cpuEndpointUrl: string | null;
 }
 
 interface RoutingResult {
@@ -199,6 +201,7 @@ export class PoolRouterService {
             // E2EE
             encryptionPublicKey: (node as any).encryptionPublicKey ?? null,
             encryptionKeyVersion: (node as any).encryptionKeyVersion ?? 1,
+            cpuEndpointUrl: (node as any).cpuEndpointUrl ?? null,
           });
           // Phase 2: initialize inFlight tracking for this node
           this.inFlightTracking.set(node.id, new Map());
@@ -637,7 +640,7 @@ export class PoolRouterService {
   updateNodeFromHeartbeat(nodeInstanceId: string, data: {
     vramUsedMb?: number; vramTotalMb?: number; gpuUtilizationPct?: number;
     gpuTempC?: number; cpuPct?: number; ramPct?: number; queueDepth?: number;
-    cpuCores?: number; ramGb?: number; contributionTypes?: string;
+    cpuCores?: number; ramGb?: number; contributionTypes?: string; cpuEndpointUrl?: string;
   }): void {
     const node = Array.from(this.nodes.values()).find(n => n.nodeInstanceId === nodeInstanceId);
     if (!node) return;
@@ -655,6 +658,7 @@ export class PoolRouterService {
       node.contributionTypes = this.parseContributionTypes(data.contributionTypes);
       node.maxConcurrentCpuJobs = Math.max(1, Math.floor(node.cpuCores / 2));
     }
+    if (data.cpuEndpointUrl !== undefined) node.cpuEndpointUrl = data.cpuEndpointUrl;
   }
 
   /** Phase 5: Get pressure summary for Hive-AI decision-making. */
@@ -837,7 +841,9 @@ export class PoolRouterService {
         batch: "/api/compute/cpu/batch",
       };
       const workerPath = endpointMap[body.workloadType] || `/api/compute/cpu/${body.workloadType}`;
-      const res = await fetch(`${node.inferenceEndpoint}${workerPath}`, {
+      // Use cpuEndpointUrl if available (Flask on different port), fall back to inferenceEndpoint
+      const baseUrl = node.cpuEndpointUrl || node.inferenceEndpoint;
+      const res = await fetch(`${baseUrl}${workerPath}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body.payload),

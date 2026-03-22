@@ -5102,6 +5102,7 @@ export async function registerRoutes(
         }),
         ramUsedMb: z.number().nonnegative().optional(),
         ramTotalMb: z.number().nonnegative().optional(),
+        cpuEndpointUrl: z.string().optional(), // Flask URL for CPU workloads (separate from GPU)
       }).parse(req.body);
       await computeService.heartbeat(node.id, heartbeat.jobsInProgress);
 
@@ -5127,6 +5128,7 @@ export async function registerRoutes(
           cpuCores: heartbeat.cpuCores,
           ramGb: heartbeat.ramGb,
           contributionTypes: heartbeat.contributionTypes,
+          cpuEndpointUrl: heartbeat.cpuEndpointUrl,
         });
       }
       res.json({ ok: true });
