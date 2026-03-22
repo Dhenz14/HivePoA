@@ -5822,12 +5822,16 @@ export async function registerRoutes(
   app.post("/api/compute/inference", async (req, res) => {
     try {
       const schema = z.object({
-        prompt: z.string().min(1).max(100000),
+        prompt: z.string().min(1).max(100000).optional(),
+        messages: z.array(z.object({
+          role: z.enum(["system", "user", "assistant"]),
+          content: z.string(),
+        })).optional(),
         mode: z.enum(["medium", "high_intel", "auto", "pool"]).default("medium"),
         max_tokens: z.number().int().min(1).max(16384).default(2048),
         temperature: z.number().min(0).max(2).default(0.7),
         model: z.string().optional(),
-      });
+      }).refine(d => d.prompt || d.messages, { message: "Either prompt or messages is required" });
       const data = schema.parse(req.body);
       const start = Date.now();
 
@@ -5840,6 +5844,7 @@ export async function registerRoutes(
         try {
           const result = await poolRouter!.routeInference({
             prompt: data.prompt,
+            messages: data.messages,
             max_tokens: data.max_tokens,
             temperature: data.temperature,
             mode: "pool",

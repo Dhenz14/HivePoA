@@ -356,7 +356,7 @@ export class PoolRouterService {
   }
 
   /** Route an inference request with failover. */
-  async routeInference(body: { prompt: string; max_tokens?: number; temperature?: number; mode?: string }): Promise<RoutingResult> {
+  async routeInference(body: { prompt?: string; messages?: { role: string; content: string }[]; max_tokens?: number; temperature?: number; mode?: string }): Promise<RoutingResult> {
     const candidates = this.selectNodes();
     if (candidates.length === 0) {
       throw new Error("No healthy pool nodes available");
@@ -408,11 +408,13 @@ export class PoolRouterService {
           try {
             const controller2 = new AbortController();
             const timeout2 = setTimeout(() => controller2.abort(), INFERENCE_TIMEOUT_MS);
+            // Use messages array if provided, otherwise wrap prompt as single user message
+            const messages = body.messages || [{ role: "user", content: body.prompt || "" }];
             res = await fetch(`${node.inferenceEndpoint}/v1/chat/completions`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                messages: [{ role: "user", content: body.prompt }],
+                messages,
                 max_tokens: body.max_tokens || 2048,
                 temperature: body.temperature ?? 0.7,
                 stream: false,
