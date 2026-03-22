@@ -819,7 +819,17 @@ export class PoolRouterService {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), INFERENCE_TIMEOUT_MS);
 
-      const res = await fetch(`${node.inferenceEndpoint}/api/compute/cpu/${body.workloadType}`, {
+      // Map workload types to worker endpoint paths
+      // Hive-AI serves /api/compute/embedding, /api/compute/rerank
+      const endpointMap: Record<string, string> = {
+        embed: "/api/compute/embedding",
+        rerank: "/api/compute/rerank",
+        crawl: "/api/compute/cpu/crawl",
+        preprocess: "/api/compute/cpu/preprocess",
+        batch: "/api/compute/cpu/batch",
+      };
+      const workerPath = endpointMap[body.workloadType] || `/api/compute/cpu/${body.workloadType}`;
+      const res = await fetch(`${node.inferenceEndpoint}${workerPath}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body.payload),

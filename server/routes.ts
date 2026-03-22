@@ -6267,6 +6267,32 @@ export async function registerRoutes(
     }
   });
 
+  // Hive-AI compatibility aliases for CPU workloads
+  // They call /api/compute/embedding, we route through /api/compute/cpu/embed
+  app.post("/api/compute/embedding", async (req: any, res: any) => {
+    if (!poolRouter?.isCpuAvailable()) {
+      return res.status(503).json({ error: { code: "NO_CPU_NODES", message: "No CPU nodes available for embedding" } });
+    }
+    try {
+      const result = await poolRouter!.routeCpuJob({ workloadType: "embed", payload: req.body });
+      res.json({ result: result.response, latency_ms: result.latencyMs, routed_to: result.nodeInstanceId });
+    } catch (err: any) {
+      res.status(503).json({ error: { code: "EMBEDDING_ROUTING_FAILED", message: err.message } });
+    }
+  });
+
+  app.post("/api/compute/rerank", async (req: any, res: any) => {
+    if (!poolRouter?.isCpuAvailable()) {
+      return res.status(503).json({ error: { code: "NO_CPU_NODES", message: "No CPU nodes available for reranking" } });
+    }
+    try {
+      const result = await poolRouter!.routeCpuJob({ workloadType: "rerank", payload: req.body });
+      res.json({ result: result.response, latency_ms: result.latencyMs, routed_to: result.nodeInstanceId });
+    } catch (err: any) {
+      res.status(503).json({ error: { code: "RERANK_ROUTING_FAILED", message: err.message } });
+    }
+  });
+
   // Sprint 2: POST /api/compute/quality-report — Receive Best-of-N quality scores from Hive-AI
   // Level 2: API key auth. Level 3: optional Hive signature verification (if _auth present).
   app.post("/api/compute/quality-report", requireAnyAuth, optionalHiveSignature, async (req: any, res: any) => {
