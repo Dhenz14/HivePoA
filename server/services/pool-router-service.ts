@@ -198,7 +198,9 @@ export class PoolRouterService {
 
           if (res.ok) {
             const data = await res.json() as any;
-            node.gpuUtilizationPct = data.gpu?.utilization_pct ?? 0;
+            // If node reports busy (e.g., running eval), treat as 100% utilized
+            // so the router avoids it but still considers it healthy
+            node.gpuUtilizationPct = data.busy ? 100 : (data.gpu?.utilization_pct ?? 0);
           }
         } catch {
           // Status poll failure doesn't mark unhealthy — /ready is the authority
