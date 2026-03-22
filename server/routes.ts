@@ -5066,10 +5066,14 @@ export async function registerRoutes(
 
   // POST /api/compute/nodes/heartbeat — Heartbeat from a GPU worker
   // Phase 4: Rich heartbeat with optional VRAM, thermal, queue data
-  app.post("/api/compute/nodes/heartbeat", requireAgentAuth, async (req, res) => {
+  // Auth: any valid API key can heartbeat for any node (trusted pool, not untrusted)
+  app.post("/api/compute/nodes/heartbeat", requireAnyAuth, async (req, res) => {
     try {
-      const node = await resolveComputeNode(req, res);
-      if (!node) return;
+      const instanceId = req.body?.nodeInstanceId as string;
+      if (!instanceId) { res.status(400).json({ error: "nodeInstanceId is required" }); return; }
+      const node = await storage.getComputeNodeByInstanceId(instanceId);
+      if (!node) { res.status(404).json({ error: "Node not registered" }); return; }
+      // No ownership check — any authenticated key can heartbeat (pool is trusted)
       const heartbeat = z.object({
         nodeInstanceId: z.string(),
         jobsInProgress: z.number().int().min(0).max(100),
