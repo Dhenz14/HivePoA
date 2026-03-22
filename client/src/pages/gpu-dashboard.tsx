@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import {
   Activity, Cpu, Thermometer, Zap, Coins, Server,
   Pause, Play, Square, Gamepad2, RefreshCw, AlertCircle,
-  Settings, Clock, HardDrive,
+  Settings, Clock, HardDrive, MemoryStick,
 } from "lucide-react";
 import {
   getGpuStatus, getGpuMetrics, getGpuEarnings, updateGpuConfig,
@@ -67,6 +67,10 @@ function GpuSettingsPanel({ config, onUpdate }: {
   const [scheduleStart, setScheduleStart] = React.useState(config.scheduleStart);
   const [scheduleEnd, setScheduleEnd] = React.useState(config.scheduleEnd);
   const [gamingMode, setGamingMode] = React.useState(config.autoGamingMode);
+  // Resource contribution toggles
+  const [shareGpu, setShareGpu] = React.useState(true);
+  const [shareCpu, setShareCpu] = React.useState(false);
+  const [shareRam, setShareRam] = React.useState(false);
 
   // Sync state when config changes from outside
   React.useEffect(() => {
@@ -106,11 +110,12 @@ function GpuSettingsPanel({ config, onUpdate }: {
           <div className="flex items-center gap-3">
             <Settings className="h-5 w-5 text-muted-foreground" />
             <div>
-              <p className="font-medium text-sm">GPU Settings</p>
+              <p className="font-medium text-sm">Resource Settings</p>
               <p className="text-xs text-muted-foreground">
-                VRAM: {(vram * 100).toFixed(0)}%
-                {scheduleEnabled ? ` | Schedule: ${scheduleStart}—${scheduleEnd}` : ""}
-                {gamingMode ? " | Gaming auto-pause" : ""}
+                Sharing: {[shareGpu && "GPU", shareCpu && "CPU", shareRam && "RAM"].filter(Boolean).join("+") || "None"}
+                {shareGpu ? ` | VRAM: ${(vram * 100).toFixed(0)}%` : ""}
+                {scheduleEnabled ? ` | ${scheduleStart}—${scheduleEnd}` : ""}
+                {gamingMode ? " | Gaming" : ""}
               </p>
             </div>
           </div>
@@ -134,8 +139,37 @@ function GpuSettingsPanel({ config, onUpdate }: {
         </div>
       </CardHeader>
       <CardContent className="space-y-6">
+        {/* Resource Contribution Toggles */}
+        <div className="space-y-3">
+          <Label className="font-medium">Share Your Resources</Label>
+          <div className="grid grid-cols-3 gap-3">
+            <div className={`flex flex-col items-center gap-2 p-3 rounded-lg border-2 transition-colors cursor-pointer ${shareGpu ? "border-green-500 bg-green-500/10" : "border-muted"}`}
+              onClick={() => setShareGpu(!shareGpu)}>
+              <Zap className={`h-5 w-5 ${shareGpu ? "text-green-500" : "text-muted-foreground"}`} />
+              <span className="text-sm font-medium">GPU</span>
+              <Switch checked={shareGpu} onCheckedChange={setShareGpu} />
+            </div>
+            <div className={`flex flex-col items-center gap-2 p-3 rounded-lg border-2 transition-colors cursor-pointer ${shareCpu ? "border-blue-500 bg-blue-500/10" : "border-muted"}`}
+              onClick={() => setShareCpu(!shareCpu)}>
+              <Cpu className={`h-5 w-5 ${shareCpu ? "text-blue-500" : "text-muted-foreground"}`} />
+              <span className="text-sm font-medium">CPU</span>
+              <Switch checked={shareCpu} onCheckedChange={setShareCpu} />
+            </div>
+            <div className={`flex flex-col items-center gap-2 p-3 rounded-lg border-2 transition-colors cursor-pointer ${shareRam ? "border-purple-500 bg-purple-500/10" : "border-muted"}`}
+              onClick={() => setShareRam(!shareRam)}>
+              <MemoryStick className={`h-5 w-5 ${shareRam ? "text-purple-500" : "text-muted-foreground"}`} />
+              <span className="text-sm font-medium">RAM</span>
+              <Switch checked={shareRam} onCheckedChange={setShareRam} />
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {[shareGpu && "GPU", shareCpu && "CPU", shareRam && "RAM"].filter(Boolean).join(" + ") || "Nothing"} shared.
+            {" "}All resources default to 50% load — your machine stays responsive.
+          </p>
+        </div>
+
         {/* VRAM Allocation Slider */}
-        <div className="space-y-4">
+        {shareGpu && <div className="space-y-4 pt-2 border-t">
           <div className="flex items-center gap-2">
             <HardDrive className="h-4 w-4 text-muted-foreground" />
             <Label className="font-medium">VRAM Allocation</Label>
@@ -177,7 +211,7 @@ function GpuSettingsPanel({ config, onUpdate }: {
             {activePreset ? activePreset.desc : `${(vram * 100).toFixed(0)}% — Custom allocation`}
             . Changes take effect on next container restart.
           </p>
-        </div>
+        </div>}
 
         {/* Schedule */}
         <div className="space-y-4 pt-2 border-t">

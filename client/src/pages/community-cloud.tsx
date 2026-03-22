@@ -37,6 +37,9 @@ export default function CommunityCloud() {
   const totalRequests = poolStats?.routing24h?.totalRequests || 0;
   const avgLatency = poolStats?.routing24h?.avgLatencyMs || 0;
   const failoverRate = poolStats?.routing24h?.failoverRate || 0;
+  // CPU+RAM pool stats
+  const cpuPool = poolStats?.pool?.cpu || { healthyCount: 0, totalCores: 0 };
+  const ramPool = poolStats?.pool?.ram || { healthyCount: 0, totalRamGb: 0 };
 
   const tier = healthyCount >= 40 ? 3 : healthyCount >= 2 ? 2 : 1;
   const totalGpus = healthyCount || dashboard?.tier?.totalGpus || 0;
@@ -92,7 +95,9 @@ export default function CommunityCloud() {
                 <span className="text-lg font-semibold">Pool is Live</span>
               </div>
               <span className="text-sm text-muted-foreground">
-                {healthyCount} {healthyCount === 1 ? "GPU" : "GPUs"} online — {totalVramGb} GB combined
+                {healthyCount} {healthyCount === 1 ? "GPU" : "GPUs"} online — {totalVramGb} GB VRAM
+                {cpuPool.healthyCount > 0 ? ` | ${cpuPool.totalCores} CPU cores` : ""}
+                {ramPool.healthyCount > 0 ? ` | ${ramPool.totalRamGb} GB RAM` : ""}
               </span>
             </div>
           </CardContent>
