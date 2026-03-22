@@ -169,7 +169,7 @@ export class PoolRouterService {
             // Phase 4: thermal + queue (updated by rich heartbeat)
             gpuTempC: 0,
             queueDepth: 0,
-            maxConcurrentInference: (node as any).maxConcurrentInference ?? 4,
+            maxConcurrentInference: (node as any).maxConcurrentInference ?? 1, // Default conservative (50%)
           });
           // Phase 2: initialize inFlight tracking for this node
           this.inFlightTracking.set(node.id, new Map());
