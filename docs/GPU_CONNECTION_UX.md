@@ -99,7 +99,7 @@ Everything below happens silently on first launch:
 │  ✅ 14.2 GB VRAM available              │
 │  ✅ Docker ready                        │
 │  ✅ Firewall configured                 │
-│  ✅ Network: 192.168.0.101 (LAN)        │
+│  ✅ Network: 192.168.x.x (LAN)          │
 │  ⏳ Scanning for nearby GPUs...         │
 │                                         │
 │  Found: RTX 4070 SUPER (12GB) nearby!   │

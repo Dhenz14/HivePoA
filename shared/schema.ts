@@ -979,7 +979,7 @@ export const poolCodes = pgTable("pool_codes", {
   code: varchar("code", { length: 6 }).primaryKey(), // e.g., "7X4K2M"
   creatorNodeId: varchar("creator_node_id").notNull(),
   creatorUsername: text("creator_username").notNull(),
-  coordinatorUrl: text("coordinator_url").notNull(), // e.g., "http://192.168.0.101:5000"
+  coordinatorUrl: text("coordinator_url").notNull(), // e.g., "http://192.168.1.100:5000"
   apiKey: text("api_key"), // optional pre-generated API key for the joiner
   expiresAt: timestamp("expires_at").notNull(),
   usedBy: text("used_by"), // Hive username that used this code

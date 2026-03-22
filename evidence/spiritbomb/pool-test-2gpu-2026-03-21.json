@@ -6,15 +6,15 @@
       "gpu": "NVIDIA GeForce RTX 4070 Ti SUPER",
       "vram_gb": 16,
       "backend": "Hive-AI Flask (port 5001) → llama-server → current_base.gguf",
-      "ip": "192.168.0.101"
+      "ip": "REDACTED"
     },
     "computer_b": {
       "gpu": "NVIDIA GeForce RTX 4070 SUPER",
       "vram_gb": 12,
       "backend": "llama-server direct (port 11435) → current_base.gguf",
-      "ip": "192.168.0.110"
+      "ip": "REDACTED"
     },
-    "coordinator": "HivePoA on 192.168.0.101:5000",
+    "coordinator": "HivePoA on REDACTED:5000",
     "network": "1Gbps ethernet, <1ms RTT between machines"
   },
   "experiments": {

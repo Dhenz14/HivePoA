@@ -31,7 +31,7 @@
     "ram_gb": 58.9,
     "network": {
       "interface": "Ethernet",
-      "ip": "192.168.0.101"
+      "ip": "REDACTED"
     }
   },
   "computer_b": {
@@ -98,7 +98,7 @@
     "1_ping_test": "From Computer A terminal: ping COMPUTER_B_IP \u2014 should be <1ms on same switch",
     "2_ollama_install": "Install Ollama on both machines: https://ollama.ai",
     "3_run_spiritbomb": "Computer A: python scripts/start_spiritbomb.py",
-    "4_run_worker_b": "Computer B: python scripts/start_spiritbomb.py --hivepoa-url http://192.168.0.101:5000",
-    "5_test_inference": "Open http://192.168.0.101:5000/inference \u2192 select Cluster mode \u2192 send message"
+    "4_run_worker_b": "Computer B: python scripts/start_spiritbomb.py --hivepoa-url http://REDACTED:5000",
+    "5_test_inference": "Open http://REDACTED:5000/inference \u2192 select Cluster mode \u2192 send message"
   }
 }
