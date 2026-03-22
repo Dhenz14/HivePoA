@@ -6146,7 +6146,7 @@ export async function registerRoutes(
   });
 
   // Sprint 2: POST /api/compute/quality-report — Receive Best-of-N quality scores from Hive-AI
-  app.post("/api/compute/quality-report", async (req: any, res: any) => {
+  app.post("/api/compute/quality-report", requireAnyAuth, async (req: any, res: any) => {
     try {
       const schema = z.object({
         candidates: z.array(z.object({
@@ -6165,7 +6165,7 @@ export async function registerRoutes(
   });
 
   // Sprint 2: POST /api/compute/verification-report — Receive sandbox verification results
-  app.post("/api/compute/verification-report", async (req: any, res: any) => {
+  app.post("/api/compute/verification-report", requireAnyAuth, async (req: any, res: any) => {
     try {
       const schema = z.object({
         node_id: z.string(),
@@ -6183,7 +6183,7 @@ export async function registerRoutes(
   });
 
   // Sprint 2: POST /api/compute/eval-breakdown — Receive per-node eval domain scores
-  app.post("/api/compute/eval-breakdown", async (req: any, res: any) => {
+  app.post("/api/compute/eval-breakdown", requireAnyAuth, async (req: any, res: any) => {
     try {
       const schema = z.object({
         model_version: z.string(),
