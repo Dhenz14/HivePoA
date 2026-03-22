@@ -16,13 +16,15 @@ import { p2pSignaling } from "./p2p-signaling";
 import { STORAGE_TIERS, getTierById, calculateRewardPerChallenge } from "./services/storage-tiers";
 import { agentWSManager } from "./services/agent-ws-manager";
 import { WebSocketServer } from "ws";
-import { insertFileSchema, insertValidatorBlacklistSchema, insertEncodingJobSchema, insertEncoderNodeSchema, type ComputeNode } from "@shared/schema";
+import { insertFileSchema, insertValidatorBlacklistSchema, insertEncodingJobSchema, insertEncoderNodeSchema, poolCodes, type ComputeNode } from "@shared/schema";
 import { z } from "zod";
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { getIPFSClient } from "./services/ipfs-client";
 import { logRoutes, logWS, logEncoding, logWoT, logCompute } from "./logger";
+import { db } from "./db";
+import { eq, and, isNull } from "drizzle-orm";
 import { computeService, type WorkloadType, type JobManifest } from "./services/compute-service";
 import { computeWalletService } from "./services/compute-wallet-service";
 import { Phase2AChallengeService } from "./services/phase2a-challenge-service";
@@ -6094,6 +6096,90 @@ export async function registerRoutes(
     } catch (err: any) {
       res.status(502).json({ error: "Proxy to /api/compute/inference failed: " + err.message });
     }
+  });
+
+  // ============================================================
+  // Pool Codes — Cross-network GPU pool joining (like Zoom codes)
+  // ============================================================
+
+  // POST /api/pool/create — Generate a 6-character pool code
+  app.post("/api/pool/create", requireAnyAuth, async (req, res) => {
+    try {
+      const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I/O/0/1 to avoid confusion
+      let code = "";
+      for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+
+      const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+      const port = process.env.PORT || "5000";
+
+      // Generate an API key for the joiner
+      const { randomBytes } = await import("crypto");
+      const apiKey = randomBytes(32).toString("hex");
+      await storage.createAgentKey(apiKey, req.authenticatedUser!, `pool-code-${code}`);
+
+      await db.insert(poolCodes).values({
+        code,
+        creatorNodeId: req.body.nodeId || "coordinator",
+        creatorUsername: req.authenticatedUser!,
+        coordinatorUrl: `http://${req.ip || "localhost"}:${port}`,
+        apiKey,
+        expiresAt,
+      });
+
+      res.json({
+        code,
+        expiresAt,
+        expiresIn: 300,
+        message: `Share this code: ${code}. Expires in 5 minutes.`,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/pool/join — Join a pool using a 6-character code
+  app.post("/api/pool/join", async (req, res) => {
+    try {
+      const { code } = z.object({ code: z.string().length(6) }).parse(req.body);
+
+      const [poolCode] = await db.select().from(poolCodes)
+        .where(and(eq(poolCodes.code, code.toUpperCase()), isNull(poolCodes.usedAt)));
+
+      if (!poolCode) {
+        res.status(404).json({ error: "Invalid or expired code" });
+        return;
+      }
+
+      if (poolCode.expiresAt.getTime() < Date.now()) {
+        res.status(410).json({ error: "Code expired" });
+        return;
+      }
+
+      // Mark as used
+      await db.update(poolCodes)
+        .set({ usedBy: req.body.username || "anonymous", usedAt: new Date() })
+        .where(eq(poolCodes.code, code.toUpperCase()));
+
+      res.json({
+        coordinatorUrl: poolCode.coordinatorUrl,
+        apiKey: poolCode.apiKey,
+        message: "Connected! Register your GPU with the coordinator.",
+      });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // GET /api/pool/code/:code — Check if a code is valid
+  app.get("/api/pool/code/:code", async (req, res) => {
+    const [poolCode] = await db.select().from(poolCodes)
+      .where(eq(poolCodes.code, req.params.code.toUpperCase()));
+
+    if (!poolCode || poolCode.expiresAt.getTime() < Date.now() || poolCode.usedAt) {
+      res.json({ valid: false });
+      return;
+    }
+    res.json({ valid: true, expiresIn: Math.round((poolCode.expiresAt.getTime() - Date.now()) / 1000) });
   });
 
   // ============================================================

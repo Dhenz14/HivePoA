@@ -973,6 +973,21 @@ export const insertInferenceRoutingLogSchema = createInsertSchema(inferenceRouti
 export type InferenceRoutingLog = typeof inferenceRoutingLog.$inferSelect;
 export type InsertInferenceRoutingLog = z.infer<typeof insertInferenceRoutingLogSchema>;
 
+// Pool Codes — 6-character codes for cross-network pool joining (like Zoom meeting codes)
+export const poolCodes = pgTable("pool_codes", {
+  code: varchar("code", { length: 6 }).primaryKey(), // e.g., "7X4K2M"
+  creatorNodeId: varchar("creator_node_id").notNull(),
+  creatorUsername: text("creator_username").notNull(),
+  coordinatorUrl: text("coordinator_url").notNull(), // e.g., "http://192.168.0.101:5000"
+  apiKey: text("api_key"), // optional pre-generated API key for the joiner
+  expiresAt: timestamp("expires_at").notNull(),
+  usedBy: text("used_by"), // Hive username that used this code
+  usedAt: timestamp("used_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export type PoolCode = typeof poolCodes.$inferSelect;
+
 // Compute Jobs - Typed workload execution requests
 export const computeJobs = pgTable("compute_jobs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
