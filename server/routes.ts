@@ -5081,8 +5081,24 @@ export async function registerRoutes(
         cpuPct: z.number().min(0).max(100).optional(),
         ramPct: z.number().min(0).max(100).optional(),
         queueDepth: z.number().int().min(0).optional(),
+        // CPU+RAM: persist static fields from heartbeat (self-upgrade to CPU-capable)
+        cpuCores: z.number().int().min(0).optional(),
+        ramGb: z.number().int().min(0).optional(),
+        contributionTypes: z.string().optional(),
+        ramUsedMb: z.number().nonnegative().optional(),
+        ramTotalMb: z.number().nonnegative().optional(),
       }).parse(req.body);
       await computeService.heartbeat(node.id, heartbeat.jobsInProgress);
+
+      // Persist CPU/RAM static fields if sent (nodes self-upgrade to CPU-capable)
+      if (heartbeat.cpuCores !== undefined || heartbeat.ramGb !== undefined || heartbeat.contributionTypes !== undefined) {
+        const updates: any = {};
+        if (heartbeat.cpuCores !== undefined) updates.cpuCores = heartbeat.cpuCores;
+        if (heartbeat.ramGb !== undefined) updates.ramGb = heartbeat.ramGb;
+        if (heartbeat.contributionTypes !== undefined) updates.contributionTypes = heartbeat.contributionTypes;
+        await storage.updateComputeNode(node.id, updates).catch(() => {});
+      }
+
       // Phase 4: Forward rich telemetry to pool router for sub-second pressure visibility
       if (poolRouter) {
         poolRouter.updateNodeFromHeartbeat(heartbeat.nodeInstanceId, {
@@ -5093,6 +5109,9 @@ export async function registerRoutes(
           cpuPct: heartbeat.cpuPct,
           ramPct: heartbeat.ramPct,
           queueDepth: heartbeat.queueDepth,
+          cpuCores: heartbeat.cpuCores,
+          ramGb: heartbeat.ramGb,
+          contributionTypes: heartbeat.contributionTypes,
         });
       }
       res.json({ ok: true });

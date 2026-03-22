@@ -637,6 +637,7 @@ export class PoolRouterService {
   updateNodeFromHeartbeat(nodeInstanceId: string, data: {
     vramUsedMb?: number; vramTotalMb?: number; gpuUtilizationPct?: number;
     gpuTempC?: number; cpuPct?: number; ramPct?: number; queueDepth?: number;
+    cpuCores?: number; ramGb?: number; contributionTypes?: string;
   }): void {
     const node = Array.from(this.nodes.values()).find(n => n.nodeInstanceId === nodeInstanceId);
     if (!node) return;
@@ -647,6 +648,13 @@ export class PoolRouterService {
     if (data.cpuPct !== undefined) node.cpuPct = data.cpuPct;
     if (data.ramPct !== undefined) node.ramPct = data.ramPct;
     if (data.queueDepth !== undefined) node.queueDepth = data.queueDepth;
+    // CPU+RAM: update static fields from heartbeat (node self-upgrade)
+    if (data.cpuCores !== undefined) node.cpuCores = data.cpuCores;
+    if (data.ramGb !== undefined) node.ramGb = data.ramGb;
+    if (data.contributionTypes !== undefined) {
+      node.contributionTypes = this.parseContributionTypes(data.contributionTypes);
+      node.maxConcurrentCpuJobs = Math.max(1, Math.floor(node.cpuCores / 2));
+    }
   }
 
   /** Phase 5: Get pressure summary for Hive-AI decision-making. */
