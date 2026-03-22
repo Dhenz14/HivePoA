@@ -5044,6 +5044,7 @@ export async function registerRoutes(
         inferenceEndpoint: z.string().url().optional(), // e.g., "http://192.168.1.50:5001"
         quantLevel: z.string().max(20).optional(), // GGUF quant: Q8_0, Q6_K, Q5_K_M, Q4_K_M, AWQ, FP16
         contributionTypes: z.string().default("gpu"), // "gpu", "cpu", "ram", or "gpu,cpu,ram"
+        encryptionPublicKey: z.string().max(200).optional(), // X25519 base64 for E2EE blind relay
       });
       const data = schema.parse(req.body);
       const node = await computeService.registerNode({
@@ -5922,7 +5923,23 @@ export async function registerRoutes(
         timestamp: z.number().optional(), // Unix ms
         hiveUsername: z.string().max(50).optional(),
         signature: z.string().max(200).optional(),
-      }).refine(d => d.prompt || d.messages, { message: "Either prompt or messages is required" });
+        // E2EE blind relay — opaque encrypted envelope (coordinator cannot read)
+        encrypted: z.object({
+          ciphertext: z.string(), // base64 AEAD-encrypted payload
+          recipients: z.array(z.object({
+            nodeId: z.string(),
+            wrappedKey: z.string(), // base64 wrapped content key for this node
+          })).optional(), // multi-recipient fan-out for Best-of-N
+          wrappedKey: z.string().optional(), // single-recipient shorthand
+          ephemeralPublicKey: z.string().optional(), // sender ephemeral X25519
+          nonce: z.string().optional(), // AEAD nonce
+          senderResponseKey: z.string().optional(), // for encrypting response back
+          requestId: z.string().optional(),
+          expiresAt: z.string().optional(), // ISO-8601
+          protocolVersion: z.number().default(1),
+        }).optional(),
+        targetNodeId: z.string().optional(), // route to specific node (for E2EE)
+      }).refine(d => d.prompt || d.messages || d.encrypted, { message: "Either prompt, messages, or encrypted is required" });
       const data = schema.parse(req.body);
       const start = Date.now();
 
@@ -5956,6 +5973,38 @@ export async function registerRoutes(
       const hiveAiUrl = process.env.HIVE_AI_URL || "http://localhost:5001";
       const ollamaUrl = process.env.OLLAMA_URL || "http://localhost:11434";
       const vllmUrl = process.env.VLLM_URL || "http://localhost:8100";
+
+      // E2EE Blind Relay: forward encrypted envelope opaquely to target node
+      if (data.encrypted && poolRouter?.isAvailable()) {
+        try {
+          // Route to specific node if targetNodeId set, otherwise best available
+          const result = await poolRouter!.routeInference({
+            prompt: "__encrypted__", // placeholder — router needs a string, content is opaque
+            max_tokens: data.max_tokens,
+            temperature: data.temperature,
+            mode: "pool",
+            encrypted: data.encrypted,
+            targetNodeId: data.targetNodeId,
+          } as any);
+          const requestId = req.headers["x-request-id"] || "";
+          if (requestId) res.setHeader("X-Request-ID", requestId);
+          res.json({
+            encryptedResponse: result.response.encryptedResponse || result.response,
+            latency_ms: result.latencyMs,
+            routed_to: result.nodeInstanceId,
+            attempts: result.attemptsUsed,
+            e2ee: true,
+          });
+          return;
+        } catch (encErr: any) {
+          if (encErr.message?.includes("No healthy")) {
+            res.status(503).json({ error: { code: "POOL_OVERLOADED", message: encErr.message } });
+            return;
+          }
+          res.status(504).json({ error: { code: "E2EE_ROUTING_FAILED", message: encErr.message } });
+          return;
+        }
+      }
 
       // Priority 0: Pool mode — route to best available GPU node in the pool
       if (data.mode === "pool" || (data.mode === "auto" && poolRouter?.isAvailable())) {

@@ -949,6 +949,9 @@ export const computeNodes = pgTable("compute_nodes", {
   immunityExpiresAt: timestamp("immunity_expires_at"), // 24h grace period for new nodes
   // CPU+RAM pooling: what resources this node contributes
   contributionTypes: text("contribution_types").default("gpu"), // "gpu", "cpu", "ram", or "gpu,cpu,ram"
+  // E2EE: node encryption public key for blind relay (X25519, base64-encoded)
+  encryptionPublicKey: text("encryption_public_key"), // registered on node setup, used for envelope encryption
+  encryptionKeyVersion: integer("encryption_key_version").default(1), // for key rotation
   // State
   jobsInProgress: integer("jobs_in_progress").notNull().default(0),
   lastHeartbeatAt: timestamp("last_heartbeat_at"),

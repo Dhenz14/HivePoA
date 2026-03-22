@@ -54,6 +54,9 @@ interface PoolNodeState {
   ramGb: number;
   cpuJobsInFlight: number;
   maxConcurrentCpuJobs: number;
+  // E2EE blind relay
+  encryptionPublicKey: string | null;
+  encryptionKeyVersion: number;
 }
 
 interface RoutingResult {
@@ -91,6 +94,8 @@ interface PoolStats {
     ramPct: number;
     cpuJobsInFlight: number;
     maxConcurrentCpuJobs: number;
+    encryptionPublicKey: string | null;
+    encryptionKeyVersion: number;
   }[];
   healthyCount: number;
   totalVramGb: number;
@@ -191,6 +196,9 @@ export class PoolRouterService {
             ramGb: (node as any).ramGb ?? 0,
             cpuJobsInFlight: 0,
             maxConcurrentCpuJobs: Math.max(1, Math.floor(((node as any).cpuCores ?? 4) / 2)), // 50% of cores
+            // E2EE
+            encryptionPublicKey: (node as any).encryptionPublicKey ?? null,
+            encryptionKeyVersion: (node as any).encryptionKeyVersion ?? 1,
           });
           // Phase 2: initialize inFlight tracking for this node
           this.inFlightTracking.set(node.id, new Map());
@@ -397,7 +405,7 @@ export class PoolRouterService {
   }
 
   /** Route an inference request with failover. */
-  async routeInference(body: { prompt?: string; messages?: { role: string; content: string }[]; max_tokens?: number; temperature?: number; mode?: string }): Promise<RoutingResult> {
+  async routeInference(body: { prompt?: string; messages?: { role: string; content: string }[]; max_tokens?: number; temperature?: number; mode?: string; encrypted?: any; targetNodeId?: string }): Promise<RoutingResult> {
     const candidates = this.selectNodes();
     if (candidates.length === 0) {
       throw new Error("No healthy pool nodes available");
@@ -445,7 +453,8 @@ export class PoolRouterService {
         } catch { /* try next format */ }
 
         // Attempt 2: OpenAI-compatible /v1/chat/completions (llama-server, vLLM)
-        if (!data) {
+        // Skip for encrypted envelopes — those are Hive-AI format only
+        if (!data && !body.encrypted) {
           try {
             const controller2 = new AbortController();
             const timeout2 = setTimeout(() => controller2.abort(), INFERENCE_TIMEOUT_MS);
@@ -601,6 +610,8 @@ export class PoolRouterService {
           ramPct: n.ramPct,
           cpuJobsInFlight: n.cpuJobsInFlight,
           maxConcurrentCpuJobs: n.maxConcurrentCpuJobs,
+          encryptionPublicKey: n.encryptionPublicKey,
+          encryptionKeyVersion: n.encryptionKeyVersion,
         };
       }),
       healthyCount: nodeList.filter(n => n.healthy).length,
