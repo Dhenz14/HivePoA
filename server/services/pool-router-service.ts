@@ -319,6 +319,8 @@ export class PoolRouterService {
       if (!n.healthy) return false;
       // Filter by resource contribution type
       if (!n.contributionTypes.includes(resourceType)) return false;
+      // CPU nodes must have a cpuEndpointUrl to actually serve CPU workloads
+      if (resourceType === "cpu" && !n.cpuEndpointUrl) return false;
       // Capacity check per resource type
       if (resourceType === "gpu" && n.inFlightRequests >= n.maxConcurrentInference) return false;
       if (resourceType === "cpu" && n.cpuJobsInFlight >= n.maxConcurrentCpuJobs) return false;
