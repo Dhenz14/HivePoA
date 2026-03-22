@@ -5864,6 +5864,11 @@ export async function registerRoutes(
   //   1. Hive-AI /api/chat (smart routing, RAG, LoRA adapters) — the brain
   //   2. vLLM cluster (community GPU pool) — for high-intel mode
   //   3. Ollama direct (raw local fallback) — always works
+  // Signed nonce replay cache — LRU, evicts oldest 20% when full
+  const inferenceNonceCache = new Map<string, number>(); // nonce → timestamp
+  const NONCE_CACHE_MAX = 10000;
+  const NONCE_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
+
   app.post("/api/compute/inference", async (req, res) => {
     try {
       const schema = z.object({
@@ -5876,9 +5881,41 @@ export async function registerRoutes(
         max_tokens: z.number().int().min(1).max(16384).default(2048),
         temperature: z.number().min(0).max(2).default(0.7),
         model: z.string().optional(),
+        // Signed challenge nonces — optional, verified when present
+        nonce: z.string().max(128).optional(),
+        timestamp: z.number().optional(), // Unix ms
+        hiveUsername: z.string().max(50).optional(),
+        signature: z.string().max(200).optional(),
       }).refine(d => d.prompt || d.messages, { message: "Either prompt or messages is required" });
       const data = schema.parse(req.body);
       const start = Date.now();
+
+      // Verify signed nonce if present (replay attack prevention)
+      if (data.nonce && data.signature && data.hiveUsername) {
+        // Check expiry (5 min window)
+        if (data.timestamp && Math.abs(Date.now() - data.timestamp) > NONCE_EXPIRY_MS) {
+          res.status(400).json({ error: { code: "NONCE_EXPIRED", message: "Request timestamp too old (>5 min)" } });
+          return;
+        }
+        // Check replay
+        if (inferenceNonceCache.has(data.nonce)) {
+          res.status(409).json({ error: { code: "NONCE_REPLAY", message: "Nonce already used" } });
+          return;
+        }
+        // Track nonce (LRU eviction)
+        if (inferenceNonceCache.size >= NONCE_CACHE_MAX) {
+          const toDelete = Math.floor(NONCE_CACHE_MAX * 0.2);
+          const keys = inferenceNonceCache.keys();
+          for (let i = 0; i < toDelete; i++) {
+            const k = keys.next().value;
+            if (k) inferenceNonceCache.delete(k);
+          }
+        }
+        inferenceNonceCache.set(data.nonce, Date.now());
+        // Note: Hive posting key signature verification requires dhive and on-chain lookup.
+        // For now, nonce + timestamp + replay cache provides protection.
+        // Full Hive signature verification will be added in Level 3 crypto auth.
+      }
 
       const hiveAiUrl = process.env.HIVE_AI_URL || "http://localhost:5001";
       const ollamaUrl = process.env.OLLAMA_URL || "http://localhost:11434";
