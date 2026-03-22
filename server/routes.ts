@@ -35,6 +35,7 @@ import { TrustRegistryService } from "./services/trust-registry";
 import { SpiritBombService } from "./services/spirit-bomb-service";
 import { hiveSimulator as hiveClientForTrust } from "./services/hive-simulator";
 import { createProofHash } from "./services/poa-crypto";
+import { optionalHiveSignature } from "./services/hive-signature-auth";
 
 // Extend Express Request to carry authenticated user
 declare global {
@@ -6218,7 +6219,8 @@ export async function registerRoutes(
   });
 
   // Sprint 2: POST /api/compute/quality-report — Receive Best-of-N quality scores from Hive-AI
-  app.post("/api/compute/quality-report", requireAnyAuth, async (req: any, res: any) => {
+  // Level 2: API key auth. Level 3: optional Hive signature verification (if _auth present).
+  app.post("/api/compute/quality-report", requireAnyAuth, optionalHiveSignature, async (req: any, res: any) => {
     try {
       const schema = z.object({
         candidates: z.array(z.object({
@@ -6237,7 +6239,7 @@ export async function registerRoutes(
   });
 
   // Sprint 2: POST /api/compute/verification-report — Receive sandbox verification results
-  app.post("/api/compute/verification-report", requireAnyAuth, async (req: any, res: any) => {
+  app.post("/api/compute/verification-report", requireAnyAuth, optionalHiveSignature, async (req: any, res: any) => {
     try {
       const schema = z.object({
         node_id: z.string(),
@@ -6255,7 +6257,7 @@ export async function registerRoutes(
   });
 
   // Sprint 2: POST /api/compute/eval-breakdown — Receive per-node eval domain scores
-  app.post("/api/compute/eval-breakdown", requireAnyAuth, async (req: any, res: any) => {
+  app.post("/api/compute/eval-breakdown", requireAnyAuth, optionalHiveSignature, async (req: any, res: any) => {
     try {
       const schema = z.object({
         model_version: z.string(),
