@@ -5075,6 +5075,50 @@ export async function registerRoutes(
     }
   });
 
+  // POST /api/compute/workers/departing — Graceful departure with timed drain
+  // Node announces it's shutting down. Router stops sending new requests immediately,
+  // in-flight requests finish naturally. After drain_seconds, node goes offline.
+  app.post("/api/compute/workers/departing", async (req: any, res: any) => {
+    try {
+      const schema = z.object({
+        node_id: z.string(),
+        drain_seconds: z.number().int().min(0).max(300).default(30),
+      });
+      const data = schema.parse(req.body);
+
+      // Find node by instanceId
+      const nodes = await storage.getPoolReadyNodes();
+      const node = nodes.find((n: any) => n.nodeInstanceId === data.node_id || n.id === data.node_id);
+      if (!node) {
+        res.status(404).json({ error: "Node not found" });
+        return;
+      }
+
+      // Mark as draining in DB (stops new job claims)
+      await computeService.drainNode(node.id);
+
+      // Tell pool router to stop routing to this node immediately
+      if (poolRouter) {
+        poolRouter.updateNodeFromHeartbeat(node.nodeInstanceId, { gpuUtilizationPct: 100 });
+      }
+
+      // Schedule offline after drain period
+      if (data.drain_seconds > 0) {
+        setTimeout(async () => {
+          try {
+            await storage.updateComputeNode(node.id, { status: "offline" } as any);
+            logCompute.info({ nodeId: node.id, instanceId: node.nodeInstanceId }, "Node departed after drain period");
+          } catch { /* best effort */ }
+        }, data.drain_seconds * 1000);
+      }
+
+      logCompute.info({ nodeId: node.id, drainSeconds: data.drain_seconds }, "Node departing gracefully");
+      res.json({ ok: true, status: "departing", drainSeconds: data.drain_seconds });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
   // GET /api/compute/nodes — List all compute nodes (public)
   app.get("/api/compute/nodes", async (_req, res) => {
     try {
