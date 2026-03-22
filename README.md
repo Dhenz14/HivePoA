@@ -126,27 +126,29 @@ Any machine can contribute CPU and RAM to the pool for embedding, reranking, and
 - Reranking (re-score search results for relevance) — ~200ms per batch
 - Preprocessing, crawling, batch jobs
 
-**Setup:**
+**Setup (30 seconds — single script, no full Hive-AI install needed):**
 
 ```bash
-# 1. Clone and install Hive-AI (the CPU worker backend)
-git clone https://github.com/Dhenz14/Hive-AI.git
-cd Hive-AI
-pip install -r requirements.txt
+# 1. Install dependencies (one time, ~30 seconds)
+pip install flask sentence-transformers psutil requests
 
-# 2. Set environment variables
+# 2. Download the standalone CPU worker script
+curl -O https://raw.githubusercontent.com/Dhenz14/Hive-AI/main/scripts/cpu_worker.py
+
+# 3. Set your pool credentials and run
 export HIVEPOA_URL=http://<COORDINATOR_IP>:5000
 export HIVEPOA_API_KEY=<your-api-key>
-
-# 3. Start the worker
-bash scripts/start_chat_rag.sh
+export HIVEPOA_NODE_ID=<your-node-id>
+python cpu_worker.py
 ```
 
-The worker automatically:
-- Registers with HivePoA including `cpuCores`, `ramGb`, `contributionTypes`
-- Sends heartbeats with CPU/RAM telemetry every 30s
-- Serves `/api/compute/embedding` and `/api/compute/rerank` endpoints
-- Reports its `cpuEndpointUrl` so HivePoA routes CPU jobs correctly
+**What it does (zero configuration):**
+- Serves `/api/compute/embedding` (BGE-M3, 1024 dims) and `/api/compute/rerank` (cross-encoder)
+- Auto-heartbeats to HivePoA every 30s with `cpuEndpointUrl`, `contributionTypes`, CPU/RAM telemetry
+- Downloads embedding + reranking models on first run (~430MB, cached in `~/.cache/huggingface/`)
+- Auto-detects GPU via `nvidia-smi` — if found, adds `gpu_inference` to contribution types
+- ~2.8GB memory footprint, needs 2+ CPU cores
+- **Completely standalone** — zero imports from the rest of Hive-AI
 
 **Resource defaults:** CPU workers share 50% of their cores by default (e.g., 8-core machine allows 4 concurrent CPU jobs). Configurable via the dashboard slider.
 
