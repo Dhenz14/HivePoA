@@ -83,7 +83,17 @@ const uploadLimiter = rateLimit({
   message: { message: "Too many uploads, please try again later" },
 });
 
+const inferenceLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 2000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Inference rate limit reached, please try again later" },
+});
+
 app.use("/api/", globalLimiter);
+app.use("/api/compute/inference", inferenceLimiter);
+app.use("/api/gpu/inference", inferenceLimiter);
 app.use("/api/validator/login", authLimiter);
 app.use("/api/validator/validate-session", authLimiter);
 app.use("/api/upload/", uploadLimiter);

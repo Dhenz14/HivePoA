@@ -30,6 +30,7 @@ interface PoolNodeState {
   inFlightRequests: number;
   gpuModel: string;
   gpuVramGb: number;
+  hivePower: number;
 }
 
 interface RoutingResult {
@@ -131,6 +132,7 @@ export class PoolRouterService {
             inFlightRequests: 0,
             gpuModel: node.gpuModel,
             gpuVramGb: node.gpuVramGb,
+            hivePower: (node as any).hivePower ?? 0,
           });
         }
       }
@@ -234,7 +236,9 @@ export class PoolRouterService {
       const isImmune = now < node.immuneUntil;
       const utilFactor = 1 - (node.gpuUtilizationPct / 100);
       const loadFactor = 1 / (1 + node.inFlightRequests);
-      let weight = node.emaScore * utilFactor * loadFactor;
+      // Stake bonus: logarithmic to prevent plutocracy. 100 HP = 1x, 1000 HP = 1.3x, 10000 HP = 1.6x
+      const stakeFactor = 1 + Math.log2(Math.max(node.hivePower, 100) / 100) * 0.1;
+      let weight = node.emaScore * utilFactor * loadFactor * stakeFactor;
 
       // Immune nodes get a floor weight
       if (isImmune) weight = Math.max(weight, IMMUNITY_FLOOR);
@@ -342,8 +346,11 @@ export class PoolRouterService {
           const latencyMs = Date.now() - startTime;
 
           // Update EMA score (success)
-          const sampleScore = Math.max(0.1, Math.min(1.0, 1.0 - (latencyMs / MAX_EXPECTED_LATENCY_MS)));
-          this.updateEma(node, sampleScore);
+          // Skip EMA update for cached responses (< 50ms = Hive-AI cache hit, not real GPU work)
+          if (latencyMs >= 50) {
+            const sampleScore = Math.max(0.1, Math.min(1.0, 1.0 - (latencyMs / MAX_EXPECTED_LATENCY_MS)));
+            this.updateEma(node, sampleScore);
+          }
 
           // Log routing decision
           this.logRouting(node.nodeId, candidates.slice(1).map(n => n.nodeId), latencyMs, true, null, attempt > 0 ? "failover" : "pool");
@@ -411,6 +418,7 @@ export class PoolRouterService {
         utilization: n.gpuUtilizationPct,
         inFlight: n.inFlightRequests,
         immune: now < n.immuneUntil,
+        hivePower: Math.round(n.hivePower),
       })),
       healthyCount: nodeList.filter(n => n.healthy).length,
       totalVramGb: nodeList.filter(n => n.healthy).reduce((sum, n) => sum + n.gpuVramGb, 0),

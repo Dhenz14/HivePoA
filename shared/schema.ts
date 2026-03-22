@@ -935,6 +935,8 @@ export const computeNodes = pgTable("compute_nodes", {
   workerVersion: text("worker_version"),
   // Economics
   pricePerHourHbd: text("price_per_hour_hbd").notNull().default("0.50"),
+  hivePower: real("hive_power").notNull().default(0), // Hive Power at last check (for stake-weighted routing)
+  hivePowerUpdatedAt: timestamp("hive_power_updated_at"), // when HP was last fetched
   // Trust
   reputationScore: integer("reputation_score").notNull().default(0), // 0-100, starts at 0 (warm-up)
   totalJobsCompleted: integer("total_jobs_completed").notNull().default(0),
