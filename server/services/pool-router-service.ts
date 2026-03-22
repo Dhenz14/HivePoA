@@ -298,13 +298,18 @@ export class PoolRouterService {
                        : 1 - (vramPressure * 0.5);   // linear below 80%
 
       // Phase 3: Latency — penalize nodes consistently slower than the pool
+      // More aggressive dampening for outlier nodes (Issue #6: 2.4x slower node
+      // was still getting ~25% of probes instead of ~15%)
       let latencyFactor = 1.0;
       const nodeStats = latencyStats.getStatistics(node.nodeId);
       const globalStats = latencyStats.getGlobalStatistics();
       if (nodeStats && nodeStats.count >= 5 && globalStats && globalStats.stdDev > 0) {
         const nodeVsGlobal = (nodeStats.mean - globalStats.mean) / globalStats.stdDev;
-        if (nodeVsGlobal > 1.0) latencyFactor = 0.6;       // 1+ stdDev slower
-        else if (nodeVsGlobal > 0.5) latencyFactor = 0.8;   // somewhat slower
+        if (nodeVsGlobal > 2.0) latencyFactor = 0.15;      // 2+ stdDev slower = near-dead weight
+        else if (nodeVsGlobal > 1.0) latencyFactor = 0.35;  // 1+ stdDev slower = heavy penalty
+        else if (nodeVsGlobal > 0.5) latencyFactor = 0.7;   // somewhat slower = moderate penalty
+        // Bonus for fast nodes: nodes faster than average get a small boost
+        else if (nodeVsGlobal < -0.5) latencyFactor = 1.2;  // faster than average = slight boost
       }
 
       // Phase 4: Thermal throttling — penalize hot GPUs
