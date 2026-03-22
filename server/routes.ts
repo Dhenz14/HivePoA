@@ -5088,7 +5088,18 @@ export async function registerRoutes(
         // CPU+RAM: persist static fields from heartbeat (self-upgrade to CPU-capable)
         cpuCores: z.number().int().min(0).optional(),
         ramGb: z.number().int().min(0).optional(),
-        contributionTypes: z.string().optional(),
+        // Accept contributionTypes as string ("gpu,cpu,ram") or array (["gpu_inference","embedding"])
+        contributionTypes: z.union([z.string(), z.array(z.string())]).optional().transform(val => {
+          if (!val) return undefined;
+          // Normalize array to comma-separated string, map Hive-AI names to our types
+          const arr = Array.isArray(val) ? val : [val];
+          const mapped = arr.map(s => {
+            if (s === "gpu_inference") return "gpu";
+            if (s === "embedding" || s === "reranking") return "cpu";
+            return s;
+          });
+          return Array.from(new Set(mapped)).join(","); // deduplicate
+        }),
         ramUsedMb: z.number().nonnegative().optional(),
         ramTotalMb: z.number().nonnegative().optional(),
       }).parse(req.body);
