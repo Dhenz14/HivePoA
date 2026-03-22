@@ -117,6 +117,47 @@ scripts\setup_computer_b.bat
 # Enter Computer A's IP when prompted
 ```
 
+### Contribute Your CPU + RAM (No GPU Required)
+
+Any machine can contribute CPU and RAM to the pool for embedding, reranking, and batch processing. You don't need a GPU — a laptop, server, or old desktop works.
+
+**What CPU workers do:**
+- Embedding (sentence vectors for semantic search) — ~30ms per batch
+- Reranking (re-score search results for relevance) — ~200ms per batch
+- Preprocessing, crawling, batch jobs
+
+**Setup:**
+
+```bash
+# 1. Clone and install Hive-AI (the CPU worker backend)
+git clone https://github.com/Dhenz14/Hive-AI.git
+cd Hive-AI
+pip install -r requirements.txt
+
+# 2. Set environment variables
+export HIVEPOA_URL=http://<COORDINATOR_IP>:5000
+export HIVEPOA_API_KEY=<your-api-key>
+
+# 3. Start the worker
+bash scripts/start_chat_rag.sh
+```
+
+The worker automatically:
+- Registers with HivePoA including `cpuCores`, `ramGb`, `contributionTypes`
+- Sends heartbeats with CPU/RAM telemetry every 30s
+- Serves `/api/compute/embedding` and `/api/compute/rerank` endpoints
+- Reports its `cpuEndpointUrl` so HivePoA routes CPU jobs correctly
+
+**Resource defaults:** CPU workers share 50% of their cores by default (e.g., 8-core machine allows 4 concurrent CPU jobs). Configurable via the dashboard slider.
+
+**What you earn:** CPU jobs pay less than GPU inference but any machine can contribute. Earnings are proportional to work completed.
+
+| Resource | What You Need | What You Earn |
+|----------|--------------|---------------|
+| GPU only | NVIDIA/AMD/Intel GPU, 8GB+ VRAM | Highest (inference) |
+| CPU only | Any machine, 4+ cores | Lower (embedding, reranking) |
+| GPU + CPU + RAM | GPU machine running Hive-AI | Both GPU and CPU rewards |
+
 ### Pool Routing (Battle-Tested)
 
 2,959+ requests routed across 2 GPUs with 100% success rate:
