@@ -129,18 +129,20 @@ Any machine can contribute CPU and RAM to the pool for embedding, reranking, and
 **Setup (30 seconds — single script, no full Hive-AI install needed):**
 
 ```bash
-# 1. Install dependencies (one time, ~30 seconds)
+# 1. Install dependencies
 pip install flask sentence-transformers psutil requests
 
-# 2. Download the standalone CPU worker script
+# 2. Download the standalone CPU worker
 curl -O https://raw.githubusercontent.com/Dhenz14/Hive-AI/main/scripts/cpu_worker.py
 
-# 3. Set your pool credentials and run
+# 3. Run
 export HIVEPOA_URL=http://<COORDINATOR_IP>:5000
 export HIVEPOA_API_KEY=<your-api-key>
 export HIVEPOA_NODE_ID=<your-node-id>
 python cpu_worker.py
 ```
+
+**Windows users:** Run in WSL (Ubuntu). All Spirit Bomb development happens in WSL — see [Development](#development) for setup.
 
 **What it does (zero configuration):**
 - Serves `/api/compute/embedding` (BGE-M3, 1024 dims) and `/api/compute/rerank` (cross-encoder)
