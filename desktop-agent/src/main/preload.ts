@@ -15,4 +15,19 @@ contextBridge.exposeInMainWorld('spkAgent', {
   getAuthToken: () => ipcRenderer.invoke('get-api-auth-token'),
   // Keychain auth
   openKeychainAuth: () => ipcRenderer.invoke('open-keychain-auth'),
+  // GPU Contribution
+  gpuGetStatus: () => ipcRenderer.invoke('gpu-get-status'),
+  gpuStart: () => ipcRenderer.invoke('gpu-start'),
+  gpuStop: () => ipcRenderer.invoke('gpu-stop'),
+  gpuPause: () => ipcRenderer.invoke('gpu-pause'),
+  gpuResume: () => ipcRenderer.invoke('gpu-resume'),
+  gpuGamingMode: () => ipcRenderer.invoke('gpu-gaming-mode'),
+  gpuUpdateConfig: (updates: Record<string, unknown>) => ipcRenderer.invoke('gpu-update-config', updates),
+  // GPU event listeners
+  onGpuNotification: (callback: (data: { type: string; message: string }) => void) => {
+    ipcRenderer.on('gpu-notification', (_event, data) => callback(data));
+  },
+  onGpuStateChange: (callback: (data: { from: string; to: string }) => void) => {
+    ipcRenderer.on('gpu-state-change', (_event, data) => callback(data));
+  },
 });

@@ -46,7 +46,11 @@ export interface GpuContributionStatus {
     mode: "local" | "pool" | "cluster" | "lend";
     vramUtilization: number;
     model: string;
+    maxModelLen: number;
     autoGamingMode: boolean;
+    scheduleEnabled: boolean;
+    scheduleStart: string;
+    scheduleEnd: string;
     lendTargetIp: string | null;
   };
   uptimeMs: number;

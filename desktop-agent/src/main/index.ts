@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, Tray, Menu, nativeImage, dialog, ipcMain, shell, Notification } from 'electron';
 import * as path from 'path';
 import { KuboManager } from './kubo';
 import { ApiServer } from './api';
@@ -14,6 +14,8 @@ import { AutoPinner } from './auto-pinner';
 import { TreasurySigner } from './treasury-signer';
 import { WalletManager } from './wallet-manager';
 import { initializeFullServer, shutdownFullServer } from './server-init';
+import { GpuContributionManager } from './gpu-contribution';
+import { createGpuRoutes } from './gpu-api';
 
 // ─── Global error handlers — prevent silent crashes ─────────────────────────
 process.on('uncaughtException', (error) => {
@@ -34,6 +36,7 @@ let apiServer: ApiServer;
 let configStore: ConfigStore;
 let autoUpdater: AutoUpdater;
 let walletManager: WalletManager;
+let gpuManager: GpuContributionManager | null = null;
 
 // Legacy mode
 let agentWS: AgentWSClient | null = null;
@@ -96,17 +99,69 @@ function createTray(): void {
 function updateTrayMenu(status: string): void {
   if (!tray) return;
 
-  const contextMenu = Menu.buildFromTemplate([
+  const gpuState = gpuManager ? (gpuManager as any).state as string : 'stopped';
+  const gpuRunning = gpuState === 'running';
+  const gpuPaused = gpuState === 'paused' || gpuState === 'gaming_mode';
+  const gpuStopped = gpuState === 'stopped' || gpuState === 'error';
+
+  const gpuLabels: Record<string, string> = {
+    running: 'GPU: Contributing',
+    paused: 'GPU: Paused',
+    gaming_mode: 'GPU: Gaming Mode',
+    starting: 'GPU: Starting...',
+    draining: 'GPU: Draining...',
+    error: 'GPU: Error',
+    stopped: 'GPU: Stopped',
+    checking_deps: 'GPU: Checking...',
+  };
+
+  const template: Electron.MenuItemConstructorOptions[] = [
     { label: `Status: ${status}`, enabled: false },
+    { label: gpuLabels[gpuState] || 'GPU: Unknown', enabled: false },
+    { type: 'separator' },
+  ];
+
+  // GPU control actions
+  if (gpuStopped) {
+    template.push({
+      label: 'Start GPU',
+      click: () => { gpuManager?.start().catch(() => {}); },
+    });
+  }
+  if (gpuRunning) {
+    template.push(
+      { label: 'Pause GPU', click: () => { gpuManager?.pause().catch(() => {}); } },
+      { label: 'Gaming Mode', click: () => { gpuManager?.enterGamingMode().catch(() => {}); } },
+    );
+  }
+  if (gpuPaused) {
+    template.push({
+      label: 'Resume GPU',
+      click: () => { gpuManager?.resume().catch(() => {}); },
+    });
+  }
+  if (gpuRunning || gpuPaused) {
+    template.push({
+      label: 'Stop GPU',
+      click: () => { gpuManager?.stop().catch(() => {}); },
+    });
+  }
+
+  template.push(
     { type: 'separator' },
     { label: 'Show Dashboard', click: () => { mainWindow?.show(); mainWindow?.focus(); } },
     { type: 'separator' },
     { label: 'Check for Updates', click: () => { autoUpdater?.checkForUpdates(); } },
     { type: 'separator' },
     { label: 'Quit', click: () => { app.quit(); } },
-  ]);
+  );
 
+  const contextMenu = Menu.buildFromTemplate(template);
   tray.setContextMenu(contextMenu);
+
+  // Update tooltip with earnings if available
+  const tooltip = gpuRunning ? `Spirit Bomb — ${status} | GPU Active` : `Spirit Bomb — ${status}`;
+  tray.setToolTip(tooltip);
 }
 
 async function initializeP2P(): Promise<void> {
@@ -299,6 +354,93 @@ async function initialize(): Promise<void> {
     console.error('[SPK] Failed to start API server:', error);
   }
 
+  // Initialize GPU Contribution Manager (Spirit Bomb)
+  const gpuCfg = configStore.getConfig();
+  gpuManager = new GpuContributionManager({
+    enabled: gpuCfg.gpuContributionEnabled,
+    mode: gpuCfg.gpuContributionMode,
+    vramUtilization: gpuCfg.gpuVramUtilization,
+    model: gpuCfg.gpuModel,
+    maxModelLen: gpuCfg.gpuMaxModelLen,
+    autoGamingMode: gpuCfg.gpuAutoGamingMode,
+    scheduleEnabled: gpuCfg.gpuScheduleEnabled,
+    scheduleStart: gpuCfg.gpuScheduleStart,
+    scheduleEnd: gpuCfg.gpuScheduleEnd,
+    hivePoaUrl: gpuCfg.serverUrl,
+    hiveUsername: gpuCfg.hiveUsername,
+    lendTargetIp: gpuCfg.gpuLendTargetIp,
+  });
+
+  // Mount GPU API routes
+  const expressApp = apiServer.getExpressApp();
+  if (expressApp) {
+    expressApp.use('/api/gpu', createGpuRoutes(gpuManager));
+    console.log('[SPK] GPU API routes mounted at /api/gpu/*');
+  }
+
+  // Wire GPU notifications → Electron system notifications + tray updates
+  gpuManager.on('notification', (data: { type: string; message: string }) => {
+    console.log(`[GPU] ${data.type}: ${data.message}`);
+
+    if (Notification.isSupported()) {
+      const notif = new Notification({
+        title: 'Spirit Bomb',
+        body: data.message,
+        icon: path.join(__dirname, '../../assets/icon.png'),
+      });
+      notif.show();
+    }
+
+    // Forward to renderer
+    mainWindow?.webContents.send('gpu-notification', data);
+  });
+
+  gpuManager.on('state-change', ({ from, to }: { from: string; to: string }) => {
+    console.log(`[GPU] State: ${from} → ${to}`);
+    updateTrayMenu(kuboManager?.isRunning() ? 'Running' : 'Stopped');
+
+    // Notify renderer of state change
+    mainWindow?.webContents.send('gpu-state-change', { from, to });
+
+    // Milestone notifications
+    if (to === 'running' && from === 'starting') {
+      if (Notification.isSupported()) {
+        new Notification({
+          title: 'Spirit Bomb',
+          body: 'GPU is live and earning! Your GPU is now serving the community.',
+          icon: path.join(__dirname, '../../assets/icon.png'),
+        }).show();
+      }
+    }
+  });
+
+  gpuManager.on('metrics', (metrics: any) => {
+    // Temperature warning at 85°C
+    if (metrics.temperatureC >= 85) {
+      if (Notification.isSupported()) {
+        new Notification({
+          title: 'Spirit Bomb — Temperature Warning',
+          body: `GPU temperature is ${metrics.temperatureC}°C. Consider pausing contribution.`,
+          icon: path.join(__dirname, '../../assets/icon.png'),
+        }).show();
+      }
+    }
+  });
+
+  // Start schedule checker if schedule is enabled
+  if (gpuCfg.gpuScheduleEnabled) {
+    gpuManager.startScheduleChecker();
+    console.log(`[SPK] GPU schedule active: ${gpuCfg.gpuScheduleStart} — ${gpuCfg.gpuScheduleEnd}`);
+  }
+
+  // Auto-start GPU if enabled and no schedule (or within schedule window)
+  if (gpuCfg.gpuContributionEnabled && (!gpuCfg.gpuScheduleEnabled || gpuManager.isWithinSchedule())) {
+    console.log('[SPK] Auto-starting GPU contribution...');
+    gpuManager.start().catch((err: any) => {
+      console.error('[SPK] GPU auto-start failed:', err.message);
+    });
+  }
+
   // Choose mode: P2P (default) or Legacy
   const cfg = configStore.getConfig();
   if (cfg.p2pMode) {
@@ -361,6 +503,36 @@ app.whenReady().then(async () => {
   // SECURITY: Expose local auth token to renderer via IPC (required for mutation endpoints)
   ipcMain.handle('get-api-auth-token', () => apiServer?.getAuthToken());
 
+  // GPU Contribution IPC handlers
+  ipcMain.handle('gpu-get-status', async () => gpuManager?.getStatus() || null);
+  ipcMain.handle('gpu-start', async () => { await gpuManager?.start(); return true; });
+  ipcMain.handle('gpu-stop', async () => { await gpuManager?.stop(); return true; });
+  ipcMain.handle('gpu-pause', async () => { await gpuManager?.pause(); return true; });
+  ipcMain.handle('gpu-resume', async () => { await gpuManager?.resume(); return true; });
+  ipcMain.handle('gpu-gaming-mode', async () => { await gpuManager?.enterGamingMode(); return true; });
+  ipcMain.handle('gpu-update-config', async (_event, updates) => {
+    gpuManager?.updateConfig(updates);
+    // Also persist to config store
+    const mappings: Record<string, string> = {
+      vramUtilization: 'gpuVramUtilization',
+      scheduleEnabled: 'gpuScheduleEnabled',
+      scheduleStart: 'gpuScheduleStart',
+      scheduleEnd: 'gpuScheduleEnd',
+      autoGamingMode: 'gpuAutoGamingMode',
+      mode: 'gpuContributionMode',
+      model: 'gpuModel',
+      maxModelLen: 'gpuMaxModelLen',
+    };
+    const persistUpdates: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(updates)) {
+      if (mappings[key]) persistUpdates[mappings[key]] = value;
+    }
+    if (Object.keys(persistUpdates).length > 0) {
+      configStore?.setConfig(persistUpdates as any);
+    }
+    return true;
+  });
+
   try {
     createTray();
     createWindow();
@@ -389,6 +561,9 @@ app.on('before-quit', async () => {
   challengeHandler?.stop();
   peerDiscovery?.stop();
   await pubsub?.unsubscribeAll();
+
+  // GPU cleanup
+  gpuManager?.destroy();
 
   // Legacy cleanup
   agentWS?.disconnect();

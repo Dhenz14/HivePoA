@@ -84,6 +84,7 @@ const METRICS_POLL_INTERVAL_MS = 5000;       // GPU metrics every 5s
 const HEARTBEAT_INTERVAL_MS = 60000;         // heartbeat to HivePoA every 60s
 const MAX_CONSECUTIVE_FAILURES = 3;          // stop retrying after 3 crashes
 const DRAIN_TIMEOUT_MS = 30000;              // 30s to drain in-flight requests
+const SCHEDULE_CHECK_INTERVAL_MS = 60000;    // check schedule every 60s
 
 export class GpuContributionManager extends EventEmitter {
   private state: GpuContributionState = 'stopped';
@@ -95,6 +96,7 @@ export class GpuContributionManager extends EventEmitter {
   private gamingCheckTimer: ReturnType<typeof setInterval> | null = null;
   private metricsTimer: ReturnType<typeof setInterval> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private scheduleTimer: ReturnType<typeof setInterval> | null = null;
 
   // Stats
   private startTime: number = 0;
@@ -279,6 +281,12 @@ export class GpuContributionManager extends EventEmitter {
       updates.maxModelLen !== undefined && updates.maxModelLen !== this.config.maxModelLen
     );
 
+    const scheduleChanged = (
+      updates.scheduleEnabled !== undefined && updates.scheduleEnabled !== this.config.scheduleEnabled ||
+      updates.scheduleStart !== undefined && updates.scheduleStart !== this.config.scheduleStart ||
+      updates.scheduleEnd !== undefined && updates.scheduleEnd !== this.config.scheduleEnd
+    );
+
     Object.assign(this.config, updates);
     this.docker.updateConfig({
       gpuMemoryUtilization: this.config.vramUtilization,
@@ -292,6 +300,11 @@ export class GpuContributionManager extends EventEmitter {
         message: 'Configuration changed. Restarting GPU container...',
       });
       this.stop().then(() => this.start()).catch(() => {});
+    }
+
+    // Restart schedule checker if schedule settings changed
+    if (scheduleChanged) {
+      this.startScheduleChecker();
     }
   }
 
@@ -471,11 +484,87 @@ export class GpuContributionManager extends EventEmitter {
     }
   }
 
+  // ── Schedule System ────────────────────────────────────────
+
+  /**
+   * Check if the current time falls within the scheduled contribution window.
+   * Handles overnight schedules (e.g., 22:00 → 08:00) correctly.
+   */
+  isWithinSchedule(): boolean {
+    if (!this.config.scheduleEnabled) return true; // no schedule = always allowed
+
+    const now = new Date();
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
+    const [startH, startM] = this.config.scheduleStart.split(':').map(Number);
+    const [endH, endM] = this.config.scheduleEnd.split(':').map(Number);
+    const startMinutes = startH * 60 + startM;
+    const endMinutes = endH * 60 + endM;
+
+    if (startMinutes <= endMinutes) {
+      // Same-day window (e.g., 09:00 → 17:00)
+      return currentMinutes >= startMinutes && currentMinutes < endMinutes;
+    } else {
+      // Overnight window (e.g., 22:00 → 08:00)
+      return currentMinutes >= startMinutes || currentMinutes < endMinutes;
+    }
+  }
+
+  /**
+   * Start the schedule checker. Runs every 60s to auto-start/stop based on time window.
+   */
+  startScheduleChecker(): void {
+    this.stopScheduleChecker();
+    if (!this.config.scheduleEnabled) return;
+
+    // Check immediately on start
+    this.checkSchedule();
+
+    this.scheduleTimer = setInterval(() => {
+      this.checkSchedule();
+    }, SCHEDULE_CHECK_INTERVAL_MS);
+  }
+
+  stopScheduleChecker(): void {
+    if (this.scheduleTimer) {
+      clearInterval(this.scheduleTimer);
+      this.scheduleTimer = null;
+    }
+  }
+
+  private async checkSchedule(): Promise<void> {
+    const inWindow = this.isWithinSchedule();
+
+    if (inWindow && this.state === 'stopped') {
+      // Time to start
+      this.emit('notification', {
+        type: 'schedule',
+        message: `Scheduled contribution starting (${this.config.scheduleStart} — ${this.config.scheduleEnd})`,
+      });
+      try {
+        await this.start();
+      } catch (err: any) {
+        this.emit('notification', {
+          type: 'error',
+          message: `Scheduled start failed: ${err.message}`,
+        });
+      }
+    } else if (!inWindow && (this.state === 'running' || this.state === 'paused' || this.state === 'gaming_mode')) {
+      // Time to stop
+      this.emit('notification', {
+        type: 'schedule',
+        message: 'Schedule window ended. Stopping GPU contribution.',
+      });
+      await this.stop();
+    }
+  }
+
   /**
    * Clean up all resources.
    */
   destroy(): void {
     this.stopMonitoring();
+    this.stopScheduleChecker();
     this.docker.destroy();
     this.removeAllListeners();
   }

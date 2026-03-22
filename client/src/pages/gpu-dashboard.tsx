@@ -4,12 +4,17 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
+import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Activity, Cpu, Thermometer, Zap, Coins, Server,
   Pause, Play, Square, Gamepad2, RefreshCw, AlertCircle,
+  Settings, Clock, HardDrive,
 } from "lucide-react";
 import {
-  getGpuStatus, getGpuMetrics, getGpuEarnings,
+  getGpuStatus, getGpuMetrics, getGpuEarnings, updateGpuConfig,
   startGpuContribution, stopGpuContribution,
   pauseGpuContribution, resumeGpuContribution, enterGamingMode,
   type GpuContributionStatus, type GpuMetrics, type GpuEarnings,
@@ -45,6 +50,208 @@ const stateLabels: Record<string, { label: string; color: string; icon: React.Re
   stopped: { label: "Stopped", color: "bg-gray-500", icon: <Square className="h-3 w-3" /> },
   checking_deps: { label: "Checking...", color: "bg-yellow-500", icon: <RefreshCw className="h-3 w-3 animate-spin" /> },
 };
+
+const VRAM_PRESETS = [
+  { label: "Conservative", value: 0.50, desc: "50% — Plenty of room for other apps" },
+  { label: "Balanced", value: 0.70, desc: "70% — Good for most users" },
+  { label: "Maximum", value: 0.90, desc: "90% — Best performance, minimal headroom" },
+];
+
+function GpuSettingsPanel({ config, onUpdate }: {
+  config: GpuContributionStatus["config"];
+  onUpdate: () => void;
+}) {
+  const [expanded, setExpanded] = React.useState(false);
+  const [vram, setVram] = React.useState(config.vramUtilization);
+  const [scheduleEnabled, setScheduleEnabled] = React.useState(config.scheduleEnabled);
+  const [scheduleStart, setScheduleStart] = React.useState(config.scheduleStart);
+  const [scheduleEnd, setScheduleEnd] = React.useState(config.scheduleEnd);
+  const [gamingMode, setGamingMode] = React.useState(config.autoGamingMode);
+
+  // Sync state when config changes from outside
+  React.useEffect(() => {
+    setVram(config.vramUtilization);
+    setScheduleEnabled(config.scheduleEnabled);
+    setScheduleStart(config.scheduleStart);
+    setScheduleEnd(config.scheduleEnd);
+    setGamingMode(config.autoGamingMode);
+  }, [config]);
+
+  const saveVram = async (value: number) => {
+    setVram(value);
+    await updateGpuConfig({ vramUtilization: value });
+    onUpdate();
+  };
+
+  const saveSchedule = async (enabled: boolean, start: string, end: string) => {
+    setScheduleEnabled(enabled);
+    setScheduleStart(start);
+    setScheduleEnd(end);
+    await updateGpuConfig({ scheduleEnabled: enabled, scheduleStart: start, scheduleEnd: end });
+    onUpdate();
+  };
+
+  const saveGamingMode = async (enabled: boolean) => {
+    setGamingMode(enabled);
+    await updateGpuConfig({ autoGamingMode: enabled });
+    onUpdate();
+  };
+
+  const activePreset = VRAM_PRESETS.find(p => Math.abs(p.value - vram) < 0.02);
+
+  if (!expanded) {
+    return (
+      <Card className="cursor-pointer hover:bg-accent/50 transition-colors" onClick={() => setExpanded(true)}>
+        <CardContent className="p-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Settings className="h-5 w-5 text-muted-foreground" />
+            <div>
+              <p className="font-medium text-sm">GPU Settings</p>
+              <p className="text-xs text-muted-foreground">
+                VRAM: {(vram * 100).toFixed(0)}%
+                {scheduleEnabled ? ` | Schedule: ${scheduleStart}—${scheduleEnd}` : ""}
+                {gamingMode ? " | Gaming auto-pause" : ""}
+              </p>
+            </div>
+          </div>
+          <span className="text-xs text-muted-foreground">Click to expand</span>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <CardTitle className="flex items-center gap-2">
+            <Settings className="h-5 w-5" />
+            GPU Settings
+          </CardTitle>
+          <Button variant="ghost" size="sm" onClick={() => setExpanded(false)}>
+            Collapse
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {/* VRAM Allocation Slider */}
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <HardDrive className="h-4 w-4 text-muted-foreground" />
+            <Label className="font-medium">VRAM Allocation</Label>
+          </div>
+
+          {/* Preset buttons */}
+          <div className="flex gap-2">
+            {VRAM_PRESETS.map(preset => (
+              <Button
+                key={preset.label}
+                variant={activePreset?.label === preset.label ? "default" : "outline"}
+                size="sm"
+                className="flex-1"
+                onClick={() => saveVram(preset.value)}
+              >
+                {preset.label}
+              </Button>
+            ))}
+          </div>
+
+          {/* Slider */}
+          <div className="space-y-2">
+            <Slider
+              value={[vram * 100]}
+              min={50}
+              max={95}
+              step={5}
+              onValueCommit={(values) => saveVram(values[0] / 100)}
+              onValueChange={(values) => setVram(values[0] / 100)}
+            />
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span>50% Safe</span>
+              <span className="font-mono text-sm text-foreground">{(vram * 100).toFixed(0)}%</span>
+              <span>95% Max</span>
+            </div>
+          </div>
+
+          <p className="text-xs text-muted-foreground">
+            {activePreset ? activePreset.desc : `${(vram * 100).toFixed(0)}% — Custom allocation`}
+            . Changes take effect on next container restart.
+          </p>
+        </div>
+
+        {/* Schedule */}
+        <div className="space-y-4 pt-2 border-t">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Clock className="h-4 w-4 text-muted-foreground" />
+              <Label className="font-medium">Contribution Schedule</Label>
+            </div>
+            <Switch
+              checked={scheduleEnabled}
+              onCheckedChange={(checked) => saveSchedule(checked, scheduleStart, scheduleEnd)}
+            />
+          </div>
+
+          {scheduleEnabled && (
+            <div className="flex items-center gap-3 pl-6">
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Start</Label>
+                <Input
+                  type="time"
+                  value={scheduleStart}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setScheduleStart(val);
+                    saveSchedule(scheduleEnabled, val, scheduleEnd);
+                  }}
+                  className="w-28"
+                />
+              </div>
+              <span className="text-muted-foreground mt-5">to</span>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">End</Label>
+                <Input
+                  type="time"
+                  value={scheduleEnd}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setScheduleEnd(val);
+                    saveSchedule(scheduleEnabled, scheduleStart, val);
+                  }}
+                  className="w-28"
+                />
+              </div>
+            </div>
+          )}
+
+          {scheduleEnabled && (
+            <p className="text-xs text-muted-foreground pl-6">
+              GPU will automatically start at {scheduleStart} and stop at {scheduleEnd}.
+              {scheduleStart > scheduleEnd ? " (overnight)" : ""}
+            </p>
+          )}
+        </div>
+
+        {/* Gaming Mode */}
+        <div className="flex items-center justify-between pt-2 border-t">
+          <div className="flex items-center gap-2">
+            <Gamepad2 className="h-4 w-4 text-muted-foreground" />
+            <div>
+              <Label className="font-medium">Auto Gaming Mode</Label>
+              <p className="text-xs text-muted-foreground">
+                Detect VRAM contention and auto-pause. Resumes when idle for 2.5 min.
+              </p>
+            </div>
+          </div>
+          <Switch
+            checked={gamingMode}
+            onCheckedChange={saveGamingMode}
+          />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function GpuDashboard() {
   const queryClient = useQueryClient();
@@ -361,6 +568,9 @@ export default function GpuDashboard() {
           </CardContent>
         </Card>
       )}
+
+      {/* GPU Settings */}
+      {status && <GpuSettingsPanel config={status.config} onUpdate={invalidate} />}
 
       {/* How it works (when stopped) */}
       {canStart && (

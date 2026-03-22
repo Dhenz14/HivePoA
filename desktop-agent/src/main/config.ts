@@ -95,6 +95,19 @@ export class ConfigStore {
       autoPinPopular: this.store.get('autoPinPopular', true) as boolean,
       autoPinMaxGB: this.store.get('autoPinMaxGB', 10) as number,
       treasurySignerEnabled: this.store.get('treasurySignerEnabled', false) as boolean,
+      // GPU Contribution (Spirit Bomb)
+      gpuContributionEnabled: this.store.get('gpuContributionEnabled', false) as boolean,
+      gpuContributionMode: this.store.get('gpuContributionMode', 'pool') as 'local' | 'pool' | 'cluster' | 'lend',
+      gpuVramUtilization: this.store.get('gpuVramUtilization', 0.70) as number,
+      gpuModel: this.store.get('gpuModel', 'Qwen/Qwen3-14B-AWQ') as string,
+      gpuMaxModelLen: this.store.get('gpuMaxModelLen', 4096) as number,
+      gpuScheduleEnabled: this.store.get('gpuScheduleEnabled', false) as boolean,
+      gpuScheduleStart: this.store.get('gpuScheduleStart', '22:00') as string,
+      gpuScheduleEnd: this.store.get('gpuScheduleEnd', '08:00') as string,
+      gpuAutoGamingMode: this.store.get('gpuAutoGamingMode', true) as boolean,
+      gpuContainerName: this.store.get('gpuContainerName', 'spiritbomb-vllm') as string,
+      gpuContainerPort: this.store.get('gpuContainerPort', 8100) as number,
+      gpuLendTargetIp: this.store.get('gpuLendTargetIp', null) as string | null,
     };
   }
 
