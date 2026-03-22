@@ -283,6 +283,37 @@ export async function registerRoutes(
 
   setupHeartbeat(wss, "WS");
 
+  // WebSocket for real-time GPU pool stats push (/ws/pool)
+  const poolWss = new WebSocketServer({ noServer: true });
+  const POOL_WS_MAX = 50;
+  const POOL_PUSH_INTERVAL_MS = 5_000; // Push every 5s (6x faster than HTTP poll)
+
+  poolWss.on("connection", (ws: any) => {
+    if (poolWss.clients.size > POOL_WS_MAX) {
+      ws.close(1013, "Max pool connections reached");
+      return;
+    }
+    ws.isAlive = true;
+    ws.on("pong", () => { ws.isAlive = true; });
+
+    // Send initial state immediately
+    if (poolRouter && ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify({ type: "pool_stats", data: poolRouter.getStats() }));
+    }
+  });
+
+  setupHeartbeat(poolWss, "Pool-WS");
+
+  // Push pool stats to all connected clients every 5s
+  setInterval(() => {
+    if (!poolRouter || poolWss.clients.size === 0) return;
+    const stats = poolRouter.getStats();
+    const msg = JSON.stringify({ type: "pool_stats", data: stats });
+    poolWss.clients.forEach((ws: any) => {
+      if (ws.readyState === ws.OPEN) ws.send(msg);
+    });
+  }, POOL_PUSH_INTERVAL_MS);
+
   // P2P CDN WebSocket for peer signaling (using noServer mode)
   const p2pWss = new WebSocketServer({ noServer: true });
   p2pSignaling.init(p2pWss);
@@ -432,6 +463,10 @@ export async function registerRoutes(
     } else if (pathname === "/ws/agent") {
       agentWss.handleUpgrade(request, socket, head, (ws) => {
         agentWss.emit("connection", ws, request);
+      });
+    } else if (pathname === "/ws/pool") {
+      poolWss.handleUpgrade(request, socket, head, (ws) => {
+        poolWss.emit("connection", ws, request);
       });
     }
     // Other paths (e.g. /vite-hmr) are left for Vite's HMR handler
