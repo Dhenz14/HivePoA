@@ -5,9 +5,10 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Brain, Download, CheckCircle2, Loader2, Zap, ArrowRight, Cpu, Globe, Rocket, ExternalLink, Gpu, MessageSquare, Coins } from "lucide-react";
+import { Brain, Download, CheckCircle2, Loader2, Zap, ArrowRight, Cpu, Globe, Rocket, ExternalLink, Gpu, MessageSquare, Coins, Play } from "lucide-react";
 import { Link } from "wouter";
 import { detectDesktopAgent } from "@/lib/desktop-agent";
+import { detectGpuAgent, startGpuContribution } from "@/lib/gpu-agent";
 import { getApiBase } from "@/lib/api-mode";
 
 type Goal = "chat" | "contribute" | null;
@@ -15,14 +16,25 @@ type Goal = "chat" | "contribute" | null;
 export default function QuickStart() {
   const [goal, setGoal] = useState<Goal>(null);
   const [ollamaOk, setOllamaOk] = useState<boolean | null>(null);
+  const [gpuAgentOk, setGpuAgentOk] = useState<boolean | null>(null);
+  const [gpuStarting, setGpuStarting] = useState(false);
 
-  // Check if Ollama is running
+  // Check if Ollama is running (chat path)
   useEffect(() => {
-    fetch(`${getApiBase()}/api/compute/inference/modes`)
-      .then(r => r.json())
-      .then(data => setOllamaOk(data?.modes?.medium?.available ?? false))
-      .catch(() => setOllamaOk(false));
-  }, []);
+    if (goal === "chat") {
+      fetch(`${getApiBase()}/api/compute/inference/modes`)
+        .then(r => r.json())
+        .then(data => setOllamaOk(data?.modes?.medium?.available ?? false))
+        .catch(() => setOllamaOk(false));
+    }
+  }, [goal]);
+
+  // Check if GPU agent is running (contribute path)
+  useEffect(() => {
+    if (goal === "contribute") {
+      detectGpuAgent().then(setGpuAgentOk);
+    }
+  }, [goal]);
 
   // Check community stats
   const { data: tierData } = useQuery({
@@ -174,57 +186,111 @@ export default function QuickStart() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Coins className="h-5 w-5" />
-                Share Your GPU
+                Contribute My GPU
               </CardTitle>
               <CardDescription>
-                Your graphics card can help power AI for the whole community.
-                In return, you earn <strong>HBD</strong> (Hive-Backed Dollars — a cryptocurrency pegged to $1 USD).
+                Your graphics card powers AI for the whole community.
+                Earn <strong>HBD</strong> (Hive-Backed Dollars, pegged to $1 USD) in return.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="space-y-3">
-                <h4 className="font-medium">How it works:</h4>
-                <ol className="text-sm space-y-2 list-decimal list-inside text-muted-foreground">
-                  <li>
-                    <strong className="text-foreground">Create a Hive account</strong> (free blockchain account)
-                    — this is where your rewards are sent
-                  </li>
-                  <li>
-                    <strong className="text-foreground">Run the Spirit Bomb worker</strong> on your computer
-                    — it uses your GPU in the background when it's idle
-                  </li>
-                  <li>
-                    <strong className="text-foreground">Earn HBD automatically</strong>
-                    — rewards are calculated based on how much AI work your GPU handles
-                  </li>
-                </ol>
-              </div>
+              {/* Auto-detect GPU agent */}
+              {gpuAgentOk === null && (
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Detecting GPU agent...
+                </div>
+              )}
 
-              {/* Requirements */}
-              <div className="p-3 rounded-lg bg-muted text-sm">
-                <p className="font-medium mb-1">Requirements:</p>
-                <ul className="space-y-1 text-muted-foreground">
-                  <li>NVIDIA GPU with 8+ GB VRAM (GTX 1060 or newer)</li>
-                  <li>A Hive blockchain account (free to create)</li>
-                  <li>Python 3.10+ installed</li>
-                </ul>
-              </div>
+              {gpuAgentOk === true && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
+                    <CheckCircle2 className="h-5 w-5" />
+                    <span className="font-medium">Desktop Agent detected — ready to contribute!</span>
+                  </div>
+                  <Button
+                    className="w-full gap-2"
+                    size="lg"
+                    disabled={gpuStarting}
+                    onClick={async () => {
+                      setGpuStarting(true);
+                      await startGpuContribution({ mode: "pool" });
+                      setGpuStarting(false);
+                      window.location.href = "/gpu-dashboard";
+                    }}
+                  >
+                    {gpuStarting ? (
+                      <><Loader2 className="h-5 w-5 animate-spin" /> Starting GPU...</>
+                    ) : (
+                      <><Play className="h-5 w-5" /> Start Contributing</>
+                    )}
+                  </Button>
+                  <Link href="/gpu-dashboard">
+                    <Button variant="outline" className="w-full gap-1">
+                      GPU Dashboard <ArrowRight className="h-4 w-4" />
+                    </Button>
+                  </Link>
+                </div>
+              )}
 
-              {/* Quick start command */}
-              <div className="p-3 rounded-lg bg-muted font-mono text-sm">
-                <p className="text-xs text-muted-foreground mb-1">Run this command to start sharing:</p>
-                <code>python scripts/start_spiritbomb.py</code>
-              </div>
+              {gpuAgentOk === false && (
+                <div className="space-y-4">
+                  <div className="space-y-3">
+                    <h4 className="font-medium">Get started in 3 steps:</h4>
+                    <ol className="text-sm space-y-2 list-decimal list-inside text-muted-foreground">
+                      <li>
+                        <strong className="text-foreground">Download Spirit Bomb</strong>
+                        {" "}— one-click installer for your OS
+                      </li>
+                      <li>
+                        <strong className="text-foreground">Create a Hive account</strong>
+                        {" "}— free blockchain account for receiving rewards
+                      </li>
+                      <li>
+                        <strong className="text-foreground">Click "Start Contributing"</strong>
+                        {" "}— your GPU earns HBD automatically
+                      </li>
+                    </ol>
+                  </div>
+
+                  <div className="p-3 rounded-lg bg-muted text-sm">
+                    <p className="font-medium mb-1">Requirements:</p>
+                    <ul className="space-y-1 text-muted-foreground">
+                      <li>NVIDIA GPU with 8+ GB VRAM (or AMD/Intel/Apple Silicon)</li>
+                      <li>A Hive blockchain account (free to create)</li>
+                    </ul>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Link href="/download" className="flex-1">
+                      <Button className="w-full gap-1">
+                        <Download className="h-4 w-4" /> Download Spirit Bomb
+                      </Button>
+                    </Link>
+                    <a href="https://signup.hive.io" target="_blank" rel="noopener noreferrer" className="flex-1">
+                      <Button variant="outline" className="w-full gap-1">
+                        Create Hive Account <ExternalLink className="h-3 w-3" />
+                      </Button>
+                    </a>
+                  </div>
+
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="w-full"
+                    onClick={() => {
+                      setGpuAgentOk(null);
+                      detectGpuAgent().then(setGpuAgentOk);
+                    }}
+                  >
+                    Check again
+                  </Button>
+                </div>
+              )}
 
               <div className="flex gap-2">
-                <a href="https://signup.hive.io" target="_blank" rel="noopener noreferrer" className="flex-1">
-                  <Button variant="outline" className="w-full gap-1">
-                    Create Hive Account <ExternalLink className="h-3 w-3" />
-                  </Button>
-                </a>
                 <Link href="/community-cloud" className="flex-1">
-                  <Button className="w-full">
-                    View Community Dashboard <ArrowRight className="h-4 w-4 ml-1" />
+                  <Button variant="ghost" size="sm" className="w-full">
+                    Community Dashboard <ArrowRight className="h-4 w-4 ml-1" />
                   </Button>
                 </Link>
               </div>

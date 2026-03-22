@@ -944,6 +944,7 @@ export const computeNodes = pgTable("compute_nodes", {
   totalHbdEarned: text("total_hbd_earned").notNull().default("0"),
   // Pool routing
   inferenceEndpoint: text("inference_endpoint"), // reachable HTTP base URL (e.g., "http://192.168.1.50:5001")
+  quantLevel: text("quant_level"), // GGUF quant: Q8_0, Q6_K, Q5_K_M, Q4_K_M, Q3_K_M, AWQ, FP16
   emaScore: real("ema_score").notNull().default(0.5), // EMA-smoothed quality score 0.0-1.0 for routing
   immunityExpiresAt: timestamp("immunity_expires_at"), // 24h grace period for new nodes
   // State

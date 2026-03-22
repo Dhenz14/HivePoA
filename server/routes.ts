@@ -5006,6 +5006,7 @@ export async function registerRoutes(
         pricePerHourHbd: z.string().optional(),
         maxConcurrentJobs: z.number().int().min(1).max(16).optional(),
         inferenceEndpoint: z.string().url().optional(), // e.g., "http://192.168.1.50:5001"
+        quantLevel: z.string().max(20).optional(), // GGUF quant: Q8_0, Q6_K, Q5_K_M, Q4_K_M, AWQ, FP16
       });
       const data = schema.parse(req.body);
       const node = await computeService.registerNode({
@@ -5819,6 +5820,7 @@ export async function registerRoutes(
           const result = await poolRouter!.routeInference({
             prompt: data.prompt,
             max_tokens: data.max_tokens,
+            temperature: data.temperature,
             mode: "pool",
           });
           res.json({

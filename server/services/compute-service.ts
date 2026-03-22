@@ -107,6 +107,7 @@ export interface NodeRegistration {
   pricePerHourHbd?: string;
   maxConcurrentJobs?: number;
   inferenceEndpoint?: string; // e.g., "http://192.168.1.50:5001"
+  quantLevel?: string; // GGUF quant level: Q8_0, Q6_K, Q5_K_M, Q4_K_M, AWQ, FP16
 }
 
 export interface JobCreation {
@@ -280,8 +281,9 @@ export class ComputeService {
         pricePerHourHbd: reg.pricePerHourHbd || existing.pricePerHourHbd,
         maxConcurrentJobs: reg.maxConcurrentJobs || existing.maxConcurrentJobs,
         inferenceEndpoint: reg.inferenceEndpoint || existing.inferenceEndpoint,
+        quantLevel: reg.quantLevel || existing.quantLevel,
         lastHeartbeatAt: new Date(),
-      });
+      } as any);
       logCompute.info({ nodeId: existing.id, instanceId: reg.nodeInstanceId, username: reg.hiveUsername }, "Compute node re-registered");
       return (await storage.getComputeNode(existing.id))!;
     }
@@ -301,16 +303,23 @@ export class ComputeService {
       pricePerHourHbd: reg.pricePerHourHbd || "0.50",
       maxConcurrentJobs: reg.maxConcurrentJobs || 1,
       inferenceEndpoint: reg.inferenceEndpoint,
+      quantLevel: reg.quantLevel,
       status: "online",
       reputationScore: 0,
       jobsInProgress: 0,
-    });
+    } as any);
 
     logCompute.info({ nodeId: node.id, instanceId: reg.nodeInstanceId, username: reg.hiveUsername, gpu: reg.gpuModel }, "New compute node registered");
     return node;
   }
 
   async heartbeat(nodeId: string, jobsInProgress: number): Promise<void> {
+    // Auto-reconnect: if node is offline, set it back to online on heartbeat
+    const node = await storage.getComputeNode(nodeId);
+    if (node && node.status === "offline") {
+      await storage.updateComputeNode(nodeId, { status: "online" });
+      logCompute.info({ nodeId, instanceId: node.nodeInstanceId }, "Compute node auto-reconnected via heartbeat");
+    }
     await storage.updateComputeNodeHeartbeat(nodeId, jobsInProgress);
     // Also update heartbeatAt on any active attempts for this node
     // This prevents the lease sweeper from expiring active leases

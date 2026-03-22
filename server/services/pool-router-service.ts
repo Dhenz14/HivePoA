@@ -30,6 +30,7 @@ interface PoolNodeState {
   inFlightRequests: number;
   gpuModel: string;
   gpuVramGb: number;
+  quantLevel: string | null;
   hivePower: number;
 }
 
@@ -53,6 +54,7 @@ interface PoolStats {
     utilization: number;
     inFlight: number;
     immune: boolean;
+    quantLevel: string | null;
   }[];
   healthyCount: number;
   totalVramGb: number;
@@ -132,6 +134,7 @@ export class PoolRouterService {
             inFlightRequests: 0,
             gpuModel: node.gpuModel,
             gpuVramGb: node.gpuVramGb,
+            quantLevel: (node as any).quantLevel ?? null,
             hivePower: (node as any).hivePower ?? 0,
           });
         }
@@ -277,7 +280,7 @@ export class PoolRouterService {
   }
 
   /** Route an inference request with failover. */
-  async routeInference(body: { prompt: string; max_tokens?: number; mode?: string }): Promise<RoutingResult> {
+  async routeInference(body: { prompt: string; max_tokens?: number; temperature?: number; mode?: string }): Promise<RoutingResult> {
     const candidates = this.selectNodes();
     if (candidates.length === 0) {
       throw new Error("No healthy pool nodes available");
@@ -327,6 +330,7 @@ export class PoolRouterService {
               body: JSON.stringify({
                 messages: [{ role: "user", content: body.prompt }],
                 max_tokens: body.max_tokens || 2048,
+                temperature: body.temperature ?? 0.7,
                 stream: false,
               }),
               signal: controller2.signal,
@@ -424,6 +428,7 @@ export class PoolRouterService {
         inFlight: n.inFlightRequests,
         immune: now < n.immuneUntil,
         hivePower: Math.round(n.hivePower),
+        quantLevel: n.quantLevel,
       })),
       healthyCount: nodeList.filter(n => n.healthy).length,
       totalVramGb: nodeList.filter(n => n.healthy).reduce((sum, n) => sum + n.gpuVramGb, 0),
