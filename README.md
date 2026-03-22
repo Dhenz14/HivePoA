@@ -4,6 +4,8 @@ Decentralized storage validation protocol built on the Hive L1 blockchain. Valid
 
 **Live Demo:** [dhenz14.github.io/HivePoA](https://dhenz14.github.io/HivePoA/) (static site — browse the UI without a backend)
 
+> **GPU Workers:** The model you need is [`theycallmedan14/hiveai-v5-think`](https://huggingface.co/theycallmedan14/hiveai-v5-think) — download `current_base.gguf` (10.5 GB, 14B Q5_K_M). Do NOT use other models. See [Model Download](#required-model--download-this-first) for details.
+
 ## Architecture
 
 - **Frontend**: React 19, TypeScript, Tailwind CSS v4, shadcn/ui, TanStack Query, Wouter
@@ -70,6 +72,26 @@ Decentralized storage validation protocol built on the Hive L1 blockchain. Valid
 | **Pool** | GPU serves community requests independently | Earning HBD |
 | **Cluster** | GPUs combine for bigger model | Maximum intelligence |
 | **Lend** | 100% GPU donated to a specific computer | "Make my PC a beast" |
+
+### REQUIRED MODEL — Download This First
+
+> **DO NOT download random models from HuggingFace.** Spirit Bomb workers MUST use the official model below. Using the wrong model will cause inference failures and your node will be scored as unhealthy.
+
+| | |
+|---|---|
+| **Model** | `theycallmedan14/hiveai-v5-think` |
+| **File** | `current_base.gguf` (10.5 GB) |
+| **Architecture** | 14B parameters, Q5_K_M quantization |
+| **Download** | [huggingface.co/theycallmedan14/hiveai-v5-think](https://huggingface.co/theycallmedan14/hiveai-v5-think) |
+
+```bash
+# One command to download the correct model:
+huggingface-cli download theycallmedan14/hiveai-v5-think --local-dir ./models --include "*.gguf"
+```
+
+Place `current_base.gguf` in your `models/` directory. The one-click installer downloads this automatically.
+
+**VRAM requirements:** 8GB minimum (Q5_K_M fits comfortably with KV cache). 12-16GB recommended for full context and concurrent requests.
 
 ### Quick Start — Contribute Your GPU
 

@@ -5027,15 +5027,36 @@ export async function registerRoutes(
   });
 
   // POST /api/compute/nodes/heartbeat — Heartbeat from a GPU worker
+  // Phase 4: Rich heartbeat with optional VRAM, thermal, queue data
   app.post("/api/compute/nodes/heartbeat", requireAgentAuth, async (req, res) => {
     try {
       const node = await resolveComputeNode(req, res);
       if (!node) return;
-      const { jobsInProgress } = z.object({
+      const heartbeat = z.object({
         nodeInstanceId: z.string(),
         jobsInProgress: z.number().int().min(0).max(100),
+        // Phase 4: Optional rich telemetry (backward compatible)
+        vramUsedMb: z.number().nonnegative().optional(),
+        vramTotalMb: z.number().nonnegative().optional(),
+        gpuUtilizationPct: z.number().min(0).max(100).optional(),
+        gpuTempC: z.number().optional(),
+        cpuPct: z.number().min(0).max(100).optional(),
+        ramPct: z.number().min(0).max(100).optional(),
+        queueDepth: z.number().int().min(0).optional(),
       }).parse(req.body);
-      await computeService.heartbeat(node.id, jobsInProgress);
+      await computeService.heartbeat(node.id, heartbeat.jobsInProgress);
+      // Phase 4: Forward rich telemetry to pool router for sub-second pressure visibility
+      if (poolRouter) {
+        poolRouter.updateNodeFromHeartbeat(heartbeat.nodeInstanceId, {
+          vramUsedMb: heartbeat.vramUsedMb,
+          vramTotalMb: heartbeat.vramTotalMb,
+          gpuUtilizationPct: heartbeat.gpuUtilizationPct,
+          gpuTempC: heartbeat.gpuTempC,
+          cpuPct: heartbeat.cpuPct,
+          ramPct: heartbeat.ramPct,
+          queueDepth: heartbeat.queueDepth,
+        });
+      }
       res.json({ ok: true });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
@@ -6024,6 +6045,12 @@ export async function registerRoutes(
   };
   app.get("/api/compute/pool/stats", poolStatsHandler);
   app.get("/api/gpu/pool", poolStatsHandler);
+
+  // Phase 5: GET /api/gpu/pool/pressure — Lightweight pressure summary for Hive-AI
+  app.get("/api/gpu/pool/pressure", (_req: any, res: any) => {
+    if (!poolRouter) return res.json({ nodes: [], recommendation: { bestNode: null, poolCapacity: "unavailable", estimatedWaitMs: 0 } });
+    res.json(poolRouter.getPressure());
+  });
 
   // GET /api/compute/inference/modes + /api/gpu/modes — Available inference modes
   const modesHandler = async (_req: any, res: any) => {
