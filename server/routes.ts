@@ -5844,6 +5844,17 @@ export async function registerRoutes(
             temperature: data.temperature,
             mode: "pool",
           });
+          // Sprint 2: Propagate X-Request-ID
+          const requestId = req.headers["x-request-id"] || "";
+          if (requestId) res.setHeader("X-Request-ID", requestId);
+          // Sprint 3: Backpressure headers — let Hive-AI adapt
+          const pressure = poolRouter!.getPressure();
+          const routedNode = pressure.nodes.find((n: any) => n.instanceId === result.nodeInstanceId);
+          if (routedNode) {
+            res.setHeader("X-Node-Utilization", String(routedNode.vramFreeMb > 0 ? Math.round((1 - routedNode.vramFreeMb / ((routedNode.vramFreeMb + 1) || 16384)) * 100) / 100 : 0));
+            res.setHeader("X-Queue-Depth", String(routedNode.inFlight));
+          }
+          res.setHeader("X-Pool-Capacity", pressure.recommendation.poolCapacity);
           res.json({
             text: result.response.text || result.response.reply || "",
             tokens_generated: result.response.tokens || result.response.tokens_generated || 0,
@@ -5855,6 +5866,15 @@ export async function registerRoutes(
           });
           return;
         } catch (poolErr: any) {
+          // Sprint 3: Semantic error codes instead of generic 500
+          if (poolErr.message?.includes("No healthy pool nodes")) {
+            res.status(503).json({ error: { code: "POOL_OVERLOADED", message: poolErr.message } });
+            return;
+          }
+          if (poolErr.message?.includes("All pool nodes failed")) {
+            res.status(504).json({ error: { code: "POOL_TIMEOUT", message: poolErr.message } });
+            return;
+          }
           logCompute.debug({ err: poolErr.message }, "Pool routing failed, falling through to local");
         }
       }
@@ -6050,6 +6070,58 @@ export async function registerRoutes(
   app.get("/api/gpu/pool/pressure", (_req: any, res: any) => {
     if (!poolRouter) return res.json({ nodes: [], recommendation: { bestNode: null, poolCapacity: "unavailable", estimatedWaitMs: 0 } });
     res.json(poolRouter.getPressure());
+  });
+
+  // Sprint 2: POST /api/compute/quality-report — Receive Best-of-N quality scores from Hive-AI
+  app.post("/api/compute/quality-report", async (req: any, res: any) => {
+    try {
+      const schema = z.object({
+        candidates: z.array(z.object({
+          node_id: z.string(),
+          score: z.number().min(0).max(1),
+          verified: z.boolean(),
+          latency_ms: z.number().nonnegative(),
+        })),
+      });
+      const data = schema.parse(req.body);
+      if (poolRouter) poolRouter.handleQualityReport(data.candidates);
+      res.json({ ok: true, processed: data.candidates.length });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // Sprint 2: POST /api/compute/verification-report — Receive sandbox verification results
+  app.post("/api/compute/verification-report", async (req: any, res: any) => {
+    try {
+      const schema = z.object({
+        node_id: z.string(),
+        passed: z.number().int().min(0),
+        failed: z.number().int().min(0),
+        timed_out: z.number().int().min(0).default(0),
+        error_types: z.array(z.string()).default([]),
+      });
+      const data = schema.parse(req.body);
+      if (poolRouter) poolRouter.handleVerificationReport(data.node_id, data);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // Sprint 2: POST /api/compute/eval-breakdown — Receive per-node eval domain scores
+  app.post("/api/compute/eval-breakdown", async (req: any, res: any) => {
+    try {
+      const schema = z.object({
+        model_version: z.string(),
+        node_scores: z.record(z.record(z.number())),
+      });
+      const data = schema.parse(req.body);
+      if (poolRouter) poolRouter.handleEvalBreakdown(data.model_version, data.node_scores);
+      res.json({ ok: true, nodes: Object.keys(data.node_scores).length });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
   });
 
   // GET /api/compute/inference/modes + /api/gpu/modes — Available inference modes

@@ -611,6 +611,62 @@ export class PoolRouterService {
     };
   }
 
+  // --- Sprint 2: Quality feedback receivers ---
+
+  /** Receive quality scores from Best-of-N selection. Nudge EMA based on verified quality. */
+  handleQualityReport(candidates: { node_id: string; score: number; verified: boolean; latency_ms: number }[]): void {
+    for (const c of candidates) {
+      // node_id format from Hive-AI: "pool:gpu-computer-b" — strip prefix
+      const instanceId = c.node_id.replace(/^pool:/, "");
+      const node = Array.from(this.nodes.values()).find(n => n.nodeInstanceId === instanceId);
+      if (!node) continue;
+
+      // Nudge EMA: verified + high score = small bonus, unverified + low score = penalty
+      // Use a gentle alpha (0.05) so quality signals don't override latency-based EMA too aggressively
+      const qualityAlpha = 0.05;
+      if (c.verified && c.score >= 0.8) {
+        node.emaScore = Math.min(1.0, node.emaScore + qualityAlpha * (1.0 - node.emaScore));
+      } else if (!c.verified && c.score < 0.5) {
+        node.emaScore = Math.max(0.1, node.emaScore - qualityAlpha * 0.3);
+      }
+      // Persist fire-and-forget
+      this.storage.updateNodeEmaScore(node.nodeId, node.emaScore).catch(() => {});
+    }
+  }
+
+  /** Receive sandbox verification results per node. Track pass rates. */
+  handleVerificationReport(nodeInstanceId: string, report: { passed: number; failed: number; timed_out: number; error_types: string[] }): void {
+    const node = Array.from(this.nodes.values()).find(n => n.nodeInstanceId === nodeInstanceId);
+    if (!node) return;
+
+    const total = report.passed + report.failed + report.timed_out;
+    if (total === 0) return;
+
+    const passRate = report.passed / total;
+    // Penalize nodes with consistently failing code — gentle EMA nudge
+    if (passRate < 0.5 && total >= 3) {
+      node.emaScore = Math.max(0.1, node.emaScore * 0.95); // 5% penalty
+      this.storage.updateNodeEmaScore(node.nodeId, node.emaScore).catch(() => {});
+      log.warn(`Verification penalty for ${nodeInstanceId}: ${report.passed}/${total} passed`);
+    }
+  }
+
+  /** Receive per-node eval breakdown. Log for dashboard, optionally nudge EMA. */
+  handleEvalBreakdown(modelVersion: string, nodeScores: Record<string, Record<string, number>>): void {
+    for (const [instanceId, scores] of Object.entries(nodeScores)) {
+      const node = Array.from(this.nodes.values()).find(n => n.nodeInstanceId === instanceId);
+      if (!node) continue;
+
+      const overall = scores.overall ?? 0;
+      // Nodes scoring significantly below average get a small penalty
+      if (overall < 0.6) {
+        node.emaScore = Math.max(0.1, node.emaScore * 0.97);
+        this.storage.updateNodeEmaScore(node.nodeId, node.emaScore).catch(() => {});
+      }
+    }
+    log.info(`Eval breakdown received for ${modelVersion}: ${Object.keys(nodeScores).length} nodes`);
+  }
+
   // --- Private helpers ---
 
   /** Phase 2: Reap inFlight entries older than TTL (called every 10s from healthCheckAll). */
