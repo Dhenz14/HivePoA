@@ -162,10 +162,17 @@ export class PoolRouterService {
 
         const existing = this.nodes.get(node.id);
         if (existing) {
-          // Update from DB but keep runtime state
+          // Update from DB but keep runtime state (telemetry, inFlight, etc.)
           existing.inferenceEndpoint = node.inferenceEndpoint;
           existing.emaScore = node.emaScore;
           existing.immuneUntil = node.immunityExpiresAt?.getTime() ?? 0;
+          // Re-read CPU/RAM/contribution fields from DB (may have changed via registration or heartbeat)
+          existing.cpuCores = (node as any).cpuCores ?? existing.cpuCores;
+          existing.ramGb = (node as any).ramGb ?? existing.ramGb;
+          existing.gpuModel = node.gpuModel;
+          const dbContrib = (node as any).contributionTypes;
+          if (dbContrib) existing.contributionTypes = this.parseContributionTypes(dbContrib);
+          existing.maxConcurrentCpuJobs = Math.max(1, Math.floor(existing.cpuCores / 2));
         } else {
           // New node
           this.nodes.set(node.id, {
