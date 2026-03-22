@@ -947,6 +947,8 @@ export const computeNodes = pgTable("compute_nodes", {
   quantLevel: text("quant_level"), // GGUF quant: Q8_0, Q6_K, Q5_K_M, Q4_K_M, Q3_K_M, AWQ, FP16
   emaScore: real("ema_score").notNull().default(0.5), // EMA-smoothed quality score 0.0-1.0 for routing
   immunityExpiresAt: timestamp("immunity_expires_at"), // 24h grace period for new nodes
+  // CPU+RAM pooling: what resources this node contributes
+  contributionTypes: text("contribution_types").default("gpu"), // "gpu", "cpu", "ram", or "gpu,cpu,ram"
   // State
   jobsInProgress: integer("jobs_in_progress").notNull().default(0),
   lastHeartbeatAt: timestamp("last_heartbeat_at"),

@@ -5007,6 +5007,7 @@ export async function registerRoutes(
         maxConcurrentJobs: z.number().int().min(1).max(16).optional(),
         inferenceEndpoint: z.string().url().optional(), // e.g., "http://192.168.1.50:5001"
         quantLevel: z.string().max(20).optional(), // GGUF quant: Q8_0, Q6_K, Q5_K_M, Q4_K_M, AWQ, FP16
+        contributionTypes: z.string().default("gpu"), // "gpu", "cpu", "ram", or "gpu,cpu,ram"
       });
       const data = schema.parse(req.body);
       const node = await computeService.registerNode({
@@ -6119,6 +6120,29 @@ export async function registerRoutes(
   app.get("/api/gpu/pool/pressure", (_req: any, res: any) => {
     if (!poolRouter) return res.json({ nodes: [], recommendation: { bestNode: null, poolCapacity: "unavailable", estimatedWaitMs: 0 } });
     res.json(poolRouter.getPressure());
+  });
+
+  // CPU Pooling: POST /api/compute/cpu/:workloadType — Route CPU workload to best CPU node
+  app.post("/api/compute/cpu/:workloadType", async (req: any, res: any) => {
+    const workloadType = req.params.workloadType;
+    const validTypes = ["embed", "rerank", "crawl", "preprocess", "batch"];
+    if (!validTypes.includes(workloadType)) {
+      return res.status(400).json({ error: `Invalid CPU workload type: ${workloadType}. Valid: ${validTypes.join(", ")}` });
+    }
+    if (!poolRouter?.isCpuAvailable()) {
+      return res.status(503).json({ error: { code: "NO_CPU_NODES", message: "No healthy CPU nodes available" } });
+    }
+    try {
+      const result = await poolRouter!.routeCpuJob({ workloadType, payload: req.body });
+      res.json({
+        result: result.response,
+        latency_ms: result.latencyMs,
+        routed_to: result.nodeInstanceId,
+        workload_type: workloadType,
+      });
+    } catch (err: any) {
+      res.status(503).json({ error: { code: "CPU_ROUTING_FAILED", message: err.message } });
+    }
   });
 
   // Sprint 2: POST /api/compute/quality-report — Receive Best-of-N quality scores from Hive-AI

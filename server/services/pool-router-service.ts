@@ -22,6 +22,8 @@ const MAX_FAILOVER_ATTEMPTS = 3;
 const MAX_EXPECTED_LATENCY_MS = 60_000; // For EMA score calculation
 const INFLIGHT_TTL_MS = 180_000; // 3 min — auto-reap stale inFlight entries
 
+type ResourceType = "gpu" | "cpu" | "ram";
+
 interface PoolNodeState {
   nodeId: string;
   nodeInstanceId: string;
@@ -46,6 +48,12 @@ interface PoolNodeState {
   gpuTempC: number;
   queueDepth: number;
   maxConcurrentInference: number;
+  // CPU+RAM pooling: what resources this node contributes
+  contributionTypes: ResourceType[];
+  cpuCores: number;
+  ramGb: number;
+  cpuJobsInFlight: number;
+  maxConcurrentCpuJobs: number;
 }
 
 interface RoutingResult {
@@ -69,18 +77,25 @@ interface PoolStats {
     inFlight: number;
     immune: boolean;
     quantLevel: string | null;
-    // Phase 1: VRAM pressure
     vramUsedMb: number;
     vramTotalMb: number;
     vramPressurePct: number;
-    // Phase 3: latency percentiles
     latency?: { mean: number; stdDev: number; p50: number; p95: number; count: number };
-    // Phase 4: thermal + pressure
     gpuTempC: number;
     pressure: "low" | "medium" | "high" | "critical";
+    // CPU+RAM pooling
+    contributionTypes: ResourceType[];
+    cpuCores: number;
+    ramGb: number;
+    cpuPct: number;
+    ramPct: number;
+    cpuJobsInFlight: number;
+    maxConcurrentCpuJobs: number;
   }[];
   healthyCount: number;
   totalVramGb: number;
+  cpu: { healthyCount: number; totalCores: number };
+  ram: { healthyCount: number; totalRamGb: number };
 }
 
 // Logger — use console if pino not available
@@ -170,6 +185,12 @@ export class PoolRouterService {
             gpuTempC: 0,
             queueDepth: 0,
             maxConcurrentInference: node.maxConcurrentJobs ?? 1, // Default conservative (50%)
+            // CPU+RAM pooling
+            contributionTypes: this.parseContributionTypes((node as any).contributionTypes),
+            cpuCores: (node as any).cpuCores ?? 0,
+            ramGb: (node as any).ramGb ?? 0,
+            cpuJobsInFlight: 0,
+            maxConcurrentCpuJobs: Math.max(1, Math.floor(((node as any).cpuCores ?? 4) / 2)), // 50% of cores
           });
           // Phase 2: initialize inFlight tracking for this node
           this.inFlightTracking.set(node.id, new Map());
@@ -271,53 +292,73 @@ export class PoolRouterService {
     }
   }
 
-  /** Select the best node for routing. Returns ordered list for failover. */
-  selectNodes(): PoolNodeState[] {
+  /** Select the best node for routing. Returns ordered list for failover.
+   *  @param resourceType — filter by contribution type: "gpu" (default), "cpu", or "ram"
+   */
+  selectNodes(resourceType: ResourceType = "gpu"): PoolNodeState[] {
     const now = Date.now();
     const healthy = Array.from(this.nodes.values()).filter(n => {
       if (!n.healthy) return false;
-      // Phase 4: Skip nodes at their concurrent inference limit
-      if (n.inFlightRequests >= n.maxConcurrentInference) return false;
+      // Filter by resource contribution type
+      if (!n.contributionTypes.includes(resourceType)) return false;
+      // Capacity check per resource type
+      if (resourceType === "gpu" && n.inFlightRequests >= n.maxConcurrentInference) return false;
+      if (resourceType === "cpu" && n.cpuJobsInFlight >= n.maxConcurrentCpuJobs) return false;
       return true;
     });
 
     if (healthy.length === 0) return [];
 
-    // Compute weights
+    // Compute weights — formula varies by resource type
     const weighted = healthy.map(node => {
       const isImmune = now < node.immuneUntil;
-      const utilFactor = 1 - (node.gpuUtilizationPct / 100);
-      const loadFactor = 1 / (1 + node.inFlightRequests);
-      // Stake bonus: logarithmic to prevent plutocracy. 100 HP = 1x, 1000 HP = 1.3x, 10000 HP = 1.6x
       const stakeFactor = 1 + Math.log2(Math.max(node.hivePower, 100) / 100) * 0.1;
 
-      // Phase 1: VRAM pressure — penalize nodes with high VRAM usage
-      const vramPressure = node.vramTotalMb > 0 ? node.vramUsedMb / node.vramTotalMb : 0;
-      const vramFactor = vramPressure > 0.9 ? 0.1    // >90% VRAM = near-dead weight
-                       : vramPressure > 0.8 ? 0.4    // >80% = heavily penalized
-                       : 1 - (vramPressure * 0.5);   // linear below 80%
+      let weight: number;
 
-      // Phase 3: Latency — penalize nodes consistently slower than the pool
-      // More aggressive dampening for outlier nodes (Issue #6: 2.4x slower node
-      // was still getting ~25% of probes instead of ~15%)
-      let latencyFactor = 1.0;
-      const nodeStats = latencyStats.getStatistics(node.nodeId);
-      const globalStats = latencyStats.getGlobalStatistics();
-      if (nodeStats && nodeStats.count >= 5 && globalStats && globalStats.stdDev > 0) {
-        const nodeVsGlobal = (nodeStats.mean - globalStats.mean) / globalStats.stdDev;
-        if (nodeVsGlobal > 2.0) latencyFactor = 0.15;      // 2+ stdDev slower = near-dead weight
-        else if (nodeVsGlobal > 1.0) latencyFactor = 0.35;  // 1+ stdDev slower = heavy penalty
-        else if (nodeVsGlobal > 0.5) latencyFactor = 0.7;   // somewhat slower = moderate penalty
-        // Bonus for fast nodes: nodes faster than average get a small boost
-        else if (nodeVsGlobal < -0.5) latencyFactor = 1.2;  // faster than average = slight boost
+      if (resourceType === "cpu") {
+        // CPU weight: prioritize low CPU usage and available cores
+        const cpuFactor = 1 - (node.cpuPct / 100);
+        const ramFactor = node.ramPct > 90 ? 0.1 : node.ramPct > 80 ? 0.4 : 1 - (node.ramPct * 0.005);
+        const loadFactor = 1 / (1 + node.cpuJobsInFlight);
+        const coreFactor = Math.min(node.cpuCores / 8, 2.0); // More cores = higher weight, capped at 2x
+        weight = node.emaScore * cpuFactor * ramFactor * loadFactor * coreFactor * stakeFactor;
+      } else if (resourceType === "ram") {
+        // RAM weight: prioritize nodes with most free RAM
+        const ramFactor = node.ramPct > 90 ? 0.1 : node.ramPct > 80 ? 0.4 : 1 - (node.ramPct * 0.005);
+        const loadFactor = 1 / (1 + node.cpuJobsInFlight);
+        const ramCapFactor = Math.min(node.ramGb / 16, 2.0); // More RAM = higher weight, capped at 2x
+        weight = node.emaScore * ramFactor * loadFactor * ramCapFactor * stakeFactor;
+      } else {
+        // GPU weight (existing formula)
+        const utilFactor = 1 - (node.gpuUtilizationPct / 100);
+        const loadFactor = 1 / (1 + node.inFlightRequests);
+
+        // VRAM pressure
+        const vramPressure = node.vramTotalMb > 0 ? node.vramUsedMb / node.vramTotalMb : 0;
+        const vramFactor = vramPressure > 0.9 ? 0.1
+                         : vramPressure > 0.8 ? 0.4
+                         : 1 - (vramPressure * 0.5);
+
+        // Latency — aggressive dampening for slow nodes
+        let latencyFactor = 1.0;
+        const nodeStats = latencyStats.getStatistics(node.nodeId);
+        const globalStats = latencyStats.getGlobalStatistics();
+        if (nodeStats && nodeStats.count >= 5 && globalStats && globalStats.stdDev > 0) {
+          const nodeVsGlobal = (nodeStats.mean - globalStats.mean) / globalStats.stdDev;
+          if (nodeVsGlobal > 2.0) latencyFactor = 0.15;
+          else if (nodeVsGlobal > 1.0) latencyFactor = 0.35;
+          else if (nodeVsGlobal > 0.5) latencyFactor = 0.7;
+          else if (nodeVsGlobal < -0.5) latencyFactor = 1.2;
+        }
+
+        // Thermal throttling
+        const thermalFactor = node.gpuTempC > 85 ? 0.3
+                            : node.gpuTempC > 75 ? 0.7
+                            : 1.0;
+
+        weight = node.emaScore * utilFactor * vramFactor * loadFactor * stakeFactor * latencyFactor * thermalFactor;
       }
-
-      // Phase 4: Thermal throttling — penalize hot GPUs
-      const thermalFactor = node.gpuTempC > 85 ? 0.3
-                          : node.gpuTempC > 75 ? 0.7
-                          : 1.0;
-
-      let weight = node.emaScore * utilFactor * vramFactor * loadFactor * stakeFactor * latencyFactor * thermalFactor;
 
       // Immune nodes get a floor weight
       if (isImmune) weight = Math.max(weight, IMMUNITY_FLOOR);
@@ -552,10 +593,27 @@ export class PoolRouterService {
           // Phase 4: thermal + pressure level
           gpuTempC: n.gpuTempC,
           pressure: this.computePressure(n),
+          // CPU+RAM pooling
+          contributionTypes: n.contributionTypes,
+          cpuCores: n.cpuCores,
+          ramGb: n.ramGb,
+          cpuPct: n.cpuPct,
+          ramPct: n.ramPct,
+          cpuJobsInFlight: n.cpuJobsInFlight,
+          maxConcurrentCpuJobs: n.maxConcurrentCpuJobs,
         };
       }),
       healthyCount: nodeList.filter(n => n.healthy).length,
       totalVramGb: nodeList.filter(n => n.healthy).reduce((sum, n) => sum + n.gpuVramGb, 0),
+      // CPU+RAM pool aggregates
+      cpu: {
+        healthyCount: nodeList.filter(n => n.healthy && n.contributionTypes.includes("cpu")).length,
+        totalCores: nodeList.filter(n => n.healthy && n.contributionTypes.includes("cpu")).reduce((sum, n) => sum + n.cpuCores, 0),
+      },
+      ram: {
+        healthyCount: nodeList.filter(n => n.healthy && n.contributionTypes.includes("ram")).length,
+        totalRamGb: nodeList.filter(n => n.healthy && n.contributionTypes.includes("ram")).reduce((sum, n) => sum + n.ramGb, 0),
+      },
     };
   }
 
@@ -719,15 +777,77 @@ export class PoolRouterService {
 
   /** Phase 3: Get latency percentile from the LatencyStatistics sliding window. */
   private getPercentile(nodeId: string, percentile: number): number | null {
-    // Access the measurements via the singleton's getStatistics
     const stats = latencyStats.getStatistics(nodeId);
     if (!stats || stats.count < 2) return null;
-    // We need the raw measurements — use the global stats approach
-    // Since LatencyStatistics doesn't expose raw data, approximate from mean/stdDev
-    // p50 ≈ mean, p95 ≈ mean + 1.645 * stdDev (normal approximation)
+    // Normal approximation from mean/stdDev
     if (percentile === 50) return Math.round(stats.mean);
     if (percentile === 95) return Math.round(stats.mean + 1.645 * stats.stdDev);
     if (percentile === 99) return Math.round(stats.mean + 2.326 * stats.stdDev);
     return Math.round(stats.mean);
+  }
+
+  /** Parse contribution types from comma-separated string. Defaults to ["gpu"]. */
+  private parseContributionTypes(raw: string | null | undefined): ResourceType[] {
+    if (!raw) return ["gpu"]; // backward compatible — existing nodes are GPU
+    const valid: ResourceType[] = ["gpu", "cpu", "ram"];
+    return raw.split(",").map(s => s.trim().toLowerCase()).filter(s => valid.includes(s as ResourceType)) as ResourceType[];
+  }
+
+  /** Route a CPU workload to the best available CPU node. */
+  async routeCpuJob(body: { workloadType: string; payload: any }): Promise<RoutingResult> {
+    const candidates = this.selectNodes("cpu");
+    if (candidates.length === 0) {
+      throw new Error("No healthy CPU nodes available");
+    }
+
+    const node = candidates[0];
+    node.cpuJobsInFlight++;
+    const startTime = Date.now();
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), INFERENCE_TIMEOUT_MS);
+
+      const res = await fetch(`${node.inferenceEndpoint}/api/compute/cpu/${body.workloadType}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body.payload),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      node.cpuJobsInFlight = Math.max(0, node.cpuJobsInFlight - 1);
+
+      if (res.ok) {
+        const data = await res.json();
+        const latencyMs = Date.now() - startTime;
+        if (latencyMs >= 50) {
+          this.updateEma(node, Math.max(0.1, Math.min(1.0, 1.0 - (latencyMs / MAX_EXPECTED_LATENCY_MS))));
+          latencyStats.addMeasurement(node.nodeId, latencyMs);
+        }
+        return {
+          nodeId: node.nodeId,
+          nodeInstanceId: node.nodeInstanceId,
+          response: data,
+          latencyMs,
+          routedVia: "pool",
+          attemptsUsed: 1,
+        };
+      }
+      throw new Error(`CPU node ${node.nodeInstanceId} returned ${res.status}`);
+    } catch (err: any) {
+      node.cpuJobsInFlight = Math.max(0, node.cpuJobsInFlight - 1);
+      this.updateEma(node, 0);
+      throw err;
+    }
+  }
+
+  /** Check if CPU pool routing is available. */
+  isCpuAvailable(): boolean {
+    return Array.from(this.nodes.values()).some(n => n.healthy && n.contributionTypes.includes("cpu"));
+  }
+
+  /** Check if RAM pool routing is available. */
+  isRamAvailable(): boolean {
+    return Array.from(this.nodes.values()).some(n => n.healthy && n.contributionTypes.includes("ram"));
   }
 }
