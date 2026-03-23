@@ -32,7 +32,7 @@ Decentralized storage validation protocol built on the Hive L1 blockchain. Valid
 | **Governance** | Live validator rankings by reputation, network health stats, treasury status sidebar |
 | **GPU Compute Marketplace** | Typed workload execution (eval sweeps, benchmarks, LoRA training, data generation) with lease-based job assignment, three-stage payouts, warm-up reputation via directed protocol-conformance challenges, and content-addressed artifacts |
 | **Spirit Bomb Community Cloud** | Permissionless GPU pooling — community members share GPUs to create a collective AI brain. Elastic tiers (14B→32B→80B), geo-aware clustering, MoE expert distribution, EAGLE-3 speculative decoding, HBD rewards for contributors. See [How GPU Sharing Works](https://github.com/Dhenz14/Hive-AI/blob/main/docs/HOW_GPU_SHARING_WORKS.md) |
-| **Pool Routing** | EMA-scored load balancing across GPU nodes with automatic failover, 24h immunity for new nodes, SSE streaming. Battle-tested: 2,959+ requests, 100% success, 0% failover loss |
+| **Pool Routing** | EMA-scored load balancing across GPU nodes with automatic failover, 24h immunity for new nodes, SSE streaming. Battle-tested: 4,100+ requests, 100% success, 0% failover loss |
 | **Desktop Agent UX** | VRAM allocation slider (50-95%) with presets, contribution schedule (overnight windows), auto gaming mode (detects VRAM contention, pauses, auto-resumes), system tray GPU controls (start/pause/resume/stop), native OS notifications (schedule events, temperature warnings, milestones) |
 | **Universal GPU Onboarding** | Any OS (Windows/macOS/Linux), any GPU (NVIDIA/AMD/Intel/Apple Silicon). One-click installers: `.exe`, `.AppImage`, `.deb`, `.dmg`. Auto-detects GPU, installs backend, opens firewall, registers with pool |
 | **VRAM Class Certification** | Phase 2B hardware verification — VRAM evidence table, CERTIFIED/REVOKED/UNCERTIFIED derivation, calibrated profiles for gpu-small-v2 and gpu-medium-v2 |
@@ -48,7 +48,7 @@ Decentralized storage validation protocol built on the Hive L1 blockchain. Valid
 - 31 client pages including GPU Dashboard, Community Cloud, AI Inference, Quick Start
 - 567+ automated tests across 26 test suites (vitest) + 51 Python Spirit Bomb tests
 - **Spirit Bomb Desktop Agent** (Electron) — grandma-proof GPU contribution with one-click installers for Windows (.exe), Linux (.AppImage/.deb), macOS (.dmg)
-- **Pool Router** with EMA scoring, health checks, failover, SSE streaming — battle-tested with 2,959+ requests at 100% success
+- **Pool Router** with EMA scoring, health checks, failover, SSE streaming — battle-tested with 4,100+ requests at 100% success
 - Full Docker deployment stack (vLLM with FP8 KV cache, AWQ Marlin, prefix caching)
 - **Universal GPU support**: NVIDIA (CUDA), Apple Silicon (Metal), AMD (ROCm), Intel Arc (oneAPI)
 - Companion project: [Hive-AI](https://github.com/Dhenz14/Hive-AI) — 21 Python modules for distributed inference, training, and GPU cluster management
@@ -164,7 +164,7 @@ python cpu_worker.py
 
 ### Pool Routing (Battle-Tested)
 
-2,959+ requests routed across 2 GPUs with 100% success rate:
+4,100+ requests routed across 3 GPUs with 100% success rate:
 - **EMA scoring** — faster nodes get proportionally more traffic
 - **Automatic failover** — if a node goes down, requests route to healthy nodes (zero lost requests)
 - **Self-healing** — recovered nodes rejoin in <20 seconds
