@@ -1,0 +1,73 @@
+# ============================================================
+# Spirit Bomb Worker — GPU inference + CPU embedding/reranking
+# ============================================================
+#
+# One container to join the pool. Runs:
+#   - llama-server (GPU inference) on port 8080
+#   - cpu_worker.py (embedding + reranking + heartbeats) on port 5001
+#
+# Usage:
+#   # GPU + CPU worker:
+#   docker compose --profile worker up
+#
+#   # CPU-only worker (no GPU):
+#   CPU_ONLY=true docker compose --profile worker up
+
+FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04 AS base
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# System deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python deps for CPU worker (embedding + reranking)
+RUN pip3 install --no-cache-dir flask sentence-transformers psutil requests
+
+WORKDIR /app
+
+# Copy CPU worker script (standalone, from Hive-AI)
+COPY worker/cpu_worker.py /app/cpu_worker.py
+
+# Copy entrypoint
+COPY worker/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+# llama-server binary — download pre-built release
+# Workers can also mount their own binary via volume
+ARG LLAMA_CPP_VERSION=b4679
+RUN curl -fsSL "https://github.com/ggerganov/llama.cpp/releases/download/${LLAMA_CPP_VERSION}/llama-${LLAMA_CPP_VERSION}-bin-ubuntu-x64.zip" \
+    -o /tmp/llama.zip && \
+    apt-get update && apt-get install -y --no-install-recommends unzip && \
+    unzip /tmp/llama.zip -d /tmp/llama && \
+    cp /tmp/llama/build/bin/llama-server /usr/local/bin/llama-server || \
+    cp /tmp/llama/llama-server /usr/local/bin/llama-server || true && \
+    chmod +x /usr/local/bin/llama-server 2>/dev/null || true && \
+    rm -rf /tmp/llama /tmp/llama.zip && \
+    apt-get remove -y unzip && apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
+
+# Model + HuggingFace cache volumes
+VOLUME /models
+VOLUME /root/.cache/huggingface
+
+# Ports: 8080 (llama-server), 5001 (cpu_worker Flask)
+EXPOSE 8080 5001
+
+# Environment
+ENV HIVEPOA_URL=""
+ENV HIVEPOA_API_KEY=""
+ENV HIVEPOA_NODE_ID=""
+ENV CPU_ONLY="false"
+ENV MODEL_REPO="theycallmedan14/hiveai-v5-think"
+ENV MODEL_FILE="current_base.gguf"
+ENV LLAMA_PORT=8080
+ENV CPU_WORKER_PORT=5001
+ENV NGL=40
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD curl -sf http://localhost:${CPU_WORKER_PORT}/ready || exit 1
+
+ENTRYPOINT ["/app/entrypoint.sh"]

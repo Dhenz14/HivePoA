@@ -51,6 +51,37 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Spirit Bomb GPU+CPU Worker — join the pool with one command
+  # Usage: docker compose --profile worker up
+  # CPU-only: CPU_ONLY=true docker compose --profile worker up
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    profiles: ["worker"]
+    ports:
+      - "8080:8080"   # llama-server (GPU inference)
+      - "5001:5001"   # cpu_worker (embedding + reranking)
+    environment:
+      - HIVEPOA_URL=${HIVEPOA_URL}
+      - HIVEPOA_API_KEY=${HIVEPOA_API_KEY}
+      - HIVEPOA_NODE_ID=${HIVEPOA_NODE_ID}
+      - CPU_ONLY=${CPU_ONLY:-false}
+      - NGL=${NGL:-40}
+    volumes:
+      - models:/models
+      - hfcache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
 volumes:
   pgdata:
   ipfsdata:
+  models:
+  hfcache:
