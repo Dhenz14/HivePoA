@@ -35,7 +35,8 @@ interface PoolNodeState {
   healthy: boolean;
   lastHealthCheck: number;
   gpuUtilizationPct: number;
-  emaScore: number;
+  emaScore: number; // legacy aggregate, kept for DB persistence
+  emaScores: Record<string, number>; // per-workload-class: "gpu" | "cpu" | "ram"
   immuneUntil: number;
   consecutiveFailures: number;
   inFlightRequests: number;
@@ -187,6 +188,7 @@ export class PoolRouterService {
             lastHealthCheck: 0,
             gpuUtilizationPct: 0,
             emaScore: node.emaScore,
+            emaScores: { gpu: node.emaScore, cpu: 0.5, ram: 0.5 },
             immuneUntil: node.immunityExpiresAt?.getTime() ?? 0,
             consecutiveFailures: 0,
             inFlightRequests: 0,
@@ -347,14 +349,16 @@ export class PoolRouterService {
         const ramFactor = node.ramPct > 90 ? 0.1 : node.ramPct > 80 ? 0.4 : 1 - (node.ramPct * 0.005);
         const loadFactor = 1 / (1 + node.cpuJobsInFlight);
         const coreFactor = Math.min(allocatableCores / 8, 2.0); // More allocatable cores = higher weight
-        weight = node.emaScore * cpuFactor * ramFactor * loadFactor * coreFactor * stakeFactor;
+        const cpuEma = node.emaScores.cpu ?? node.emaScore;
+        weight = cpuEma * cpuFactor * ramFactor * loadFactor * coreFactor * stakeFactor;
       } else if (resourceType === "ram") {
         // RAM weight: schedule against allocatable RAM (total minus OS reserve)
         const allocatableRam = Math.max(1, node.ramGb - Math.floor(RAM_HOST_RESERVE_MB / 1024));
         const ramFactor = node.ramPct > 90 ? 0.1 : node.ramPct > 80 ? 0.4 : 1 - (node.ramPct * 0.005);
         const loadFactor = 1 / (1 + node.cpuJobsInFlight);
         const ramCapFactor = Math.min(allocatableRam / 16, 2.0); // More allocatable RAM = higher weight
-        weight = node.emaScore * ramFactor * loadFactor * ramCapFactor * stakeFactor;
+        const ramEma = node.emaScores.ram ?? node.emaScore;
+        weight = ramEma * ramFactor * loadFactor * ramCapFactor * stakeFactor;
       } else {
         // GPU weight (existing formula)
         const utilFactor = 1 - (node.gpuUtilizationPct / 100);
@@ -385,7 +389,8 @@ export class PoolRouterService {
                             : node.gpuTempC > 75 ? 0.7
                             : 1.0;
 
-        weight = node.emaScore * utilFactor * vramFactor * loadFactor * stakeFactor * latencyFactor * thermalFactor;
+        const gpuEma = node.emaScores.gpu ?? node.emaScore;
+        weight = gpuEma * utilFactor * vramFactor * loadFactor * stakeFactor * latencyFactor * thermalFactor;
       }
 
       // Immune nodes get a floor weight
@@ -561,9 +566,14 @@ export class PoolRouterService {
     throw new Error(`All pool nodes failed: ${errors.join("; ")}`);
   }
 
-  /** Update EMA score for a node. */
-  private updateEma(node: PoolNodeState, sampleScore: number): void {
-    node.emaScore = EMA_ALPHA * sampleScore + (1 - EMA_ALPHA) * node.emaScore;
+  /** Update EMA score for a node, per workload class. */
+  private updateEma(node: PoolNodeState, sampleScore: number, workloadClass: ResourceType = "gpu"): void {
+    // Update per-class EMA
+    const oldScore = node.emaScores[workloadClass] ?? node.emaScore;
+    node.emaScores[workloadClass] = EMA_ALPHA * sampleScore + (1 - EMA_ALPHA) * oldScore;
+    // Keep legacy aggregate in sync (weighted average across classes)
+    const classes = Object.keys(node.emaScores);
+    node.emaScore = classes.reduce((sum, k) => sum + node.emaScores[k], 0) / classes.length;
 
     // Persist to DB periodically (fire-and-forget)
     this.storage.updateNodeEmaScore(node.nodeId, node.emaScore).catch(() => {});
@@ -798,6 +808,10 @@ export class PoolRouterService {
     for (const node of Array.from(this.nodes.values())) {
       if (node.healthy && node.consecutiveFailures === 0 && node.emaScore < 0.1) {
         node.emaScore = 0.3;
+        // Reset all per-class EMAs too
+        for (const cls of Object.keys(node.emaScores)) {
+          if (node.emaScores[cls] < 0.1) node.emaScores[cls] = 0.3;
+        }
         this.storage.updateNodeEmaScore(node.nodeId, 0.3).catch(() => {});
         log.info(`Self-heal: EMA floor reset for ${node.nodeInstanceId}`);
       }
@@ -878,7 +892,7 @@ export class PoolRouterService {
         const data = await res.json();
         const latencyMs = Date.now() - startTime;
         if (latencyMs >= 50) {
-          this.updateEma(node, Math.max(0.1, Math.min(1.0, 1.0 - (latencyMs / MAX_EXPECTED_LATENCY_MS))));
+          this.updateEma(node, Math.max(0.1, Math.min(1.0, 1.0 - (latencyMs / MAX_EXPECTED_LATENCY_MS))), "cpu");
           latencyStats.addMeasurement(node.nodeId, latencyMs);
         }
         return {
@@ -893,7 +907,7 @@ export class PoolRouterService {
       throw new Error(`CPU node ${node.nodeInstanceId} returned ${res.status}`);
     } catch (err: any) {
       node.cpuJobsInFlight = Math.max(0, node.cpuJobsInFlight - 1);
-      this.updateEma(node, 0);
+      this.updateEma(node, 0, "cpu");
       throw err;
     }
   }
