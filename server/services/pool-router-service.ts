@@ -21,6 +21,10 @@ const MAX_CONSECUTIVE_FAILURES = 3;
 const MAX_FAILOVER_ATTEMPTS = 3;
 const MAX_EXPECTED_LATENCY_MS = 60_000; // For EMA score calculation
 const INFLIGHT_TTL_MS = 180_000; // 3 min — auto-reap stale inFlight entries
+// Allocatable scheduling: reserve resources for OS/desktop, never schedule against total
+const VRAM_HOST_RESERVE_MB = 2048; // 2GB reserved for Windows/display/OS
+const RAM_HOST_RESERVE_MB = 4096;  // 4GB reserved for OS/apps
+const CPU_HOST_RESERVE_CORES = 2;  // 2 cores reserved for OS
 
 type ResourceType = "gpu" | "cpu" | "ram";
 
@@ -337,25 +341,29 @@ export class PoolRouterService {
       let weight: number;
 
       if (resourceType === "cpu") {
-        // CPU weight: prioritize low CPU usage and available cores
+        // CPU weight: schedule against allocatable cores (total minus OS reserve)
+        const allocatableCores = Math.max(1, node.cpuCores - CPU_HOST_RESERVE_CORES);
         const cpuFactor = 1 - (node.cpuPct / 100);
         const ramFactor = node.ramPct > 90 ? 0.1 : node.ramPct > 80 ? 0.4 : 1 - (node.ramPct * 0.005);
         const loadFactor = 1 / (1 + node.cpuJobsInFlight);
-        const coreFactor = Math.min(node.cpuCores / 8, 2.0); // More cores = higher weight, capped at 2x
+        const coreFactor = Math.min(allocatableCores / 8, 2.0); // More allocatable cores = higher weight
         weight = node.emaScore * cpuFactor * ramFactor * loadFactor * coreFactor * stakeFactor;
       } else if (resourceType === "ram") {
-        // RAM weight: prioritize nodes with most free RAM
+        // RAM weight: schedule against allocatable RAM (total minus OS reserve)
+        const allocatableRam = Math.max(1, node.ramGb - Math.floor(RAM_HOST_RESERVE_MB / 1024));
         const ramFactor = node.ramPct > 90 ? 0.1 : node.ramPct > 80 ? 0.4 : 1 - (node.ramPct * 0.005);
         const loadFactor = 1 / (1 + node.cpuJobsInFlight);
-        const ramCapFactor = Math.min(node.ramGb / 16, 2.0); // More RAM = higher weight, capped at 2x
+        const ramCapFactor = Math.min(allocatableRam / 16, 2.0); // More allocatable RAM = higher weight
         weight = node.emaScore * ramFactor * loadFactor * ramCapFactor * stakeFactor;
       } else {
         // GPU weight (existing formula)
         const utilFactor = 1 - (node.gpuUtilizationPct / 100);
         const loadFactor = 1 / (1 + node.inFlightRequests);
 
-        // VRAM pressure
-        const vramPressure = node.vramTotalMb > 0 ? node.vramUsedMb / node.vramTotalMb : 0;
+        // VRAM pressure — schedule against allocatable, not total
+        // allocatable = total - host reserve (OS, display compositor, etc.)
+        const allocatableVram = Math.max(0, node.vramTotalMb - VRAM_HOST_RESERVE_MB);
+        const vramPressure = allocatableVram > 0 ? Math.min(1, node.vramUsedMb / (allocatableVram || 1)) : 0;
         const vramFactor = vramPressure > 0.9 ? 0.1
                          : vramPressure > 0.8 ? 0.4
                          : 1 - (vramPressure * 0.5);
@@ -608,7 +616,10 @@ export class PoolRouterService {
           // Phase 1: VRAM pressure
           vramUsedMb: n.vramUsedMb,
           vramTotalMb: n.vramTotalMb,
-          vramPressurePct: n.vramTotalMb > 0 ? Math.round((n.vramUsedMb / n.vramTotalMb) * 100) : 0,
+          vramPressurePct: (() => {
+            const alloc = Math.max(1, n.vramTotalMb - VRAM_HOST_RESERVE_MB);
+            return Math.round(Math.min(100, (n.vramUsedMb / alloc) * 100));
+          })(),
           // Phase 3: latency percentiles
           latency,
           // Phase 4: thermal + pressure level
@@ -800,7 +811,9 @@ export class PoolRouterService {
 
   /** Compute pressure level for a node. */
   private computePressure(node: PoolNodeState): "low" | "medium" | "high" | "critical" {
-    const vramPressure = node.vramTotalMb > 0 ? node.vramUsedMb / node.vramTotalMb : 0;
+    // Pressure based on allocatable, not total (K8s pattern)
+    const allocatable = Math.max(1, node.vramTotalMb - VRAM_HOST_RESERVE_MB);
+    const vramPressure = allocatable > 0 ? Math.min(1, node.vramUsedMb / allocatable) : 0;
     if (vramPressure >= 0.9 || node.gpuTempC > 85) return "critical";
     if (vramPressure >= 0.8 || node.gpuUtilizationPct > 90) return "high";
     if (vramPressure >= 0.6 || node.gpuUtilizationPct > 50) return "medium";
