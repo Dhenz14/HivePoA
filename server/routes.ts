@@ -5103,6 +5103,9 @@ export async function registerRoutes(
         ramUsedMb: z.number().nonnegative().optional(),
         ramTotalMb: z.number().nonnegative().optional(),
         cpuEndpointUrl: z.string().optional(), // Flask URL for CPU workloads (separate from GPU)
+        // PSI (Pressure Stall Information) — Linux nodes with cgroup v2 send these
+        psiCpuSome: z.number().min(0).max(100).optional(),    // % time stalled on CPU (10s window)
+        psiMemorySome: z.number().min(0).max(100).optional(), // % time stalled on memory (10s window)
       }).parse(req.body);
       await computeService.heartbeat(node.id, heartbeat.jobsInProgress);
 
@@ -5129,6 +5132,8 @@ export async function registerRoutes(
           ramGb: heartbeat.ramGb,
           contributionTypes: heartbeat.contributionTypes,
           cpuEndpointUrl: heartbeat.cpuEndpointUrl,
+          psiCpuSome: heartbeat.psiCpuSome,
+          psiMemorySome: heartbeat.psiMemorySome,
         });
       }
       res.json({ ok: true });

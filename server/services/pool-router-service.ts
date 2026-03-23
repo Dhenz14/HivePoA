@@ -64,6 +64,10 @@ interface PoolNodeState {
   encryptionKeyVersion: number;
   // CPU endpoint (separate from GPU inferenceEndpoint)
   cpuEndpointUrl: string | null;
+  // PSI (Pressure Stall Information) — real Linux nodes send these
+  // Percentage of time stalled in last 10s (0-100). Only available on Linux with cgroup v2.
+  psiCpuSome: number;    // CPU pressure: % time at least one task stalled on CPU
+  psiMemorySome: number; // Memory pressure: % time at least one task stalled on memory
 }
 
 interface RoutingResult {
@@ -215,6 +219,8 @@ export class PoolRouterService {
             encryptionPublicKey: (node as any).encryptionPublicKey ?? null,
             encryptionKeyVersion: (node as any).encryptionKeyVersion ?? 1,
             cpuEndpointUrl: (node as any).cpuEndpointUrl ?? null,
+            psiCpuSome: 0,
+            psiMemorySome: 0,
           });
           // Phase 2: initialize inFlight tracking for this node
           this.inFlightTracking.set(node.id, new Map());
@@ -349,8 +355,13 @@ export class PoolRouterService {
         const ramFactor = node.ramPct > 90 ? 0.1 : node.ramPct > 80 ? 0.4 : 1 - (node.ramPct * 0.005);
         const loadFactor = 1 / (1 + node.cpuJobsInFlight);
         const coreFactor = Math.min(allocatableCores / 8, 2.0); // More allocatable cores = higher weight
+        // PSI: actual stall time (Linux nodes only, graceful for others)
+        const cpuPsiFactor = node.psiCpuSome > 50 ? 0.1
+          : node.psiCpuSome > 25 ? 0.4
+          : node.psiMemorySome > 50 ? 0.2
+          : 1.0;
         const cpuEma = node.emaScores.cpu ?? node.emaScore;
-        weight = cpuEma * cpuFactor * ramFactor * loadFactor * coreFactor * stakeFactor;
+        weight = cpuEma * cpuFactor * ramFactor * loadFactor * coreFactor * stakeFactor * cpuPsiFactor;
       } else if (resourceType === "ram") {
         // RAM weight: schedule against allocatable RAM (total minus OS reserve)
         const allocatableRam = Math.max(1, node.ramGb - Math.floor(RAM_HOST_RESERVE_MB / 1024));
@@ -389,8 +400,16 @@ export class PoolRouterService {
                             : node.gpuTempC > 75 ? 0.7
                             : 1.0;
 
+        // PSI: actual stall time beats raw utilization (K8s/BOINC gem)
+        // Only applies when node sends PSI data (real Linux, not WSL/Windows)
+        const psiFactor = (node.psiCpuSome > 0 || node.psiMemorySome > 0)
+          ? (node.psiCpuSome > 50 || node.psiMemorySome > 50) ? 0.1   // severe stalling
+            : (node.psiCpuSome > 25 || node.psiMemorySome > 25) ? 0.4 // moderate stalling
+            : 1.0
+          : 1.0; // no PSI data — no penalty
+
         const gpuEma = node.emaScores.gpu ?? node.emaScore;
-        weight = gpuEma * utilFactor * vramFactor * loadFactor * stakeFactor * latencyFactor * thermalFactor;
+        weight = gpuEma * utilFactor * vramFactor * loadFactor * stakeFactor * latencyFactor * thermalFactor * psiFactor;
       }
 
       // Immune nodes get a floor weight
@@ -671,6 +690,7 @@ export class PoolRouterService {
     vramUsedMb?: number; vramTotalMb?: number; gpuUtilizationPct?: number;
     gpuTempC?: number; cpuPct?: number; ramPct?: number; queueDepth?: number;
     cpuCores?: number; ramGb?: number; contributionTypes?: string; cpuEndpointUrl?: string;
+    psiCpuSome?: number; psiMemorySome?: number;
   }): void {
     const node = Array.from(this.nodes.values()).find(n => n.nodeInstanceId === nodeInstanceId);
     if (!node) return;
@@ -689,6 +709,8 @@ export class PoolRouterService {
       node.maxConcurrentCpuJobs = Math.max(1, Math.floor(node.cpuCores / 2));
     }
     if (data.cpuEndpointUrl !== undefined) node.cpuEndpointUrl = data.cpuEndpointUrl;
+    if (data.psiCpuSome !== undefined) node.psiCpuSome = data.psiCpuSome;
+    if (data.psiMemorySome !== undefined) node.psiMemorySome = data.psiMemorySome;
   }
 
   /** Phase 5: Get pressure summary for Hive-AI decision-making. */
@@ -828,7 +850,10 @@ export class PoolRouterService {
     // Pressure based on allocatable, not total (K8s pattern)
     const allocatable = Math.max(1, node.vramTotalMb - VRAM_HOST_RESERVE_MB);
     const vramPressure = allocatable > 0 ? Math.min(1, node.vramUsedMb / allocatable) : 0;
+    // PSI: actual stall time trumps utilization metrics
+    if (node.psiCpuSome > 50 || node.psiMemorySome > 50) return "critical";
     if (vramPressure >= 0.9 || node.gpuTempC > 85) return "critical";
+    if (node.psiCpuSome > 25 || node.psiMemorySome > 25) return "high";
     if (vramPressure >= 0.8 || node.gpuUtilizationPct > 90) return "high";
     if (vramPressure >= 0.6 || node.gpuUtilizationPct > 50) return "medium";
     return "low";
