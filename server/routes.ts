@@ -5114,7 +5114,8 @@ export async function registerRoutes(
 
       // Persist static fields if sent (nodes self-upgrade via heartbeat)
       const hasStaticUpdates = heartbeat.cpuCores !== undefined || heartbeat.ramGb !== undefined
-        || heartbeat.contributionTypes !== undefined || heartbeat.encryptionPublicKey !== undefined;
+        || heartbeat.contributionTypes !== undefined || heartbeat.encryptionPublicKey !== undefined
+        || heartbeat.cpuEndpointUrl !== undefined;
       if (hasStaticUpdates) {
         const updates: any = {};
         if (heartbeat.cpuCores !== undefined) updates.cpuCores = heartbeat.cpuCores;
@@ -5122,6 +5123,7 @@ export async function registerRoutes(
         if (heartbeat.contributionTypes !== undefined) updates.contributionTypes = heartbeat.contributionTypes;
         if (heartbeat.encryptionPublicKey !== undefined) updates.encryptionPublicKey = heartbeat.encryptionPublicKey;
         if (heartbeat.encryptionKeyVersion !== undefined) updates.encryptionKeyVersion = heartbeat.encryptionKeyVersion;
+        if (heartbeat.cpuEndpointUrl !== undefined) updates.cpuEndpointUrl = heartbeat.cpuEndpointUrl;
         await storage.updateComputeNode(node.id, updates).catch(() => {});
       }
 

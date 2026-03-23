@@ -952,6 +952,7 @@ export const computeNodes = pgTable("compute_nodes", {
   // E2EE: node encryption public key for blind relay (X25519, base64-encoded)
   encryptionPublicKey: text("encryption_public_key"), // registered on node setup, used for envelope encryption
   encryptionKeyVersion: integer("encryption_key_version").default(1), // for key rotation
+  cpuEndpointUrl: text("cpu_endpoint_url"), // Flask URL for CPU workloads (separate port from GPU)
   // State
   jobsInProgress: integer("jobs_in_progress").notNull().default(0),
   lastHeartbeatAt: timestamp("last_heartbeat_at"),
