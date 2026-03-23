@@ -5104,17 +5104,24 @@ export async function registerRoutes(
         ramTotalMb: z.number().nonnegative().optional(),
         cpuEndpointUrl: z.string().optional(), // Flask URL for CPU workloads (separate from GPU)
         // PSI (Pressure Stall Information) — Linux nodes with cgroup v2 send these
-        psiCpuSome: z.number().min(0).max(100).optional(),    // % time stalled on CPU (10s window)
-        psiMemorySome: z.number().min(0).max(100).optional(), // % time stalled on memory (10s window)
+        psiCpuSome: z.number().min(0).max(100).optional(),
+        psiMemorySome: z.number().min(0).max(100).optional(),
+        // E2EE: node encryption public key (X25519, base64)
+        encryptionPublicKey: z.string().max(200).optional(),
+        encryptionKeyVersion: z.number().int().optional(),
       }).parse(req.body);
       await computeService.heartbeat(node.id, heartbeat.jobsInProgress);
 
-      // Persist CPU/RAM static fields if sent (nodes self-upgrade to CPU-capable)
-      if (heartbeat.cpuCores !== undefined || heartbeat.ramGb !== undefined || heartbeat.contributionTypes !== undefined) {
+      // Persist static fields if sent (nodes self-upgrade via heartbeat)
+      const hasStaticUpdates = heartbeat.cpuCores !== undefined || heartbeat.ramGb !== undefined
+        || heartbeat.contributionTypes !== undefined || heartbeat.encryptionPublicKey !== undefined;
+      if (hasStaticUpdates) {
         const updates: any = {};
         if (heartbeat.cpuCores !== undefined) updates.cpuCores = heartbeat.cpuCores;
         if (heartbeat.ramGb !== undefined) updates.ramGb = heartbeat.ramGb;
         if (heartbeat.contributionTypes !== undefined) updates.contributionTypes = heartbeat.contributionTypes;
+        if (heartbeat.encryptionPublicKey !== undefined) updates.encryptionPublicKey = heartbeat.encryptionPublicKey;
+        if (heartbeat.encryptionKeyVersion !== undefined) updates.encryptionKeyVersion = heartbeat.encryptionKeyVersion;
         await storage.updateComputeNode(node.id, updates).catch(() => {});
       }
 
@@ -5134,6 +5141,8 @@ export async function registerRoutes(
           cpuEndpointUrl: heartbeat.cpuEndpointUrl,
           psiCpuSome: heartbeat.psiCpuSome,
           psiMemorySome: heartbeat.psiMemorySome,
+          encryptionPublicKey: heartbeat.encryptionPublicKey,
+          encryptionKeyVersion: heartbeat.encryptionKeyVersion,
         });
       }
       res.json({ ok: true });

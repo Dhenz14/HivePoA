@@ -691,6 +691,7 @@ export class PoolRouterService {
     gpuTempC?: number; cpuPct?: number; ramPct?: number; queueDepth?: number;
     cpuCores?: number; ramGb?: number; contributionTypes?: string; cpuEndpointUrl?: string;
     psiCpuSome?: number; psiMemorySome?: number;
+    encryptionPublicKey?: string; encryptionKeyVersion?: number;
   }): void {
     const node = Array.from(this.nodes.values()).find(n => n.nodeInstanceId === nodeInstanceId);
     if (!node) return;
@@ -711,6 +712,8 @@ export class PoolRouterService {
     if (data.cpuEndpointUrl !== undefined) node.cpuEndpointUrl = data.cpuEndpointUrl;
     if (data.psiCpuSome !== undefined) node.psiCpuSome = data.psiCpuSome;
     if (data.psiMemorySome !== undefined) node.psiMemorySome = data.psiMemorySome;
+    if (data.encryptionPublicKey !== undefined) node.encryptionPublicKey = data.encryptionPublicKey;
+    if (data.encryptionKeyVersion !== undefined) node.encryptionKeyVersion = data.encryptionKeyVersion;
   }
 
   /** Phase 5: Get pressure summary for Hive-AI decision-making. */
